@@ -50,14 +50,8 @@ def get_tf(name: str):
     return tf_map.get(name.upper(), mt5.TIMEFRAME_H1)
 
 
-# ── Connection ─────────────────────────────────────────────────────────────
 def connect(login: int = None, password: str = None,
             server: str = None) -> dict:
-    """
-    Initialize MT5 connection.
-    Falls back to environment variables if params not provided.
-    Returns account info dict.
-    """
     if not MT5_AVAILABLE:
         logger.warning("MT5 not available — returning mock account.")
         return {"name": "DEMO", "balance": 10000.0,
@@ -67,8 +61,15 @@ def connect(login: int = None, password: str = None,
     password = password or os.getenv("MT5_PASSWORD", "")
     server   = server   or os.getenv("MT5_SERVER", "")
 
-    if not mt5.initialize(login=login, password=password, server=server):
-        raise RuntimeError(f"MT5 initialization failed: {mt5.last_error()}")
+    # Retry up to 5 times — MT5 terminal may still be loading
+    for attempt in range(1, 6):
+        mt5.shutdown()  # reset any previous state
+        time.sleep(2)
+        if mt5.initialize(login=login, password=password, server=server):
+            break
+        logger.warning(f"MT5 init attempt {attempt}/5 failed: {mt5.last_error()}")
+        if attempt == 5:
+            raise RuntimeError(f"MT5 initialization failed after 5 attempts: {mt5.last_error()}")
 
     info = mt5.account_info()
     if info is None:

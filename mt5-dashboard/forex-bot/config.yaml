@@ -3,9 +3,9 @@
 # ─────────────────────────────────────────────
 
 mt5:
-  login: 12345678
-  password: "your_pass"
-  server: "Broker-Live"
+  login: 31746427
+  password: "2004@Anesu"
+  server: "Deriv-Demo"
   timeout: 60000
 
 trading:

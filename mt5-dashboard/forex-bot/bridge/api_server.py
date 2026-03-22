@@ -1,13 +1,9 @@
-"""
-FastAPI Server — REST + WebSocket API for the React dashboard.
-Broadcasts live signal events to all connected clients.
-"""
-
 import asyncio
 import json
 import logging
 import time
 import os
+import threading
 from typing import List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Forex Bot API", version="1.0.0")
 
-# ✅ Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,7 +21,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── WebSocket connection manager ───────────────────────────────────────────
+# ── Main event loop — stored at startup, used by all threads ───────────────
+_main_loop: asyncio.AbstractEventLoop = None
+
+
+@app.on_event("startup")
+async def _store_loop():
+    global _main_loop
+    _main_loop = asyncio.get_event_loop()
+    logger.info("Event loop stored for cross-thread broadcasting")
+
+
+# ── Connection manager ─────────────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active: List[WebSocket] = []
@@ -44,31 +50,32 @@ class ConnectionManager:
     async def broadcast(self, data: dict):
         dead = []
         text = json.dumps(data, default=str)
-
         for ws in self.active:
             try:
                 await ws.send_text(text)
             except Exception:
                 dead.append(ws)
-
         for ws in dead:
             self.disconnect(ws)
 
 manager = ConnectionManager()
 
 
-# ── Broadcast helpers ──────────────────────────────────────────────────────
 async def broadcast_event(event: dict):
     await manager.broadcast(event)
 
 
 def broadcast_sync(event: dict):
+    """
+    Thread-safe broadcast — works from ANY thread.
+    The Crash500Scalper, BarStreamers, and heartbeat loop
+    all call this safely without needing their own event loop.
+    """
+    global _main_loop
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(broadcast_event(event), loop)
-        else:
-            loop.run_until_complete(broadcast_event(event))
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(broadcast_event(event), _main_loop)
+        # else: loop not ready yet — silently skip
     except Exception as e:
         logger.error(f"Broadcast error: {e}")
 
@@ -77,15 +84,49 @@ def broadcast_sync(event: dict):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+
+    def safe_account():
+        try:
+            from bridge.mt5_connector import get_account_info
+            result = get_account_info()
+            return result if result else {}
+        except Exception:
+            return {"balance": 0, "equity": 0, "currency": "USD",
+                    "name": "—", "leverage": 0, "margin_free": 0}
+
+    try:
+        await websocket.send_text(json.dumps({
+            "type":      "heartbeat",
+            "account":   safe_account(),
+            "timestamp": time.time(),
+        }, default=str))
+    except Exception:
+        manager.disconnect(websocket)
+        return
+
     try:
         while True:
-            await websocket.receive_text()  # keep alive
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+            await websocket.send_text(json.dumps({
+                "type":      "heartbeat",
+                "account":   safe_account(),
+                "timestamp": time.time(),
+            }, default=str))
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.warning(f"WS session ended: {e}")
         manager.disconnect(websocket)
 
 
-# ── REST endpoints ─────────────────────────────────────────────────────────
+# ── News cache (15 min TTL) ────────────────────────────────────────────────
+_news_cache: dict = {"data": [], "ts": 0.0}
 
+
+# ── REST endpoints ─────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok", "timestamp": time.time()}
@@ -97,7 +138,7 @@ def account_info():
         from bridge.mt5_connector import get_account_info
         return get_account_info()
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "balance": 0, "equity": 0}
 
 
 @app.get("/positions")
@@ -128,43 +169,34 @@ def journal(limit: int = 50):
 
 
 @app.get("/stats")
-def performance_stats():
+def performance_stats(days: int = 30):
     try:
         from db.journal import get_performance_stats
-        return get_performance_stats()
+        return get_performance_stats(days)
     except Exception as e:
         return {"error": str(e)}
 
 
-# ── NEWS ENDPOINT (SAFE + FALLBACK) ─────────────────────────────────────────
 @app.get("/news")
 def upcoming_news(symbol: str = None, hours: int = 6):
-    """
-    Returns upcoming news events.
-    Falls back to mock data if real news module fails.
-    """
+    global _news_cache
+    if time.time() - _news_cache["ts"] < 900 and _news_cache["data"]:
+        return _news_cache["data"]
     try:
         from bridge.news_filter import NewsFilter
         import yaml
-
         BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-        CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
-
-        with open(CONFIG_PATH) as f:
+        with open(os.path.join(BASE_DIR, "config.yaml")) as f:
             cfg = yaml.safe_load(f)
-
         nf = NewsFilter(cfg)
-        return nf.get_upcoming(symbol=symbol, hours=hours)
-
+        result = nf.get_upcoming(symbol=symbol, hours=hours)
+        _news_cache = {"data": result, "ts": time.time()}
+        return result
     except Exception as e:
-        logger.warning(f"News fallback triggered: {e}")
-
-        # 🔥 Fallback so frontend never breaks
-        return [
-            {"title": "USD strong after Fed decision", "impact": "high"},
-            {"title": "Gold consolidating", "impact": "medium"},
-            {"title": "Oil slightly down", "impact": "low"},
-        ]
+        logger.warning(f"News fallback: {e}")
+        fallback = [{"title": "News unavailable", "impact": "low"}]
+        _news_cache = {"data": fallback, "ts": time.time()}
+        return fallback
 
 
 @app.get("/signal/{symbol}")
@@ -172,14 +204,11 @@ def latest_signal(symbol: str):
     try:
         from bridge.bot import get_cached_signal
         sig = get_cached_signal(symbol)
-        if sig:
-            return sig
-        return {"error": f"No signal for {symbol}"}
+        return sig if sig else {"error": f"No signal for {symbol}"}
     except Exception as e:
         return {"error": str(e)}
 
 
-# ── RUN SERVER ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("bridge.api_server:app", host="0.0.0.0", port=8000, reload=True)
