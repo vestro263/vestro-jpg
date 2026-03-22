@@ -17,7 +17,7 @@ const useBotStore = create((set, get) => ({
   stats: null,
   statsLoading: false,
   activePage: 'dashboard',
-  setPage: (page) => set({ activePage: page }),
+  setActivePage: (page) => set({ activePage: page }),
 
   connect: () => {
     const existing = get().ws

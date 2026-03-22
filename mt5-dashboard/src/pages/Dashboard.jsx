@@ -6,7 +6,8 @@ import {
 
 import useBotStore from '../store/botStore'
 import NewsBar from '../components/NewsBar'
-import RiskGauge from '../components/RiskGuage'
+import RiskGauge from '../components/RiskGauge'
+import { StatCard, DirectionBadge, ATRZoneBadge, TSSBar } from '../components/ui'
 
 const S = {
   page:  { padding:'24px', display:'flex', flexDirection:'column', gap:20 },
@@ -103,13 +104,19 @@ export default function Dashboard() {
                 ].map(([k,v])=>(
                   <div key={k} style={{background:'#1f2937',padding:8,borderRadius:8}}>
                     <div style={{fontSize:10,color:'#6b7280'}}>{k}</div>
-                    <div>{(v||0).toFixed(4)}</div>
+                    <div style={{fontSize:13,fontWeight:500,color:'#e5e7eb',marginTop:2}}>
+                      {(v||0).toFixed(4)}
+                    </div>
                   </div>
                 ))}
               </div>
 
             </div>
-          ) : <p>No signal</p>}
+          ) : (
+            <div style={{padding:'24px 0',textAlign:'center',color:'#4b5563',fontSize:12}}>
+              No signal yet — waiting for the bot…
+            </div>
+          )}
         </div>
 
         {/* 📉 POSITIONS */}
@@ -117,9 +124,11 @@ export default function Dashboard() {
           <div style={S.h3}>Open positions ({positions.length})</div>
 
           {positions.length === 0 ? (
-            <p>No positions</p>
+            <div style={{padding:'24px 0',textAlign:'center',color:'#4b5563',fontSize:12}}>
+              No open positions
+            </div>
           ) : (
-            <table style={{width:'100%'}}>
+            <table style={{width:'100%',borderCollapse:'collapse'}}>
               <thead>
                 <tr>
                   {['Symbol','Type','Lot','P&L'].map(h=>(
@@ -129,13 +138,23 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {positions.map(p=>(
-                  <tr key={p.ticket}>
-                    <td style={S.td}>{p.symbol}</td>
+                  <tr key={p.ticket}
+                    onMouseEnter={e=>e.currentTarget.style.background='#1f2937'}
+                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+                    style={{transition:'background 0.1s'}}
+                  >
+                    <td style={{...S.td,fontWeight:600,color:'#e5e7eb'}}>{p.symbol}</td>
                     <td style={S.td}>
                       <DirectionBadge direction={p.type==='buy'?1:-1}/>
                     </td>
                     <td style={S.td}>{p.volume}</td>
-                    <td style={S.td}>{p.profit}</td>
+                    <td style={{
+                      ...S.td,
+                      fontWeight:600,
+                      color:(p.profit||0)>=0?'#4ade80':'#f87171'
+                    }}>
+                      {(p.profit||0)>=0?'+':''}{(p.profit||0).toFixed(2)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -156,9 +175,9 @@ export default function Dashboard() {
             <LineChart data={equityCurve}>
               <CartesianGrid stroke="#1f2937"/>
               <XAxis dataKey="i" hide />
-              <YAxis />
-              <Tooltip />
-              <Line dataKey="val" stroke="#38bdf8" dot={false}/>
+              <YAxis tick={{fontSize:10,fill:'#6b7280'}} tickLine={false} axisLine={false} width={48} />
+              <Tooltip contentStyle={{background:'#111827',border:'1px solid #1f2937',borderRadius:8,fontSize:12}} />
+              <Line dataKey="val" stroke="#38bdf8" dot={false} strokeWidth={2}/>
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -167,9 +186,23 @@ export default function Dashboard() {
       {/* 📡 FEED */}
       <div style={S.card}>
         <div style={S.h3}>Trade feed</div>
-        {tradeFeed.slice(0,10).map(t=>(
-          <div key={t.id}>{JSON.stringify(t)}</div>
-        ))}
+        {tradeFeed.length === 0 ? (
+          <div style={{padding:'16px 0',textAlign:'center',color:'#4b5563',fontSize:12}}>
+            No trades yet
+          </div>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {tradeFeed.slice(0,10).map(t=>(
+              <div key={t.id} style={{
+                background:'#1f2937', borderRadius:6, padding:'6px 10px',
+                fontSize:11, color:'#9ca3af', fontFamily:'monospace',
+              }}>
+                <span style={{color:'#4b5563',marginRight:8}}>{t.time}</span>
+                {JSON.stringify(t.trade ?? t)}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
     </div>
