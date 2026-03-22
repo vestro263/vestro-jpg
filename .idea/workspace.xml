@@ -1,30 +1,63 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
   <component name="ChangeListManager">
-    <list default="true" id="3b22a869-5d71-4d3e-8fcd-b1f3e5dce033" name="Changes" comment="" />
+    <list default="true" id="3b22a869-5d71-4d3e-8fcd-b1f3e5dce033" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/VESTRO-BACKEND/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/bridge/backtester.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/bridge/boom_crash.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/bridge/bot.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/bridge/news_filter.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/tests/test_indicators.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/tests/test_journal.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/forex-bot/tests/test_risk_manager.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/components/NewsBar.jsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/components/RiskGuage.jsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/components/Sidebar.jsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/components/StatCard.jsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/hooks/useWebSockets.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/pages/Dashboard.jsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/mt5-dashboard/src/store/botStore.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 2
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 2
+}</component>
   <component name="ProjectId" id="3BIZphLNzxWzLbqOJsjGsuvdqvx" />
   <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "git-widget-placeholder": "main"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;
   }
-}]]></component>
+}</component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\HP i5\PycharmProjects\Vestro\mt5-dashboard\forex-bot\tests" />
+    </key>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>

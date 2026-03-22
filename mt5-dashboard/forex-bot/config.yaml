@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────
+#  FOREX BOT — MASTER CONFIGURATION
+# ─────────────────────────────────────────────
+
+mt5:
+  login: 12345678
+  password: "your_pass"
+  server: "Broker-Live"
+  timeout: 60000
+
+trading:
+  symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - AUDUSD
+    - XAUUSD
+  primary_timeframe: "H1"
+  htf_timeframe: "D1"
+  intermediate_timeframe: "H4"
+  bar_history: 500
+
+indicators:
+  ema_fast: 21
+  ema_mid: 50
+  ema_slow: 200
+  rsi_period: 14
+  rsi_buy_min: 30
+  rsi_buy_max: 45
+  rsi_sell_min: 55
+  rsi_sell_max: 70
+  atr_period: 14
+  atr_avg_period: 20
+  adx_period: 14
+  adx_trend_threshold: 25
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+
+tss:
+  min_score_full_size: 3
+  min_score_half_size: 2
+  ema_indeterminate_pips: 10
+
+risk:
+  risk_pct: 0.01
+  max_daily_loss_pct: 0.05
+  max_open_trades: 3
+  min_rr_ratio: 2.0
+  sl_buffer_pips: 7
+  sl_atr_multiplier: 1.5
+  tp1_rr: 1.5
+  tp2_rr: 3.0
+
+volatility:
+  low_ratio: 0.5
+  elevated_ratio: 1.5
+  extreme_ratio: 2.5
+  elevated_size_mult: 0.5
+
+session:
+  avoid_news_minutes_before: 30
+  avoid_news_minutes_after: 15
+
+boom_crash:
+  enabled: true
+  symbols:
+    - "Boom 1000 Index"
+    - "Boom 500 Index"
+    - "Crash 1000 Index"
+    - "Crash 500 Index"
+  min_compression_candles: 6
+  rsi_1m_buy_max: 35
+  rsi_1m_sell_min: 65
+  boom_sl_points: 10
+  crash_sl_points: 10
+  max_spike_trades_per_session: 2
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+
+database:
+  path: "db/trades.db"
+
+alerts:
+  telegram_enabled: false
+  telegram_token: ""
+  telegram_chat_id: ""
+
+logging:
+  level: "INFO"
+  log_file: "logs/bot.log"
+  max_bytes: 5242880
+  backup_count: 3
