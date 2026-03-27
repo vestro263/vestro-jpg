@@ -1,21 +1,21 @@
 import { useEffect } from 'react'
 import useBotStore from './store/botStore'
-
 import Sidebar     from './components/Sidebar'
 import AccountBar  from './components/AccountBar'
-
 import Dashboard   from './pages/Dashboard'
 import Signals     from './pages/Signals'
 import Positions   from './pages/Positions'
 import Journal     from './pages/Journal'
 import Performance from './pages/Performance'
+import Valuation   from './pages/Valuation'
 
 const PAGES = {
-  dashboard: Dashboard,
-  signals:   Signals,
-  positions: Positions,
-  journal:   Journal,
-  stats:     Performance,
+  dashboard:  Dashboard,
+  valuations: Valuation,
+  signals:    Signals,
+  positions:  Positions,
+  journal:    Journal,
+  stats:      Performance,
 }
 
 export default function App() {

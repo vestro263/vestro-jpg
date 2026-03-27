@@ -50,37 +50,28 @@ def get_tf(name: str):
     return tf_map.get(name.upper(), mt5.TIMEFRAME_H1)
 
 
-def connect(login: int = None, password: str = None,
-            server: str = None) -> dict:
-    if not MT5_AVAILABLE:
-        logger.warning("MT5 not available — returning mock account.")
-        return {"name": "DEMO", "balance": 10000.0,
-                "equity": 10000.0, "profit": 0.0, "currency": "USD"}
+def connect(login: int = None, password: str = None, server: str = None) -> dict:
+    import MetaTrader5 as mt5
+    import time
+    import os
 
     login    = login    or int(os.getenv("MT5_LOGIN", "0"))
     password = password or os.getenv("MT5_PASSWORD", "")
     server   = server   or os.getenv("MT5_SERVER", "")
 
-    # Retry up to 5 times — MT5 terminal may still be loading
-    for attempt in range(1, 6):
-        mt5.shutdown()  # reset any previous state
+    for attempt in range(5):
+        mt5.shutdown()
         time.sleep(2)
+
         if mt5.initialize(login=login, password=password, server=server):
-            break
-        logger.warning(f"MT5 init attempt {attempt}/5 failed: {mt5.last_error()}")
-        if attempt == 5:
-            raise RuntimeError(f"MT5 initialization failed after 5 attempts: {mt5.last_error()}")
+            info = mt5.account_info()
+            if info:
+                print("✅ MT5 Connected:", info.login)
+                return info._asdict()
 
-    info = mt5.account_info()
-    if info is None:
-        raise RuntimeError(f"Cannot get account info: {mt5.last_error()}")
+        print("❌ MT5 retry:", mt5.last_error())
 
-    logger.info(
-        f"MT5 connected | Account: {info.name} | "
-        f"Balance: {info.balance} {info.currency} | "
-        f"Server: {info.server}"
-    )
-    return info._asdict()
+    raise RuntimeError("MT5 failed to connect")
 
 
 def disconnect():
@@ -100,16 +91,16 @@ def get_account_info() -> dict:
     if info is None:
         return {}
     return {
-        "login":    info.login,
-        "name":     info.name,
-        "server":   info.server,
-        "balance":  info.balance,
-        "equity":   info.equity,
-        "profit":   info.profit,
-        "margin":   info.margin,
+        "login":       info.login,
+        "name":        info.name,
+        "server":      info.server,
+        "balance":     info.balance,
+        "equity":      info.equity,
+        "profit":      info.profit,
+        "margin":      info.margin,
         "margin_free": info.margin_free,
-        "currency": info.currency,
-        "leverage": info.leverage,
+        "currency":    info.currency,
+        "leverage":    info.leverage,
     }
 
 
@@ -169,7 +160,11 @@ def get_tick(symbol: str) -> dict:
 
 
 def get_open_positions(symbol: str = None) -> list:
-    """Return list of open positions, optionally filtered by symbol."""
+    """
+    Return list of open positions, optionally filtered by symbol.
+    Uses getattr() with safe defaults for every optional TradePosition field
+    so broker-specific builds that omit fields (e.g. commission) never crash.
+    """
     if not MT5_AVAILABLE:
         return []
     positions = mt5.positions_get(symbol=symbol) if symbol \
@@ -188,11 +183,13 @@ def get_open_positions(symbol: str = None) -> list:
             "sl":          p.sl,
             "tp":          p.tp,
             "profit":      p.profit,
-            "swap":        p.swap,
-            "commission":  p.commission,
-            "magic":       p.magic,
-            "comment":     p.comment,
-            "open_time":   p.time,
+            "swap":        getattr(p, "swap",       0.0),
+            "commission":  getattr(p, "commission", 0.0),
+            "magic":       getattr(p, "magic",      0),
+            "comment":     getattr(p, "comment",    ""),
+            "open_time":   getattr(p, "time",       0),
+            "identifier":  getattr(p, "identifier", 0),
+            "reason":      getattr(p, "reason",     0),
         })
     return result
 
@@ -209,16 +206,16 @@ def get_history_deals(days_back: int = 30) -> list:
         return []
     return [
         {
-            "ticket":   d.ticket,
-            "order":    d.order,
-            "symbol":   d.symbol,
-            "type":     d.type,
-            "volume":   d.volume,
-            "price":    d.price,
-            "profit":   d.profit,
-            "swap":     d.swap,
-            "time":     d.time,
-            "comment":  d.comment,
+            "ticket":  d.ticket,
+            "order":   d.order,
+            "symbol":  d.symbol,
+            "type":    d.type,
+            "volume":  d.volume,
+            "price":   d.price,
+            "profit":  d.profit,
+            "swap":    getattr(d, "swap",    0.0),
+            "time":    d.time,
+            "comment": getattr(d, "comment", ""),
         }
         for d in deals
     ]
@@ -233,10 +230,10 @@ class BarStreamer:
 
     def __init__(self, symbol: str, timeframe_str: str,
                  on_new_bar: Callable, poll_interval: float = 1.0):
-        self.symbol        = symbol
-        self.timeframe_str = timeframe_str
-        self.callback      = on_new_bar
-        self.poll_interval = poll_interval
+        self.symbol         = symbol
+        self.timeframe_str  = timeframe_str
+        self.callback       = on_new_bar
+        self.poll_interval  = poll_interval
         self._last_bar_time = None
         self._running       = False
         self._thread: Optional[threading.Thread] = None

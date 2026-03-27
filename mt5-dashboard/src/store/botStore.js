@@ -4,6 +4,10 @@ import axios from 'axios'
 const API = 'http://localhost:8000'
 const WS  = 'ws://localhost:8000/ws'
 
+let reconnectAttempts = 0
+const MAX_RECONNECT = 10
+const backoffDelay  = (n) => Math.min(1000 * 2 ** n, 30000) // 1s, 2s, 4s … capped at 30s
+
 const useBotStore = create((set, get) => ({
   connected:      false,
   wsError:        null,
@@ -17,10 +21,29 @@ const useBotStore = create((set, get) => ({
   stats:          null,
   statsLoading:   false,
   activePage:     'dashboard',
-  setActivePage:  (page) => set({ activePage: page }),
+  botRunning:     false,
+
+  setActivePage: (page) => set({ activePage: page }),
+
+  startBot: async () => {
+    try {
+      await axios.post(`${API}/bot/start`)
+      set({ botRunning: true })
+    } catch (err) {
+      console.warn('Failed to start bot:', err)
+    }
+  },
+
+  stopBot: async () => {
+    try {
+      await axios.post(`${API}/bot/stop`)
+      set({ botRunning: false })
+    } catch (err) {
+      console.warn('Failed to stop bot:', err)
+    }
+  },
 
   connect: () => {
-    // Don't create a new socket if one is already open or connecting
     const existing = get().ws
     if (existing && (existing.readyState === WebSocket.OPEN ||
                      existing.readyState === WebSocket.CONNECTING)) {
@@ -31,6 +54,7 @@ const useBotStore = create((set, get) => ({
     const ws = new WebSocket(WS)
 
     ws.onopen = () => {
+      reconnectAttempts = 0
       set({ connected: true, wsError: null })
       get().fetchAccount()
       get().fetchPositions()
@@ -38,15 +62,19 @@ const useBotStore = create((set, get) => ({
 
     ws.onclose = (e) => {
       set({ connected: false, ws: null })
-      // Only auto-reconnect on abnormal closure (not intentional close)
       if (e.code !== 1000) {
-        setTimeout(() => get().connect(), 3000)
+        if (reconnectAttempts >= MAX_RECONNECT) {
+          set({ wsError: `Backend unreachable after ${MAX_RECONNECT} attempts — start your Python server then refresh.` })
+          return
+        }
+        const delay = backoffDelay(reconnectAttempts)
+        reconnectAttempts++
+        setTimeout(() => get().connect(), delay)
       }
     }
 
     ws.onerror = () => {
-      set({ wsError: 'WebSocket error — is the bot running?' })
-      // Don't close here — onclose fires automatically after onerror
+      // onclose fires automatically after onerror — wsError is set there
     }
 
     ws.onmessage = (e) => {
@@ -55,9 +83,9 @@ const useBotStore = create((set, get) => ({
       const state = get()
 
       if (data.type === 'heartbeat') {
-        // Keep connected flag fresh and update account on every heartbeat
         set({ connected: true, wsError: null })
         if (data.account) set({ account: data.account })
+        if (typeof data.bot_running === 'boolean') set({ botRunning: data.bot_running })
         return
       }
 
@@ -126,8 +154,6 @@ const useBotStore = create((set, get) => ({
   },
 
   startPolling: () => {
-    // Fallback REST polling every 5s (positions + account)
-    // WebSocket heartbeat already keeps account fresh — this is a safety net
     setInterval(() => {
       get().fetchPositions()
       get().fetchAccount()

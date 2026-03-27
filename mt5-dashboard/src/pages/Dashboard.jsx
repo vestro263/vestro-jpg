@@ -20,7 +20,7 @@ const S = {
 }
 
 export default function Dashboard() {
-  const { account, signals, positions, tradeFeed, fetchPositions } = useBotStore()
+  const { account, signals, positions, tradeFeed, fetchPositions, botRunning, startBot, stopBot } = useBotStore()
 
   const latest = signals[0]
   const sig    = latest?.signal || {}
@@ -43,6 +43,61 @@ export default function Dashboard() {
 
       {/* 📰 NEWS */}
       <NewsBar />
+
+      {/* 🤖 BOT CONTROLS */}
+<div style={{
+  display: 'flex', alignItems: 'center', gap: 10,
+  background: '#111827', border: '1px solid #1f2937',
+  borderRadius: 12, padding: '12px 16px',
+}}>
+  <button
+    onClick={startBot}
+    disabled={botRunning}
+    style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7,
+      padding: '8px 16px', borderRadius: 8, border: 'none',
+      background: botRunning ? '#14532d' : '#16a34a',
+      color: '#fff', fontSize: 13, fontWeight: 600,
+      cursor: botRunning ? 'not-allowed' : 'pointer',
+      opacity: botRunning ? 0.5 : 1, transition: 'opacity 0.15s',
+    }}
+  >
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+      <polygon points="2,1 11,6 2,11"/>
+    </svg>
+    Run Bot
+  </button>
+
+  <button
+    onClick={stopBot}
+    disabled={!botRunning}
+    style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7,
+      padding: '8px 16px', borderRadius: 8, border: 'none',
+      background: !botRunning ? '#450a0a' : '#dc2626',
+      color: '#fff', fontSize: 13, fontWeight: 600,
+      cursor: !botRunning ? 'not-allowed' : 'pointer',
+      opacity: !botRunning ? 0.45 : 1, transition: 'opacity 0.15s',
+    }}
+  >
+    <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+      <rect x="1.5" y="1.5" width="9" height="9" rx="1.5"/>
+    </svg>
+    Stop Bot
+  </button>
+
+  {/* Status indicator */}
+  <span style={{
+    width: 7, height: 7, borderRadius: '50%', marginLeft: 4,
+    background: botRunning ? '#4ade80' : '#4b5563',
+    boxShadow: botRunning ? '0 0 6px #4ade80' : 'none',
+    transition: 'all 0.3s',
+    display: 'inline-block',
+  }}/>
+  <span style={{ fontSize: 12, color: '#6b7280' }}>
+    {botRunning ? 'Bot is running…' : 'Bot is stopped'}
+  </span>
+</div>
 
       {/* 📊 STATS */}
       <div style={S.grid4}>
