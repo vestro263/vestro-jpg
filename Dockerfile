@@ -15,4 +15,4 @@ COPY . .
 EXPOSE 10000
 
 # Start FastAPI via Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+CMD ["uvicorn", "VESTRO-BACKEND.app.main:app", "--host", "0.0.0.0", "--port", "10000"]
