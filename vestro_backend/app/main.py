@@ -5,14 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.config import get_settings
+from vestro_backend.app.config import get_settings
 from app.db import init_db, AsyncSessionLocal
 from app.routes.api import router as api_router
 from app.routes.stream import router as stream_router
 from app.workers.scheduler import create_scheduler
 from app.scrapers import news
 from app.pipeline.scorer import score_all_firms
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
