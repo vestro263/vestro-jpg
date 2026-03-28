@@ -1,33 +1,48 @@
 import { create } from 'zustand'
 import axios from 'axios'
 
+// ✅ Base URL (no /api here)
 const API = 'https://vestro-jpg.onrender.com'
-const ws = new WebSocket("wss://vestro-jpg.onrender.com/api/ws");
+
+// ✅ WebSocket URL
+const WS_URL = 'wss://vestro-jpg.onrender.com/api/ws'
 
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10
-const backoffDelay  = (n) => Math.min(1000 * 2 ** n, 30000) // 1s, 2s, 4s … capped at 30s
+const backoffDelay = (n) => Math.min(1000 * 2 ** n, 30000)
 
 const useBotStore = create((set, get) => ({
-  connected:      false,
-  wsError:        null,
-  ws:             null,
-  account:        { balance:0, equity:0, profit:0, margin_free:0, currency:'USD', name:'—', leverage:0 },
-  signals:        [],
-  positions:      [],
-  tradeFeed:      [],
-  journal:        [],
+  connected: false,
+  wsError: null,
+  ws: null,
+
+  account: {
+    balance: 0,
+    equity: 0,
+    profit: 0,
+    margin_free: 0,
+    currency: 'USD',
+    name: '—',
+    leverage: 0
+  },
+
+  signals: [],
+  positions: [],
+  tradeFeed: [],
+  journal: [],
   journalLoading: false,
-  stats:          null,
-  statsLoading:   false,
-  activePage:     'dashboard',
-  botRunning:     false,
+  stats: null,
+  statsLoading: false,
+  activePage: 'dashboard',
+  botRunning: false,
 
   setActivePage: (page) => set({ activePage: page }),
 
+  // ── BOT CONTROL ─────────────────────────
+
   startBot: async () => {
     try {
-      await axios.post(`${API}/bot/start`)
+      await axios.post(`${API}/api/bot/start`)
       set({ botRunning: true })
     } catch (err) {
       console.warn('Failed to start bot:', err)
@@ -36,107 +51,125 @@ const useBotStore = create((set, get) => ({
 
   stopBot: async () => {
     try {
-      await axios.post(`${API}/bot/stop`)
+      await axios.post(`${API}/api/bot/stop`)
       set({ botRunning: false })
     } catch (err) {
       console.warn('Failed to stop bot:', err)
     }
   },
 
+  // ── WEBSOCKET ───────────────────────────
+
   connect: () => {
     const existing = get().ws
-    if (existing && (existing.readyState === WebSocket.OPEN ||
-                     existing.readyState === WebSocket.CONNECTING)) {
+
+    if (
+      existing &&
+      (existing.readyState === WebSocket.OPEN ||
+        existing.readyState === WebSocket.CONNECTING)
+    ) {
       return
     }
+
     if (existing) existing.close()
 
-    const ws = new WebSocket(WS)
+    const ws = new WebSocket(WS_URL) // ✅ FIXED
 
     ws.onopen = () => {
       reconnectAttempts = 0
       set({ connected: true, wsError: null })
+
       get().fetchAccount()
       get().fetchPositions()
     }
 
     ws.onclose = (e) => {
       set({ connected: false, ws: null })
+
       if (e.code !== 1000) {
         if (reconnectAttempts >= MAX_RECONNECT) {
-          set({ wsError: `Backend unreachable after ${MAX_RECONNECT} attempts — start your Python server then refresh.` })
+          set({
+            wsError: `Backend unreachable after ${MAX_RECONNECT} attempts`
+          })
           return
         }
+
         const delay = backoffDelay(reconnectAttempts)
         reconnectAttempts++
+
         setTimeout(() => get().connect(), delay)
       }
     }
 
-    ws.onerror = () => {
-      // onclose fires automatically after onerror — wsError is set there
-    }
+    ws.onerror = () => {}
 
     ws.onmessage = (e) => {
       let data
-      try { data = JSON.parse(e.data) } catch { return }
+      try {
+        data = JSON.parse(e.data)
+      } catch {
+        return
+      }
+
       const state = get()
 
       if (data.type === 'heartbeat') {
         set({ connected: true, wsError: null })
+
         if (data.account) set({ account: data.account })
-        if (typeof data.bot_running === 'boolean') set({ botRunning: data.bot_running })
+        if (typeof data.bot_running === 'boolean') {
+          set({ botRunning: data.bot_running })
+        }
         return
       }
 
       if (data.type === 'signal') {
         const entry = {
           ...data,
-          id:         Date.now() + Math.random(),
-          receivedAt: new Date().toLocaleTimeString(),
+          id: Date.now() + Math.random(),
+          receivedAt: new Date().toLocaleTimeString()
         }
+
         set({ signals: [entry, ...state.signals].slice(0, 100) })
-        if (data.account) set({ account: { ...state.account, ...data.account } })
       }
 
       if (data.type === 'tp1_hit' || data.trade) {
         const item = {
           ...data,
-          id:   Date.now() + Math.random(),
-          time: new Date().toLocaleTimeString(),
+          id: Date.now() + Math.random(),
+          time: new Date().toLocaleTimeString()
         }
+
         set({ tradeFeed: [item, ...state.tradeFeed].slice(0, 200) })
         get().fetchPositions()
-      }
-
-      if (data.type === 'error') {
-        console.warn('Bot error:', data.error)
       }
     }
 
     set({ ws })
   },
 
+  // ── API CALLS ───────────────────────────
+
   fetchAccount: async () => {
     try {
-      const { data } = await axios.get(`${API}/account`)
-      if (data && !data.error) set({ account: data })
+      const { data } = await axios.get(`${API}/api/account`) // ✅ FIXED
+      set({ account: data })
     } catch {}
   },
 
   fetchPositions: async () => {
     try {
-      const { data } = await axios.get(`${API}/positions`)
+      const { data } = await axios.get(`${API}/api/positions`) // ✅ FIXED
       set({ positions: Array.isArray(data) ? data : [] })
     } catch {}
   },
 
   fetchJournal: async (limit = 50) => {
     set({ journalLoading: true })
+
     try {
-      const { data } = await axios.get(`${API}/journal?limit=${limit}`)
+      const { data } = await axios.get(`${API}/api/journal?limit=${limit}`) // ✅ FIXED
       set({ journal: Array.isArray(data) ? data : [] })
-    } catch {
     } finally {
       set({ journalLoading: false })
     }
@@ -144,10 +177,10 @@ const useBotStore = create((set, get) => ({
 
   fetchStats: async (days = 30) => {
     set({ statsLoading: true })
+
     try {
-      const { data } = await axios.get(`${API}/stats?days=${days}`)
+      const { data } = await axios.get(`${API}/api/stats?days=${days}`) // ✅ FIXED
       set({ stats: data })
-    } catch {
     } finally {
       set({ statsLoading: false })
     }
@@ -158,7 +191,7 @@ const useBotStore = create((set, get) => ({
       get().fetchPositions()
       get().fetchAccount()
     }, 5000)
-  },
+  }
 }))
 
 export default useBotStore
