@@ -1,53 +1,70 @@
-import { useEffect } from 'react'
-import useBotStore from './store/botStore'
-import Sidebar     from './components/Sidebar'
-import AccountBar  from './components/AccountBar'
-import Dashboard   from './pages/Dashboard'
-import Signals     from './pages/Signals'
-import Positions   from './pages/Positions'
-import Journal     from './pages/Journal'
+import { useState, useEffect } from 'react'
+import Sidebar from './components/Sidebar'
+import Dashboard from './pages/Dashboard'
+import Signals from './pages/Signals'
+import Positions from './pages/Positions'
+import Journal from './pages/Journal'
 import Performance from './pages/Performance'
-import Valuation   from './pages/Valuation'
+import Valuation from './pages/Valuation'
+import useBotStore from './store/botStore'
+
+function useIsMobile(bp = 768) {
+  const [m, setM] = useState(() => window.innerWidth < bp)
+  useEffect(() => {
+    const h = () => setM(window.innerWidth < bp)
+    window.addEventListener('resize', h)
+    return () => window.removeEventListener('resize', h)
+  }, [bp])
+  return m
+}
 
 const PAGES = {
-  dashboard:  Dashboard,
+  dashboard: Dashboard,
   valuations: Valuation,
-  signals:    Signals,
-  positions:  Positions,
-  journal:    Journal,
-  stats:      Performance,
+  signals: Signals,
+  positions: Positions,
+  journal: Journal,
+  stats: Performance,
 }
 
 export default function App() {
-  const { activePage, connect, startPolling, wsError } = useBotStore()
-  const Page = PAGES[activePage] || Dashboard
+  const { activePage } = useBotStore()
+  const isMobile = useIsMobile()
+  const Page = PAGES[activePage] ?? Dashboard
 
-  useEffect(() => {
-    connect()
-    startPolling()
-  }, [])
+  if (isMobile) {
+    return (
+      // Full-screen column: top bar | scrollable content | bottom tabs
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: '100dvh',          // dvh respects mobile browser chrome
+        background: '#030712',
+      }}>
+        {/* Sidebar renders ONLY the top bar + bottom tab bar on mobile */}
+        <Sidebar />
 
-  return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: '#030712' }}>
-      <Sidebar />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-        <AccountBar />
-        {wsError && (
-          <div style={{
-            background: '#1c0a0a', borderBottom: '1px solid #3b0000',
-            padding: '8px 24px', fontSize: 12, color: '#f87171',
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}>
-            <span style={{ fontWeight: 600 }}>Connection error:</span> {wsError}
-            <span style={{ marginLeft: 8, color: '#6b7280' }}>
-              Retrying automatically…
-            </span>
-          </div>
-        )}
-        <main style={{ flex: 1, overflowY: 'auto' }}>
+        {/* Scrollable page content — padded so it clears the bottom tab bar */}
+        <main style={{
+          flex: 1,
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+          // 52px tab bar + safe-area bottom inset
+          paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))',
+        }}>
           <Page />
         </main>
       </div>
+    )
+  }
+
+  // Desktop: side-by-side
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', background: '#030712' }}>
+      <Sidebar />
+      <main style={{ flex: 1, overflowY: 'auto' }}>
+        <Page />
+      </main>
     </div>
   )
 }
