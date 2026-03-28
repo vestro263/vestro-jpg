@@ -14,10 +14,10 @@ beautifulsoup4==4.12.3
 lxml==5.2.1
 
 # ML
-scikit-learn==1.4.2
+
 shap==0.45.1
 pandas==2.2.2
-numpy==1.26.4
+
 joblib==1.4.2
 
 # Scheduling
@@ -28,3 +28,6 @@ python-dotenv==1.0.1
 tenacity==8.3.0
 psycopg2-binary
 asyncpg
+
+numpy>=1.26,<2.0
+scikit-learn>=1.4,<1.5
