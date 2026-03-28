@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import axios from 'axios'
 
 const API = 'https://vestro-jpg.onrender.com'
-
+const ws = new WebSocket("wss://vestro-jpg.onrender.com/api/ws");
 
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10
