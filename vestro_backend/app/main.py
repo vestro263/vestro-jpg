@@ -42,11 +42,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_list,
+    allow_origins=[
+        "https://vestro-ui.onrender.com",
+        "http://localhost:5173",  # optional for dev
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 app.include_router(api_router)
 app.include_router(stream_router)
