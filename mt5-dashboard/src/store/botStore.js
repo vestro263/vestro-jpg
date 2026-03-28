@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
-const WS  = 'ws://localhost:8000/ws'
+const API = 'https://vestro-jpg.onrender.com'
+
 
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10

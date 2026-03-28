@@ -1,291 +1,152 @@
 """
-MT5 Connector — handles all MetaTrader 5 communication.
-Provides connection management, OHLCV fetching, and real-time bar streaming.
+MT5 Connector — LOCAL bridge to send MT5 data to remote API (Render)
 """
 
-import os
 import time
 import logging
 import threading
-from typing import Callable, Optional
-import pandas as pd
+from typing import Optional
+import requests
 
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
 except ImportError:
     MT5_AVAILABLE = False
-    logging.warning("MetaTrader5 package not installed. Running in DEMO mode.")
+    logging.warning("MetaTrader5 not installed. Running in DEMO mode.")
 
 logger = logging.getLogger(__name__)
 
-# ── Timeframe mapping ──────────────────────────────────────────────────────
-TF_MAP = {
-    "M1":  1,
-    "M5":  5,
-    "M15": 15,
-    "M30": 30,
-    "H1":  16385,
-    "H4":  16388,
-    "D1":  16408,
-    "W1":  32769,
-    "MN1": 49153,
-}
+# 🔥 CHANGE THIS TO YOUR LIVE API
+API_URL = "https://vestro-jpg.onrender.com/api"
+# ─────────────────────────────────────────────────────────────
+# CONNECTION
+# ─────────────────────────────────────────────────────────────
 
-def get_tf(name: str):
-    """Return MT5 timeframe constant from string name."""
+def connect(login: int = None, password: str = None, server: str = None):
     if not MT5_AVAILABLE:
-        return TF_MAP.get(name, 16385)
-    tf_map = {
-        "M1":  mt5.TIMEFRAME_M1,
-        "M5":  mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15,
-        "M30": mt5.TIMEFRAME_M30,
-        "H1":  mt5.TIMEFRAME_H1,
-        "H4":  mt5.TIMEFRAME_H4,
-        "D1":  mt5.TIMEFRAME_D1,
-        "W1":  mt5.TIMEFRAME_W1,
-        "MN1": mt5.TIMEFRAME_MN1,
-    }
-    return tf_map.get(name.upper(), mt5.TIMEFRAME_H1)
+        return {"status": "demo"}
 
-
-def connect(login: int = None, password: str = None, server: str = None) -> dict:
-    import MetaTrader5 as mt5
-    import time
-    import os
-
-    login    = login    or int(os.getenv("MT5_LOGIN", "0"))
-    password = password or os.getenv("MT5_PASSWORD", "")
-    server   = server   or os.getenv("MT5_SERVER", "")
-
-    for attempt in range(5):
+    for _ in range(5):
         mt5.shutdown()
         time.sleep(2)
 
         if mt5.initialize(login=login, password=password, server=server):
             info = mt5.account_info()
             if info:
-                print("✅ MT5 Connected:", info.login)
+                logger.info(f"✅ MT5 Connected: {info.login}")
                 return info._asdict()
 
-        print("❌ MT5 retry:", mt5.last_error())
+        logger.error(f"❌ MT5 retry: {mt5.last_error()}")
 
-    raise RuntimeError("MT5 failed to connect")
+    raise RuntimeError("MT5 connection failed")
 
 
 def disconnect():
-    """Cleanly shut down MT5 connection."""
     if MT5_AVAILABLE:
         mt5.shutdown()
-        logger.info("MT5 disconnected.")
+        logger.info("MT5 disconnected")
 
+
+# ─────────────────────────────────────────────────────────────
+# DATA FETCHING
+# ─────────────────────────────────────────────────────────────
 
 def get_account_info() -> dict:
-    """Return current account balance, equity, profit."""
     if not MT5_AVAILABLE:
-        return {"balance": 10000.0, "equity": 10000.0,
-                "profit": 0.0, "currency": "USD",
-                "name": "DEMO", "login": 0}
+        return {
+            "balance": 10000,
+            "equity": 10000,
+            "profit": 0,
+            "currency": "USD"
+        }
+
     info = mt5.account_info()
     if info is None:
         return {}
+
     return {
-        "login":       info.login,
-        "name":        info.name,
-        "server":      info.server,
-        "balance":     info.balance,
-        "equity":      info.equity,
-        "profit":      info.profit,
-        "margin":      info.margin,
+        "login": info.login,
+        "balance": info.balance,
+        "equity": info.equity,
+        "profit": info.profit,
+        "margin": info.margin,
         "margin_free": info.margin_free,
-        "currency":    info.currency,
-        "leverage":    info.leverage,
+        "currency": info.currency,
+        "leverage": info.leverage,
+        "name": info.name
     }
 
 
-# ── OHLCV fetching ─────────────────────────────────────────────────────────
-def get_ohlcv(symbol: str, timeframe_str: str, count: int = 500) -> pd.DataFrame:
-    """
-    Fetch OHLCV bars from MT5.
-    Returns DataFrame with columns: time, open, high, low, close, volume.
-    """
-    if not MT5_AVAILABLE:
-        return _mock_ohlcv(symbol, count)
-
-    tf = get_tf(timeframe_str)
-    rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
-    if rates is None or len(rates) == 0:
-        raise ValueError(
-            f"No data for {symbol}/{timeframe_str}: {mt5.last_error()}"
-        )
-
-    df = pd.DataFrame(rates)
-    df["time"] = pd.to_datetime(df["time"], unit="s")
-    df = df.rename(columns={"tick_volume": "volume"})
-    df = df[["time", "open", "high", "low", "close", "volume"]].copy()
-    df = df.sort_values("time").reset_index(drop=True)
-    return df
-
-
-def get_symbol_info(symbol: str) -> dict:
-    """Return symbol metadata: point, digits, pip_value etc."""
-    if not MT5_AVAILABLE:
-        return {"point": 0.00001, "digits": 5,
-                "trade_tick_value": 1.0, "trade_tick_size": 0.00001,
-                "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01}
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        raise ValueError(f"Symbol not found: {symbol}")
-    return {
-        "point":            info.point,
-        "digits":           info.digits,
-        "trade_tick_value": info.trade_tick_value,
-        "trade_tick_size":  info.trade_tick_size,
-        "volume_min":       info.volume_min,
-        "volume_max":       info.volume_max,
-        "volume_step":      info.volume_step,
-        "spread":           info.spread,
-    }
-
-
-def get_tick(symbol: str) -> dict:
-    """Return latest bid/ask tick."""
-    if not MT5_AVAILABLE:
-        return {"bid": 1.10000, "ask": 1.10002, "time": time.time()}
-    tick = mt5.symbol_info_tick(symbol)
-    if tick is None:
-        raise ValueError(f"No tick for {symbol}: {mt5.last_error()}")
-    return {"bid": tick.bid, "ask": tick.ask, "time": tick.time}
-
-
-def get_open_positions(symbol: str = None) -> list:
-    """
-    Return list of open positions, optionally filtered by symbol.
-    Uses getattr() with safe defaults for every optional TradePosition field
-    so broker-specific builds that omit fields (e.g. commission) never crash.
-    """
+def get_open_positions() -> list:
     if not MT5_AVAILABLE:
         return []
-    positions = mt5.positions_get(symbol=symbol) if symbol \
-                else mt5.positions_get()
+
+    positions = mt5.positions_get()
     if positions is None:
         return []
+
     result = []
     for p in positions:
         result.append({
-            "ticket":      p.ticket,
-            "symbol":      p.symbol,
-            "type":        "buy" if p.type == 0 else "sell",
-            "volume":      p.volume,
-            "open_price":  p.price_open,
-            "current":     p.price_current,
-            "sl":          p.sl,
-            "tp":          p.tp,
-            "profit":      p.profit,
-            "swap":        getattr(p, "swap",       0.0),
-            "commission":  getattr(p, "commission", 0.0),
-            "magic":       getattr(p, "magic",      0),
-            "comment":     getattr(p, "comment",    ""),
-            "open_time":   getattr(p, "time",       0),
-            "identifier":  getattr(p, "identifier", 0),
-            "reason":      getattr(p, "reason",     0),
+            "ticket": p.ticket,
+            "symbol": p.symbol,
+            "type": "buy" if p.type == 0 else "sell",
+            "volume": p.volume,
+            "open_price": p.price_open,
+            "current": p.price_current,
+            "profit": p.profit,
+            "sl": p.sl,
+            "tp": p.tp,
         })
     return result
 
 
-def get_history_deals(days_back: int = 30) -> list:
-    """Return closed deals from the past N days."""
-    if not MT5_AVAILABLE:
-        return []
-    from datetime import datetime, timedelta
-    date_from = datetime.now() - timedelta(days=days_back)
-    date_to   = datetime.now()
-    deals = mt5.history_deals_get(date_from, date_to)
-    if deals is None:
-        return []
-    return [
-        {
-            "ticket":  d.ticket,
-            "order":   d.order,
-            "symbol":  d.symbol,
-            "type":    d.type,
-            "volume":  d.volume,
-            "price":   d.price,
-            "profit":  d.profit,
-            "swap":    getattr(d, "swap",    0.0),
-            "time":    d.time,
-            "comment": getattr(d, "comment", ""),
-        }
-        for d in deals
-    ]
+# ─────────────────────────────────────────────────────────────
+# 🔥 PUSH TO API (IMPORTANT PART)
+# ─────────────────────────────────────────────────────────────
+
+def push_account():
+    try:
+        data = get_account_info()
+        requests.post(f"{API_URL}/account/update", json=data, timeout=5)
+        logger.info("📤 Account pushed")
+    except Exception as e:
+        logger.error(f"Account push failed: {e}")
 
 
-# ── Real-time bar streamer ─────────────────────────────────────────────────
-class BarStreamer:
-    """
-    Polls MT5 every `poll_interval` seconds.
-    Calls `on_new_bar(symbol, df)` whenever a new bar closes.
-    """
-
-    def __init__(self, symbol: str, timeframe_str: str,
-                 on_new_bar: Callable, poll_interval: float = 1.0):
-        self.symbol         = symbol
-        self.timeframe_str  = timeframe_str
-        self.callback       = on_new_bar
-        self.poll_interval  = poll_interval
-        self._last_bar_time = None
-        self._running       = False
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self):
-        self._running = True
-        self._thread  = threading.Thread(
-            target=self._loop, daemon=True,
-            name=f"BarStreamer-{self.symbol}-{self.timeframe_str}"
-        )
-        self._thread.start()
-        logger.info(f"BarStreamer started: {self.symbol} {self.timeframe_str}")
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=5)
-        logger.info(f"BarStreamer stopped: {self.symbol} {self.timeframe_str}")
-
-    def _loop(self):
-        while self._running:
-            try:
-                df = get_ohlcv(self.symbol, self.timeframe_str, 500)
-                if df is not None and len(df) > 0:
-                    latest_time = df["time"].iloc[-1]
-                    if latest_time != self._last_bar_time:
-                        if self._last_bar_time is not None:
-                            # New bar just closed — trigger callback
-                            self.callback(self.symbol, df)
-                        self._last_bar_time = latest_time
-            except Exception as e:
-                logger.error(f"BarStreamer {self.symbol} error: {e}")
-            time.sleep(self.poll_interval)
+def push_positions():
+    try:
+        data = get_open_positions()
+        requests.post(f"{API_URL}/positions/update", json=data, timeout=5)
+        logger.info("📤 Positions pushed")
+    except Exception as e:
+        logger.error(f"Positions push failed: {e}")
 
 
-# ── Mock data for offline testing ──────────────────────────────────────────
-def _mock_ohlcv(symbol: str, count: int = 500) -> pd.DataFrame:
-    """Generate synthetic OHLCV data for offline testing."""
-    import numpy as np
-    np.random.seed(hash(symbol) % 2**32)
-    dates  = pd.date_range(end=pd.Timestamp.now(), periods=count, freq="h")
-    close  = 1.1000 + np.cumsum(np.random.randn(count) * 0.0005)
-    spread = 0.0002
-    high   = close + np.abs(np.random.randn(count) * 0.0010)
-    low    = close - np.abs(np.random.randn(count) * 0.0010)
-    open_  = close + np.random.randn(count) * 0.0003
-    volume = np.random.randint(1000, 5000, count).astype(float)
-    return pd.DataFrame({
-        "time":   dates,
-        "open":   open_,
-        "high":   high,
-        "low":    low,
-        "close":  close,
-        "volume": volume,
-    })
+# ─────────────────────────────────────────────────────────────
+# 🔁 BACKGROUND LOOP
+# ─────────────────────────────────────────────────────────────
+
+def start_push_loop(interval=5):
+    def loop():
+        while True:
+            push_account()
+            push_positions()
+            time.sleep(interval)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    logger.info("🚀 MT5 push loop started")
+
+
+# ─────────────────────────────────────────────────────────────
+# 🚀 ENTRY POINT
+# ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    connect()
+    start_push_loop()
+
+    while True:
+        time.sleep(1)

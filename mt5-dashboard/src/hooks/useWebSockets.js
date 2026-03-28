@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useCallback } from 'react'
 
-const DEFAULT_URL     = 'ws://localhost:8000/ws'
+const DEFAULT_URL     = 'https://vestro-jpg.onrender.com'
 const MAX_RETRY_DELAY = 30_000   // 30 seconds max
 const INIT_DELAY      = 1_000    // 1 second initial
 
