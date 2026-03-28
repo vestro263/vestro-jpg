@@ -5,8 +5,12 @@ MT5 Connector — LOCAL bridge to send MT5 data to remote API (Render)
 import time
 import logging
 import threading
-from typing import Optional
+import os
 import requests
+from dotenv import load_dotenv
+
+# ✅ Load env from parent folder (forex-bot/.env)
+load_dotenv(os.path.join(os.path.dirname(__file__), "../.env"))
 
 try:
     import MetaTrader5 as mt5
@@ -16,14 +20,17 @@ except ImportError:
     logging.warning("MetaTrader5 not installed. Running in DEMO mode.")
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# 🔥 CHANGE THIS TO YOUR LIVE API
+# 🔥 Your deployed API
 API_URL = "https://vestro-jpg.onrender.com/api"
+
+
 # ─────────────────────────────────────────────────────────────
 # CONNECTION
 # ─────────────────────────────────────────────────────────────
 
-def connect(login: int = None, password: str = None, server: str = None):
+def connect(login: int, password: str, server: str):
     if not MT5_AVAILABLE:
         return {"status": "demo"}
 
@@ -86,9 +93,8 @@ def get_open_positions() -> list:
     if positions is None:
         return []
 
-    result = []
-    for p in positions:
-        result.append({
+    return [
+        {
             "ticket": p.ticket,
             "symbol": p.symbol,
             "type": "buy" if p.type == 0 else "sell",
@@ -98,12 +104,13 @@ def get_open_positions() -> list:
             "profit": p.profit,
             "sl": p.sl,
             "tp": p.tp,
-        })
-    return result
+        }
+        for p in positions
+    ]
 
 
 # ─────────────────────────────────────────────────────────────
-# 🔥 PUSH TO API (IMPORTANT PART)
+# PUSH TO API
 # ─────────────────────────────────────────────────────────────
 
 def push_account():
@@ -125,7 +132,7 @@ def push_positions():
 
 
 # ─────────────────────────────────────────────────────────────
-# 🔁 BACKGROUND LOOP
+# BACKGROUND LOOP
 # ─────────────────────────────────────────────────────────────
 
 def start_push_loop(interval=5):
@@ -141,12 +148,24 @@ def start_push_loop(interval=5):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🚀 ENTRY POINT
+# ENTRY POINT
 # ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    connect()
-    start_push_loop()
+    try:
+        # ✅ Read credentials from .env
+        login = int(os.getenv("MT5_LOGIN"))
+        password = os.getenv("MT5_PASSWORD")
+        server = os.getenv("MT5_SERVER")
 
-    while True:
-        time.sleep(1)
+        print("🔐 LOGIN:", login)
+        print("🌐 SERVER:", server)
+
+        connect(login=login, password=password, server=server)
+        start_push_loop()
+
+        while True:
+            time.sleep(1)
+
+    except Exception as e:
+        logger.error(f"🔥 Fatal error: {e}")
