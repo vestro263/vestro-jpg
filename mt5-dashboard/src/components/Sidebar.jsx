@@ -20,8 +20,8 @@ function useIsMobile(bp = 768) {
   return m
 }
 
-// ── Desktop sidebar ────────────────────────────────────────────────────────────
-function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopBot }) {
+// ── Desktop sidebar ─────────────────────────────────────────────────────────
+function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopBot, account, broker, logout }) {
   return (
     <div style={{
       width: 200, minHeight: '100vh',
@@ -29,12 +29,38 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
       display: 'flex', flexDirection: 'column',
       padding: '20px 0', gap: 4, flexShrink: 0,
     }}>
+
       {/* Logo */}
       <div style={{ padding: '0 20px 20px', borderBottom: '1px solid #1f2937', marginBottom: 8 }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: '#38bdf8', letterSpacing: '0.05em' }}>
           ⚡ Vestro
         </div>
         <div style={{ fontSize: 11, color: '#4b5563', marginTop: 2 }}>MT5 Dashboard</div>
+      </div>
+
+      {/* ── NEW: account pill ── */}
+      <div style={{
+        margin: '0 10px 8px',
+        padding: '10px 12px',
+        background: '#111827',
+        borderRadius: 8,
+        border: '1px solid #1f2937',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+            background: '#4ade80', boxShadow: '0 0 6px #4ade80',
+          }} />
+          <span style={{ fontSize: 11, color: '#4ade80', fontWeight: 600 }}>
+            {broker?.toUpperCase() ?? 'CONNECTED'}
+          </span>
+        </div>
+        <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, letterSpacing: '-0.2px' }}>
+          {account?.currency} {Number(account?.balance ?? 0).toFixed(2)}
+        </div>
+        <div style={{ fontSize: 11, color: '#4b5563', marginTop: 1 }}>
+          {account?.name ?? '—'}
+        </div>
       </div>
 
       {/* Nav */}
@@ -62,8 +88,10 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
         )
       })}
 
-      {/* Kill switch */}
-      <div style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid #1f2937', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Bottom: bot toggle + logout */}
+      <div style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid #1f2937', display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+        {/* Bot kill switch — unchanged */}
         <button
           onClick={botRunning ? stopBot : startBot}
           style={{
@@ -76,12 +104,12 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
             transition: 'all 0.15s',
           }}
           onMouseEnter={e => {
-            e.currentTarget.style.background   = botRunning ? '#2d0f0f' : '#0d2a13'
-            e.currentTarget.style.borderColor  = botRunning ? '#dc2626' : '#16a34a'
+            e.currentTarget.style.background  = botRunning ? '#2d0f0f' : '#0d2a13'
+            e.currentTarget.style.borderColor = botRunning ? '#dc2626' : '#16a34a'
           }}
           onMouseLeave={e => {
-            e.currentTarget.style.background   = botRunning ? '#1c0a0a' : '#0a1c0e'
-            e.currentTarget.style.borderColor  = botRunning ? '#7f1d1d' : '#14532d'
+            e.currentTarget.style.background  = botRunning ? '#1c0a0a' : '#0a1c0e'
+            e.currentTarget.style.borderColor = botRunning ? '#7f1d1d' : '#14532d'
           }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
@@ -92,6 +120,7 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
           {botRunning ? 'Kill Bot' : 'Start Bot'}
         </button>
 
+        {/* Status dot */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 4, fontSize: 11, color: '#4b5563' }}>
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
@@ -101,14 +130,46 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
           }} />
           {botRunning ? 'Bot running' : 'Bot stopped'}
         </div>
+
+        {/* ── NEW: logout button ── */}
+        <button
+          onClick={logout}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            width: '100%', padding: '8px 12px', borderRadius: 8,
+            border: '1px solid #1f2937',
+            cursor: 'pointer', fontSize: 12, fontWeight: 500,
+            color: '#4b5563', background: 'transparent',
+            transition: 'all 0.15s', marginTop: 2,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background  = '#111827'
+            e.currentTarget.style.color       = '#f87171'
+            e.currentTarget.style.borderColor = '#7f1d1d'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background  = 'transparent'
+            e.currentTarget.style.color       = '#4b5563'
+            e.currentTarget.style.borderColor = '#1f2937'
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          Disconnect
+        </button>
+
       </div>
     </div>
   )
 }
 
-// ── Mobile top bar + bottom tab bar ───────────────────────────────────────────
-function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot }) {
-  // Show 5 tabs; rest hidden (could add a "More" tab later)
+// ── Mobile top bar + bottom tab bar ─────────────────────────────────────────
+function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot, account, broker, logout }) {
+  const [showMenu, setShowMenu] = useState(false)
   const tabs = NAV.slice(0, 5)
 
   return (
@@ -124,7 +185,16 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
           ⚡ Vestro
         </div>
 
-        {/* Inline bot toggle */}
+        {/* ── NEW: balance chip ── */}
+        <div style={{
+          fontSize: 12, fontWeight: 600, color: '#f1f5f9',
+          background: '#111827', border: '1px solid #1f2937',
+          borderRadius: 6, padding: '4px 8px', letterSpacing: '-0.2px',
+        }}>
+          {account?.currency} {Number(account?.balance ?? 0).toFixed(2)}
+        </div>
+
+        {/* Bot toggle */}
         <button
           onClick={botRunning ? stopBot : startBot}
           style={{
@@ -133,8 +203,7 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
             border: `1px solid ${botRunning ? '#7f1d1d' : '#14532d'}`,
             background: botRunning ? '#1c0a0a' : '#0a1c0e',
             color: botRunning ? '#fca5a5' : '#86efac',
-            fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            minHeight: 36,
+            fontSize: 12, fontWeight: 600, cursor: 'pointer', minHeight: 36,
           }}
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
@@ -145,6 +214,27 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
           {botRunning ? 'Stop' : 'Start'}
         </button>
 
+        {/* ── NEW: logout icon button ── */}
+        <button
+          onClick={logout}
+          title="Disconnect"
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 34, height: 34, borderRadius: 7, flexShrink: 0,
+            border: '1px solid #1f2937', background: 'transparent',
+            color: '#4b5563', cursor: 'pointer',
+          }}
+          onTouchStart={e => e.currentTarget.style.color = '#f87171'}
+          onTouchEnd={e => e.currentTarget.style.color = '#4b5563'}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+
         {/* Status dot */}
         <span style={{
           width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
@@ -153,12 +243,12 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
         }} />
       </div>
 
-      {/* Bottom tab bar */}
+      {/* Bottom tab bar — unchanged */}
       <div style={{
         position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 50,
         background: '#0b1120', borderTop: '1px solid #1f2937',
         display: 'flex',
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)', // iPhone safe area
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
       }}>
         {tabs.map(({ key, icon, label }) => {
           const active = activePage === key
@@ -172,7 +262,7 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
               fontSize: 9, fontWeight: active ? 600 : 400,
               transition: 'color 0.15s',
               WebkitTapHighlightColor: 'transparent',
-              minHeight: 52,
+              minHeight: 52, position: 'relative',
             }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>{icon}</span>
               {label}
@@ -187,9 +277,14 @@ function MobileNav({ activePage, setActivePage, botRunning, startBot, stopBot })
   )
 }
 
-// ── Export ─────────────────────────────────────────────────────────────────────
+// ── Export ───────────────────────────────────────────────────────────────────
 export default function Sidebar() {
-  const { activePage, setActivePage, botRunning, startBot, stopBot } = useBotStore()
+  const {
+    activePage, setActivePage,
+    botRunning, startBot, stopBot,
+    account, broker, logout,          // ← add these three
+  } = useBotStore()
+
   const isMobile = useIsMobile()
 
   if (isMobile) {
@@ -200,6 +295,9 @@ export default function Sidebar() {
         botRunning={botRunning}
         startBot={startBot}
         stopBot={stopBot}
+        account={account}             // ← pass down
+        broker={broker}
+        logout={logout}
       />
     )
   }
@@ -211,6 +309,9 @@ export default function Sidebar() {
       botRunning={botRunning}
       startBot={startBot}
       stopBot={stopBot}
+      account={account}               // ← pass down
+      broker={broker}
+      logout={logout}
     />
   )
 }

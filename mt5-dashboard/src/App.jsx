@@ -7,6 +7,7 @@ import Journal from './pages/Journal'
 import Performance from './pages/Performance'
 import Valuation from './pages/Valuation'
 import useBotStore from './store/botStore'
+import Login from './pages/Login'
 
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
@@ -28,9 +29,17 @@ const PAGES = {
 }
 
 export default function App() {
-  const { activePage } = useBotStore()
+  const { activePage, isLoggedIn } = useBotStore()
   const isMobile = useIsMobile()
   const Page = PAGES[activePage] ?? Dashboard
+
+  if (!isLoggedIn) return <Login />
+      useEffect(() => {
+      if (isLoggedIn && !useBotStore.getState().connected) {
+        useBotStore.getState().connect()
+        useBotStore.getState().startPolling()
+      }
+    }, [isLoggedIn])
 
   if (isMobile) {
     return (
@@ -68,3 +77,4 @@ export default function App() {
     </div>
   )
 }
+
