@@ -236,3 +236,7 @@ def stop_bot():
 @router.get("/bot/status")
 def bot_status():
     return {"running": _bot_running}
+
+@router.get("/connect")
+async def connect():
+    return {"status": "connected", "service": "vestro-backend"}

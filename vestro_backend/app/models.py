@@ -75,3 +75,14 @@ class Score(Base):
     __table_args__ = (
         Index("ix_scores_conviction", "conviction"),
     )
+
+class Credentials(Base):
+    __tablename__ = "credentials"
+    id          = Column(Integer, primary_key=True)
+    user_id     = Column(String, unique=True, index=True)
+    broker      = Column(String)           # "deriv" | "welltrade"
+    login       = Column(String)           # encrypted
+    password    = Column(String)           # encrypted
+    server      = Column(String)           # encrypted
+    api_token   = Column(String)           # encrypted (Deriv token)
+    meta_account_id = Column(String)       # MetaApi account ID
