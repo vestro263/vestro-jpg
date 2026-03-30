@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.db import get_db
 from app.models import Firm, Signal, Score
-
+from pydantic import BaseModel
+from typing import Optional
 import json
 from typing import List
 
@@ -237,6 +238,40 @@ def stop_bot():
 def bot_status():
     return {"running": _bot_running}
 
-@router.get("/connect")
-async def connect():
-    return {"status": "connected", "service": "vestro-backend"}
+
+class ConnectRequest(BaseModel):
+    broker: str
+    login: str
+    password: str
+    server: Optional[str] = None
+    meta_account_id: Optional[str] = None
+
+@router.post("/connect")
+async def connect(payload: ConnectRequest):
+    if payload.broker == "deriv":
+        # TODO: validate Deriv PAT token against Deriv API
+        # For now, return a mock account so the UI can proceed
+        return {
+            "status": "connected",
+            "account": {
+                "account_id": payload.login,
+                "broker": "deriv",
+                "currency": "USD",
+                "balance": 0.0,
+            }
+        }
+
+    elif payload.broker == "welltrade":
+        # TODO: validate via MetaApi using payload.meta_account_id + payload.password
+        return {
+            "status": "connected",
+            "account": {
+                "account_id": payload.meta_account_id or payload.login,
+                "broker": "welltrade",
+                "server": payload.server,
+                "currency": "USD",
+                "balance": 0.0,
+            }
+        }
+
+    raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
