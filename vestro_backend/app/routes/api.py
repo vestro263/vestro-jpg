@@ -38,6 +38,7 @@ async def get_news(hours: int = 6, symbol: str | None = None):
     if not events:
         return []
 
+    from dateutil import parser as dateparser
     now = datetime.now(timezone.utc)
     filtered = []
 
@@ -45,8 +46,6 @@ async def get_news(hours: int = 6, symbol: str | None = None):
         if ev.get("impact") not in ("High", "Medium"):
             continue
         try:
-            # ✅ handles both -04:00 offsets and Z suffixes
-            from dateutil import parser as dateparser
             t = dateparser.parse(ev["date"])
             if t.tzinfo is None:
                 continue
@@ -54,7 +53,7 @@ async def get_news(hours: int = 6, symbol: str | None = None):
             continue
 
         diff_hours = (t - now).total_seconds() / 3600
-        if not (0 <= diff_hours <= hours):
+        if not (-hours <= diff_hours <= hours):
             continue
 
         if symbol and ev.get("currency", "") not in symbol.upper():
@@ -68,33 +67,6 @@ async def get_news(hours: int = 6, symbol: str | None = None):
         })
 
     return filtered
-
-@router.get("/news/debug")
-async def news_debug():
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
-        "User-Agent": "Mozilla/5.0"
-    }) as client:
-        r = await client.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
-        events = r.json()
-
-    from dateutil import parser as dateparser
-    now = datetime.now(timezone.utc)
-
-    sample = []
-    for ev in events[:5]:  # just first 5 raw events
-        try:
-            t = dateparser.parse(ev["date"])
-            diff = (t - now).total_seconds() / 3600
-        except Exception as e:
-            diff = f"PARSE ERROR: {e}"
-        sample.append({
-            "title":   ev["title"],
-            "impact":  ev["impact"],
-            "date_raw": ev["date"],
-            "diff_hours": diff,
-        })
-
-    return {"now_utc": now.isoformat(), "sample": sample}
 
 @router.get("/health")
 async def health():
