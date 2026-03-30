@@ -1,11 +1,5 @@
-/**
- * NewsBar — fetches and displays upcoming high-impact news events.
- * Shown at the top of the Dashboard as a warning strip.
- */
-
 import { useEffect, useState } from 'react'
 import axios from 'axios'
-
 
 const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
@@ -20,8 +14,8 @@ export default function NewsBar({ symbol = null }) {
 
   useEffect(() => {
     const url = symbol
-      ? `${API}/news?symbol=${symbol}&hours=12`
-      : `${API}/news?hours=6`
+      ? `${API}/api/news?symbol=${symbol}&hours=12`
+      : `${API}/api/news?hours=6`
 
     axios.get(url)
       .then(r => setEvents(Array.isArray(r.data) ? r.data.slice(0, 5) : []))
