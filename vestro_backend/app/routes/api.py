@@ -234,50 +234,33 @@ async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
 # Free tier: 25 req/day  →  rotates through full list over 3 days.
 # ─────────────────────────────────────────────────────────────
 
-async def _fetch_overviews_av() -> None:
-    global _overview_cache, _overview_cache_time, _overview_loading
+async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
+    global _overview_cache, _overview_cache_time
 
-    try:
-        async with httpx.AsyncClient() as client:
-            needed = [s for s in _WATCHLIST if s not in _overview_cache][:20]
-
-            if not needed:
-                _overview_cache_time = datetime.now(timezone.utc)
-                return
-
-            for symbol in needed:
-                # ── retry logic (important)
-                for attempt in range(3):
-                    try:
-                        r = await client.get(
-                            "https://www.alphavantage.co/query",
-                            params={
-                                "function": "OVERVIEW",
-                                "symbol": symbol,
-                                "apikey": AV_KEY,
-                            },
-                            timeout=15,
-                        )
-                        data = r.json()
-
-                        if data.get("Symbol"):
-                            _overview_cache[symbol] = data
-                        break  # success → exit retry loop
-
-                    except Exception:
-                        if attempt < 2:
-                            await asyncio.sleep(2)
-                        else:
-                            pass  # give up silently
-
-                # ── rate limit protection (5 req/min)
-                await asyncio.sleep(12)
-
+    needed = [s for s in _WATCHLIST if s not in _overview_cache][:20]
+    if not needed:
         _overview_cache_time = datetime.now(timezone.utc)
+        return
 
-    finally:
-        # 🔥 ALWAYS release lock
-        _overview_loading = False
+    async def _one(symbol: str):
+        try:
+            r = await client.get(
+                "https://www.alphavantage.co/query",
+                params={"function": "OVERVIEW", "symbol": symbol, "apikey": AV_KEY},
+                timeout=15,
+            )
+            data = r.json()
+            if data.get("Symbol"):
+                _overview_cache[symbol] = data
+        except Exception:
+            pass
+
+    for symbol in needed:
+        await _one(symbol)
+        await asyncio.sleep(0.5)    # respect AV 5 req/min free limit
+
+    _overview_cache_time = datetime.now(timezone.utc)
+
 
 # ─────────────────────────────────────────────────────────────
 # SCORING
@@ -371,44 +354,25 @@ def _build_firm(symbol: str) -> dict | None:
 # ─────────────────────────────────────────────────────────────
 # REFRESH ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────
-async def _safe_fetch_overviews():
-    global _overview_loading, _overview_cache_time
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await _fetch_overviews_av(client)
-        _overview_cache_time = datetime.now(timezone.utc)
-
-    except Exception as e:
-        print("Overview fetch failed:", e)
-
-    finally:
-        _overview_loading = False
-
-
 async def _refresh_firms() -> None:
     global _firms_cache, _firms_cache_time, _overview_loading
 
     now = datetime.now(timezone.utc)
 
-    # ── 1. PRICE FETCH (blocking, REQUIRED)
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
-                await _fetch_prices_twelve(client)
-    except Exception as e:
-        print("Price fetch failed:", e)
-        # optional: keep stale cache instead of breaking request
+    # ── 1. PRICE FETCH (blocking, required)
+    async with httpx.AsyncClient() as client:
+        if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
+            await _fetch_prices_twelve(client)
 
-    # ── 2. BACKGROUND OVERVIEW FETCH (SAFE FIRE-AND-FORGET)
+    # ── 2. BACKGROUND OVERVIEW FETCH (non-blocking, safe)
     if (
         (_overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL)
         and not _overview_loading
     ):
         _overview_loading = True
-        asyncio.create_task(_safe_fetch_overviews())
+        asyncio.create_task(_fetch_overviews_av())
 
-    # ── 3. BUILD FIRMS IMMEDIATELY (always returns something)
+    # ── 3. BUILD FIRMS IMMEDIATELY
     _firms_cache = [
         f for f in (_build_firm(s) for s in _WATCHLIST) if f
     ]
