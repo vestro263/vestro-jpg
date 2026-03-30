@@ -7,42 +7,49 @@ from pydantic import BaseModel
 from typing import Optional
 import json
 from typing import List
-import httpx
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, timedelta
+import asyncio
 
 router = APIRouter(prefix="/api")
 
-# ─────────────────────────────────────────────────────────────
-# HEALTH
-# ─────────────────────────────────────────────────────────────
+_news_cache: list = []
+_news_cache_time: datetime | None = None
+_CACHE_TTL = timedelta(minutes=5)
+
 @router.get("/news")
 async def get_news(hours: int = 6, symbol: str | None = None):
-    feeds = [
-        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-    ]
+    global _news_cache, _news_cache_time
 
-    events = []
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
-        "User-Agent": "Mozilla/5.0"
-    }) as client:
-        for feed_url in feeds:
-            try:
-                r = await client.get(feed_url)
-                if r.status_code == 200:
-                    events.extend(r.json())
-            except Exception:
-                continue
+    now = datetime.now(timezone.utc)
 
-    if not events:
+    # Refresh cache if stale or empty
+    if _news_cache_time is None or (now - _news_cache_time) > _CACHE_TTL:
+        feeds = [
+            "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+            "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+        ]
+        events = []
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
+            "User-Agent": "Mozilla/5.0"
+        }) as client:
+            for feed_url in feeds:
+                try:
+                    r = await client.get(feed_url)
+                    if r.status_code == 200:
+                        events.extend(r.json())
+                except Exception:
+                    continue
+
+        _news_cache = events
+        _news_cache_time = now
+
+    if not _news_cache:
         return []
 
     from dateutil import parser as dateparser
-    now = datetime.now(timezone.utc)
     filtered = []
 
-    for ev in events:
+    for ev in _news_cache:
         if ev.get("impact") not in ("High", "Medium"):
             continue
         try:
