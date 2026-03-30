@@ -184,7 +184,6 @@ const useBotStore = create(
     {
       name: 'vestro-auth',                     // localStorage key
       partialize: (s) => ({                    // only persist auth — not WS/signals
-        isLoggedIn: s.isLoggedIn,
         broker: s.broker,
         accountId: s.accountId,
       }),

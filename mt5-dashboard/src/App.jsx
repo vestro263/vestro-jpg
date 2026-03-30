@@ -29,7 +29,9 @@ const PAGES = {
 }
 
 export default function App() {
-  const { activePage, isLoggedIn } = useBotStore()
+    const { accountId } = useBotStore()
+    const isLoggedIn = !!accountId
+
   const isMobile = useIsMobile()
   const Page = PAGES[activePage] ?? Dashboard
 
