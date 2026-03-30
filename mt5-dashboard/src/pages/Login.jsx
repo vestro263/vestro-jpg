@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
-const API = import.meta.env.VITE_API_URL  // set in .env: VITE_API_URL=https://your-app.onrender.com
+const API = import.meta.env.VITE_API_URL
 
 const BROKERS = [
   { value: 'deriv',     label: 'Deriv' },
@@ -10,12 +10,12 @@ const BROKERS = [
 
 export default function Login() {
   const { login, setAuthError, authError } = useBotStore()
-  const [broker, setBroker]       = useState('deriv')
-  const [loginId, setLoginId]     = useState('')   // CR123456 or MT5 login
-  const [token, setToken]         = useState('')   // PAT token or MT5 password
-  const [server, setServer]       = useState('')   // WelTrade only
-  const [metaId, setMetaId]       = useState('')   // WelTrade MetaApi account ID
-  const [loading, setLoading]     = useState(false)
+  const [broker, setBroker]   = useState('deriv')
+  const [loginId, setLoginId] = useState('')
+  const [token, setToken]     = useState('')
+  const [server, setServer]   = useState('')
+  const [metaId, setMetaId]   = useState('')
+  const [loading, setLoading] = useState(false)
 
   async function handleConnect(e) {
     e.preventDefault()
@@ -48,7 +48,6 @@ export default function Login() {
     <div style={styles.outer}>
       <div style={styles.card}>
 
-        {/* Logo / brand */}
         <div style={styles.brand}>
           <span style={styles.brandDot} />
           <span style={styles.brandName}>Vestro</span>
@@ -150,10 +149,8 @@ export default function Login() {
             </>
           )}
 
-          {/* Error */}
           {authError && <p style={styles.error}>{authError}</p>}
 
-          {/* Submit */}
           <button type="submit" style={styles.btn} disabled={loading}>
             {loading ? 'Connecting…' : 'Connect account'}
           </button>
