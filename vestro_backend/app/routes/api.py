@@ -236,7 +236,7 @@ async def _fetch_live_firms() -> list:
                     "id":               hashlib.md5(symbol.encode()).hexdigest()[:12],
                     "name":             info.get("longName") or info.get("shortName") or symbol,
                     "domain":           info.get("website", "").replace("https://", "").replace("http://", "").split("/")[0],
-                    "sector":           info.get("sector") or info.get("industryDisp") or "Unknown",
+                    "sector":           info.get("sector") or info.get("industryDisp") or "nil",
                     "country":          info.get("country", "US"),
                     "stage":            "Public",
                     "employee_count":   info.get("fullTimeEmployees"),
