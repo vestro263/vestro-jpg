@@ -184,50 +184,50 @@ _firms_loading = False
 # Free tier: 800 req/day  →  at 1 refresh/hr = 24 calls/day.
 # ─────────────────────────────────────────────────────────────
 
+
 async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
     global _price_cache, _price_cache_time
 
-    symbols_str = ",".join(_WATCHLIST)
-    try:
-        r = await client.get(
-            "https://api.twelvedata.com/time_series",
-            params={
-                "symbol":     symbols_str,
-                "interval":   "1day",
-                "outputsize": 32,        # 30 complete + 2 buffer (today + weekends)
-                "apikey":     TD_KEY,
-            },
-            timeout=30,
-        )
-        data = r.json()
-    except Exception:
-        return
-
-    # Twelve Data returns {SYMBOL: {values: [...]}} for batch requests.
-    # values[0] is the MOST RECENT bar (today, possibly incomplete).
-    # We store the full list; scoring skips index 0 (today's partial bar).
     for symbol in _WATCHLIST:
-        entry = data.get(symbol, {})
-        values = entry.get("values", [])
-        if not values:
-            continue
         try:
-            closes  = [float(v["close"])  for v in values]
-            volumes = [float(v["volume"]) for v in values]
-            if closes:
-                _price_cache[symbol] = {
-                    "closes":  closes,
-                    "volumes": volumes,
-                    # Keep today's display price separate — shown in UI but not used for scoring
-                    "latest_price":      round(closes[0], 2),
-                    "latest_change_pct": round((closes[0] - closes[1]) / closes[1] * 100, 2)
-                                         if len(closes) >= 2 else 0.0,
-                }
+            r = await client.get(
+                "https://api.twelvedata.com/time_series",
+                params={
+                    "symbol": symbol,
+                    "interval": "1day",
+                    "outputsize": 32,
+                    "apikey": TD_KEY,
+                },
+                timeout=15,
+            )
+            data = r.json()
         except Exception:
             continue
 
-    _price_cache_time = datetime.now(timezone.utc)
+        values = data.get("values", [])
+        if not values:
+            continue
 
+        try:
+            closes = [float(v["close"]) for v in values]
+            volumes = [float(v["volume"]) for v in values]
+
+            _price_cache[symbol] = {
+                "closes": closes,
+                "volumes": volumes,
+                "latest_price": round(closes[0], 2),
+                "latest_change_pct": round(
+                    (closes[0] - closes[1]) / closes[1] * 100, 2
+                ) if len(closes) >= 2 else 0.0,
+            }
+
+        except Exception:
+            continue
+
+        # 🚨 VERY IMPORTANT: avoid rate limit
+        await asyncio.sleep(1)
+
+    _price_cache_time = datetime.now(timezone.utc)
 
 # ─────────────────────────────────────────────────────────────
 # ALPHA VANTAGE — overview metadata
