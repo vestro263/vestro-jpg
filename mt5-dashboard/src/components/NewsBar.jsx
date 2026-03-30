@@ -6,7 +6,8 @@
 import { useEffect, useState } from 'react'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+
+const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 const IMPACT_COLORS = {
   1: { bg: '#1c0a0a', border: '#3b0000', text: '#f87171', dot: '#ef4444' },
