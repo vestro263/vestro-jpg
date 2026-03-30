@@ -371,30 +371,48 @@ def _build_firm(symbol: str) -> dict | None:
 # ─────────────────────────────────────────────────────────────
 # REFRESH ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────
+async def _safe_fetch_overviews():
+    global _overview_loading, _overview_cache_time
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await _fetch_overviews_av(client)
+        _overview_cache_time = datetime.now(timezone.utc)
+
+    except Exception as e:
+        print("Overview fetch failed:", e)
+
+    finally:
+        _overview_loading = False
+
+
 async def _refresh_firms() -> None:
     global _firms_cache, _firms_cache_time, _overview_loading
 
     now = datetime.now(timezone.utc)
 
-    # ── 1. PRICE FETCH (blocking, required)
-    async with httpx.AsyncClient() as client:
-        if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
-            await _fetch_prices_twelve(client)
+    # ── 1. PRICE FETCH (blocking, REQUIRED)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
+                await _fetch_prices_twelve(client)
+    except Exception as e:
+        print("Price fetch failed:", e)
+        # optional: keep stale cache instead of breaking request
 
-    # ── 2. BACKGROUND OVERVIEW FETCH (non-blocking, safe)
+    # ── 2. BACKGROUND OVERVIEW FETCH (SAFE FIRE-AND-FORGET)
     if (
         (_overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL)
         and not _overview_loading
     ):
         _overview_loading = True
-        asyncio.create_task(_fetch_overviews_av())
+        asyncio.create_task(_safe_fetch_overviews())
 
-    # ── 3. BUILD FIRMS IMMEDIATELY
+    # ── 3. BUILD FIRMS IMMEDIATELY (always returns something)
     _firms_cache = [
         f for f in (_build_firm(s) for s in _WATCHLIST) if f
     ]
     _firms_cache_time = datetime.now(timezone.utc)
-
 # ─────────────────────────────────────────────────────────────
 # FIRMS ENDPOINTS
 # ─────────────────────────────────────────────────────────────
