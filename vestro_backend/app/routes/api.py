@@ -113,73 +113,143 @@ async def news_debug():
 @router.get("/health")
 async def health():
     return {"status": "ok", "service": "vestro-backend"}
+# ─────────────────────────────────────────────────────────────
+# LIVE FIRMS (yfinance)
+# ─────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────
-# FIRMS
-# ─────────────────────────────────────────────────────────────
+import yfinance as yf
+import hashlib
+
+# Curated watchlist — swap/extend as needed
+_WATCHLIST = [
+    # High-growth tech
+    "NVDA", "META", "PLTR", "SNOW", "NET", "DDOG", "CRWD", "MDB", "GTLB", "ZS",
+    # Fintech
+    "SQ", "AFRM", "SOFI", "HOOD", "NU",
+    # Biotech
+    "RXRX", "BEAM", "PACB", "TDOC",
+    # EV / Energy
+    "RIVN", "LCID", "CHPT", "PLUG",
+    # Recent IPO / high momentum
+    "ARM", "RDDT", "ASTERA",
+]
+
+_firms_cache: list = []
+_firms_cache_time: datetime | None = None
+_FIRMS_CACHE_TTL = timedelta(minutes=2)
+
+
+def _score_firm(hist, info) -> dict:
+    """Score a firm on momentum, volume spike, RSI."""
+    closes = hist["Close"].dropna()
+    volumes = hist["Volume"].dropna()
+
+    if len(closes) < 10:
+        return {"rise_prob": 0.5, "fall_prob": 0.5, "conviction": 0, "top_driver": "insufficient_data"}
+
+    # Momentum: 5d vs 20d return
+    ret_5d  = (closes.iloc[-1] - closes.iloc[-5])  / closes.iloc[-5]  if len(closes) >= 5  else 0
+    ret_20d = (closes.iloc[-1] - closes.iloc[-20]) / closes.iloc[-20] if len(closes) >= 20 else 0
+
+    # Volume spike: today vs 10d avg
+    vol_spike = (volumes.iloc[-1] / volumes.iloc[-10:].mean()) if len(volumes) >= 10 else 1.0
+
+    # RSI (14)
+    delta = closes.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rs    = gain / loss.replace(0, 1e-9)
+    rsi   = (100 - 100 / (1 + rs)).iloc[-1]
+
+    # Composite score
+    momentum_score = (ret_5d * 0.5 + ret_20d * 0.3) * 100
+    volume_score   = min((vol_spike - 1) * 20, 30)
+    rsi_score      = 20 if 50 < rsi < 70 else (-20 if rsi > 75 or rsi < 30 else 0)
+
+    raw = momentum_score + volume_score + rsi_score
+    conviction = max(0, min(100, int(50 + raw)))
+
+    rise_prob = round(min(0.95, max(0.05, 0.5 + raw / 200)), 2)
+    fall_prob = round(1 - rise_prob, 2)
+
+    top_driver = (
+        "volume_spike"   if vol_spike > 1.5 else
+        "momentum_5d"    if abs(ret_5d) > abs(ret_20d) else
+        "momentum_20d"   if ret_20d > 0.05 else
+        "rsi_signal"
+    )
+
+    return {
+        "rise_prob":  rise_prob,
+        "fall_prob":  fall_prob,
+        "conviction": conviction,
+        "top_driver": top_driver,
+    }
+
+
+async def _fetch_live_firms() -> list:
+    loop = asyncio.get_event_loop()
+
+    def _sync_fetch():
+        results = []
+        tickers = yf.Tickers(" ".join(_WATCHLIST))
+        for symbol in _WATCHLIST:
+            try:
+                t    = tickers.tickers[symbol]
+                info = t.info
+                hist = t.history(period="30d")
+
+                if hist.empty:
+                    continue
+
+                score = _score_firm(hist, info)
+                price = hist["Close"].iloc[-1]
+                prev  = hist["Close"].iloc[-2] if len(hist) >= 2 else price
+                chg   = ((price - prev) / prev * 100) if prev else 0
+
+                results.append({
+                    "id":               hashlib.md5(symbol.encode()).hexdigest()[:12],
+                    "name":             info.get("longName") or info.get("shortName") or symbol,
+                    "domain":           info.get("website", "").replace("https://", "").replace("http://", "").split("/")[0],
+                    "sector":           info.get("sector") or info.get("industryDisp") or "Unknown",
+                    "country":          info.get("country", "US"),
+                    "stage":            "Public",
+                    "employee_count":   info.get("fullTimeEmployees"),
+                    "total_funding_usd": int(info.get("marketCap", 0)),
+                    "ticker":           symbol,
+                    "price":            round(float(price), 2),
+                    "change_pct":       round(float(chg), 2),
+                    "score":            score,
+                })
+            except Exception:
+                continue
+        return results
+
+    return await loop.run_in_executor(None, _sync_fetch)
+
 
 @router.get("/firms")
 async def list_firms(
     limit: int = Query(50, le=200),
     sector: str | None = None,
     min_conviction: int = Query(0, ge=0, le=100),
-    db: AsyncSession = Depends(get_db),
 ):
-    q = (
-        select(Firm, Score)
-        .outerjoin(Score, Score.firm_id == Firm.id)
-        .order_by(desc(Score.conviction))
-        .limit(limit)
-    )
+    global _firms_cache, _firms_cache_time
+
+    now = datetime.now(timezone.utc)
+    if _firms_cache_time is None or (now - _firms_cache_time) > _FIRMS_CACHE_TTL:
+        _firms_cache      = await _fetch_live_firms()
+        _firms_cache_time = now
+
+    firms = _firms_cache
+
     if sector:
-        q = q.where(Firm.sector == sector)
+        firms = [f for f in firms if f.get("sector") == sector]
     if min_conviction:
-        q = q.where(Score.conviction >= min_conviction)
+        firms = [f for f in firms if (f.get("score") or {}).get("conviction", 0) >= min_conviction]
 
-    rows = (await db.execute(q)).all()
-    return [_firm_row(firm, score) for firm, score in rows]
-
-
-@router.get("/firms/{firm_id}")
-async def get_firm(firm_id: str, db: AsyncSession = Depends(get_db)):
-    row = (await db.execute(
-        select(Firm, Score)
-        .outerjoin(Score, Score.firm_id == Firm.id)
-        .where(Firm.id == firm_id)
-    )).first()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Firm not found")
-
-    firm, score = row
-    shap = json.loads(score.shap_json) if score and score.shap_json else {}
-
-    return {
-        **_firm_row(firm, score),
-        "crunchbase_url": firm.crunchbase_url,
-        "last_funding_date": firm.last_funding_date.isoformat() if firm.last_funding_date else None,
-        "shap": shap,
-    }
-
-
-def _firm_row(firm: Firm, score: Score | None) -> dict:
-    return {
-        "id": firm.id,
-        "name": firm.name,
-        "domain": firm.domain,
-        "sector": firm.sector,
-        "country": firm.country,
-        "stage": firm.stage,
-        "employee_count": firm.employee_count,
-        "total_funding_usd": firm.total_funding_usd,
-        "score": {
-            "rise_prob": score.rise_prob,
-            "fall_prob": score.fall_prob,
-            "conviction": score.conviction,
-            "top_driver": score.top_driver,
-            "scored_at": score.scored_at.isoformat() if score.scored_at else None,
-        } if score else None,
-    }
+    firms = sorted(firms, key=lambda f: (f.get("score") or {}).get("conviction", 0), reverse=True)
+    return firms[:limit]
 
 # ─────────────────────────────────────────────────────────────
 # SIGNALS
