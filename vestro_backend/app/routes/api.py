@@ -9,6 +9,7 @@ import json
 from typing import List
 from datetime import datetime, timezone, timedelta
 import asyncio
+import httpx
 
 router = APIRouter(prefix="/api")
 
