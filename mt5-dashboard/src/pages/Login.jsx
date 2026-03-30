@@ -138,6 +138,7 @@ export default function Login() {
                   placeholder="abc123def456..."
                   required
                 />
+                <a
 
                   href="https://app.metaapi.cloud"
                   target="_blank"
