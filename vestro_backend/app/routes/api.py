@@ -117,6 +117,31 @@ async def health():
 # LIVE FIRMS (yfinance)
 # ─────────────────────────────────────────────────────────────
 
+@router.get("/firms/debug")
+async def firms_debug():
+    try:
+        import yfinance as yf
+        loop = asyncio.get_event_loop()
+
+        def _test():
+            t = yf.Ticker("NVDA")
+            hist = t.history(period="5d")
+            info = t.info
+            return {
+                "hist_rows": len(hist),
+                "price": float(hist["Close"].iloc[-1]) if not hist.empty else None,
+                "name": info.get("longName"),
+                "sector": info.get("sector"),
+            }
+
+        result = await asyncio.wait_for(loop.run_in_executor(None, _test), timeout=30)
+        return {"status": "ok", "data": result}
+    except asyncio.TimeoutError:
+        return {"status": "timeout", "error": "yfinance took >30s — Render is blocking outbound requests"}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
+
 import yfinance as yf
 import hashlib
 
