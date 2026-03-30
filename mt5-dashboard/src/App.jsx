@@ -29,38 +29,37 @@ const PAGES = {
 }
 
 export default function App() {
-    const { accountId } = useBotStore()
-    const isLoggedIn = !!accountId
-
+  // ✅ ALL hooks must come first, before any return
+  const { accountId, activePage } = useBotStore()   // ← read activePage from store
+  const isLoggedIn = !!accountId
   const isMobile = useIsMobile()
-  const Page = PAGES[activePage] ?? Dashboard
 
+  // ✅ useEffect before any early return
+  useEffect(() => {
+    if (isLoggedIn && !useBotStore.getState().connected) {
+      useBotStore.getState().connect()
+      useBotStore.getState().startPolling()
+    }
+  }, [isLoggedIn])
+
+  // ✅ Early returns AFTER all hooks
   if (!isLoggedIn) return <Login />
-      useEffect(() => {
-      if (isLoggedIn && !useBotStore.getState().connected) {
-        useBotStore.getState().connect()
-        useBotStore.getState().startPolling()
-      }
-    }, [isLoggedIn])
+
+  const Page = PAGES[activePage] ?? Dashboard
 
   if (isMobile) {
     return (
-      // Full-screen column: top bar | scrollable content | bottom tabs
       <div style={{
         display: 'flex',
         flexDirection: 'column',
-        minHeight: '100dvh',          // dvh respects mobile browser chrome
+        minHeight: '100dvh',
         background: '#030712',
       }}>
-        {/* Sidebar renders ONLY the top bar + bottom tab bar on mobile */}
         <Sidebar />
-
-        {/* Scrollable page content — padded so it clears the bottom tab bar */}
         <main style={{
           flex: 1,
           overflowY: 'auto',
           WebkitOverflowScrolling: 'touch',
-          // 52px tab bar + safe-area bottom inset
           paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))',
         }}>
           <Page />
@@ -69,7 +68,6 @@ export default function App() {
     )
   }
 
-  // Desktop: side-by-side
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#030712' }}>
       <Sidebar />
@@ -79,4 +77,3 @@ export default function App() {
     </div>
   )
 }
-
