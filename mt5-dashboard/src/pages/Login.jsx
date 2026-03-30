@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
-const API = import.meta.env.VITE_API_URL
-
+const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 const BROKERS = [
   { value: 'deriv',     label: 'Deriv' },
   { value: 'welltrade', label: 'WelTrade (MT5)' },
