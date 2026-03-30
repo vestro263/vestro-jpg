@@ -16,7 +16,8 @@ import os
 
 router = APIRouter(prefix="/api")
 
-AV_KEY = os.getenv("ALPHA_VANTAGE_KEY", "demo")
+TD_KEY  = os.getenv("TWELVE_DATA_KEY", "")
+AV_KEY  = os.getenv("ALPHA_VANTAGE_KEY", "")
 
 # ─────────────────────────────────────────────────────────────
 # NEWS
@@ -127,9 +128,7 @@ async def health():
 
 
 # ─────────────────────────────────────────────────────────────
-# LIVE FIRMS — split cache (overview 24h, prices 10min)
-# Each ticker = 1 price call per 10min + 1 overview call per 24h
-# 60 tickers = 60 calls/refresh — well within free tier
+# WATCHLIST
 # ─────────────────────────────────────────────────────────────
 
 _WATCHLIST = [
@@ -162,25 +161,83 @@ _WATCHLIST = [
     "LMT", "NOC", "RTX", "BA", "HII",
 ]
 
-# Overview cache — name, sector, employees, market cap (24h TTL)
-_overview_cache: dict      = {}
+# ─────────────────────────────────────────────────────────────
+# CACHES
+# ─────────────────────────────────────────────────────────────
+
+# Twelve Data — batch price fetch (all 60 tickers = 1 API call, every 1h)
+_price_cache: dict          = {}   # symbol → {closes, volumes}
+_price_cache_time: datetime | None = None
+_PRICE_TTL = timedelta(hours=1)
+
+# Alpha Vantage — overview per ticker (1 call each, once per 24h)
+_overview_cache: dict       = {}   # symbol → overview dict
 _overview_cache_time: datetime | None = None
 _OVERVIEW_TTL = timedelta(hours=24)
 
-# Price cache — OHLCV closes + volumes (10min TTL)
-_price_cache: dict         = {}
-_price_cache_time: datetime | None = None
-_PRICE_TTL = timedelta(minutes=10)
-
-_firms_cache: list         = []
+_firms_cache: list          = []
 _firms_cache_time: datetime | None = None
-_FIRMS_CACHE_TTL = timedelta(minutes=10)
-_firms_loading             = False
+_FIRMS_CACHE_TTL = timedelta(hours=1)
+_firms_loading              = False
 
 
-async def _fetch_overviews(client: httpx.AsyncClient) -> None:
-    """1 API call per ticker, runs once every 24h."""
+# ─────────────────────────────────────────────────────────────
+# TWELVE DATA — batch price fetch (1 call for all tickers)
+# Free tier: 800 req/day, 8 req/min
+# At 1 refresh/hour = 24 calls/day — well within limits
+# ─────────────────────────────────────────────────────────────
+
+async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
+    global _price_cache, _price_cache_time
+
+    symbols_str = ",".join(_WATCHLIST)
+    try:
+        r = await client.get(
+            "https://api.twelvedata.com/time_series",
+            params={
+                "symbol":      symbols_str,
+                "interval":    "1day",
+                "outputsize":  30,
+                "apikey":      TD_KEY,
+            },
+            timeout=30,
+        )
+        data = r.json()
+    except Exception:
+        return
+
+    # Twelve Data returns {SYMBOL: {values: [...]}} for batch requests
+    for symbol in _WATCHLIST:
+        entry = data.get(symbol, {})
+        values = entry.get("values", [])
+        if not values:
+            continue
+        try:
+            closes  = [float(v["close"])  for v in values]
+            volumes = [float(v["volume"]) for v in values]
+            if closes:
+                _price_cache[symbol] = {"closes": closes, "volumes": volumes}
+        except Exception:
+            continue
+
+    _price_cache_time = datetime.now(timezone.utc)
+
+
+# ─────────────────────────────────────────────────────────────
+# ALPHA VANTAGE — overview metadata (1 call per ticker, per 24h)
+# Free tier: 25 req/day
+# 25 tickers covered per day — rotates through full list over 3 days
+# ─────────────────────────────────────────────────────────────
+
+async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
     global _overview_cache, _overview_cache_time
+
+    # Only fetch symbols not yet cached or stale
+    # Max 20 at a time to stay within 25/day limit (leaving 5 buffer)
+    needed = [s for s in _WATCHLIST if s not in _overview_cache][:20]
+    if not needed:
+        _overview_cache_time = datetime.now(timezone.utc)
+        return
 
     async def _one(symbol: str):
         try:
@@ -195,40 +252,17 @@ async def _fetch_overviews(client: httpx.AsyncClient) -> None:
         except Exception:
             pass
 
-    await asyncio.gather(*[_one(s) for s in _WATCHLIST])
+    # Sequential to avoid hammering AV rate limit (5 req/min free)
+    for symbol in needed:
+        await _one(symbol)
+        await asyncio.sleep(0.5)
+
     _overview_cache_time = datetime.now(timezone.utc)
 
 
-async def _fetch_prices(client: httpx.AsyncClient) -> None:
-    """1 API call per ticker, runs every 10 min."""
-    global _price_cache, _price_cache_time
-
-    async def _one(symbol: str):
-        try:
-            r = await client.get(
-                "https://www.alphavantage.co/query",
-                params={
-                    "function":   "TIME_SERIES_DAILY",
-                    "symbol":     symbol,
-                    "outputsize": "compact",
-                    "apikey":     AV_KEY,
-                },
-                timeout=15,
-            )
-            ts = r.json().get("Time Series (Daily)", {})
-            if not ts:
-                return
-            dates   = sorted(ts.keys(), reverse=True)
-            closes  = [float(ts[d]["4. close"]) for d in dates[:30]]
-            volumes = [float(ts[d]["5. volume"]) for d in dates[:30]]
-            if closes:
-                _price_cache[symbol] = {"closes": closes, "volumes": volumes}
-        except Exception:
-            pass
-
-    await asyncio.gather(*[_one(s) for s in _WATCHLIST])
-    _price_cache_time = datetime.now(timezone.utc)
-
+# ─────────────────────────────────────────────────────────────
+# SCORING
+# ─────────────────────────────────────────────────────────────
 
 def _score(closes: list, volumes: list) -> dict:
     if len(closes) < 5:
@@ -293,17 +327,25 @@ def _build_firm(symbol: str) -> dict | None:
     }
 
 
+# ─────────────────────────────────────────────────────────────
+# REFRESH ORCHESTRATOR
+# ─────────────────────────────────────────────────────────────
+
 async def _refresh_firms() -> None:
-    """Refresh stale caches then rebuild firms list."""
     global _firms_cache, _firms_cache_time
 
     now = datetime.now(timezone.utc)
     async with httpx.AsyncClient() as client:
         tasks = []
-        if _overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL:
-            tasks.append(_fetch_overviews(client))   # once per 24h
+
+        # Prices via Twelve Data — 1 batch call per hour
         if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
-            tasks.append(_fetch_prices(client))      # every 10 min
+            tasks.append(_fetch_prices_twelve(client))
+
+        # Metadata via Alpha Vantage — rotates through symbols over 3 days
+        if _overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL:
+            tasks.append(_fetch_overviews_av(client))
+
         if tasks:
             await asyncio.gather(*tasks)
 
@@ -311,17 +353,23 @@ async def _refresh_firms() -> None:
     _firms_cache_time = datetime.now(timezone.utc)
 
 
+# ─────────────────────────────────────────────────────────────
+# FIRMS ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
 @router.get("/firms/debug")
 async def firms_debug():
     try:
         async with httpx.AsyncClient() as client:
-            await _fetch_prices(client)
+            await _fetch_prices_twelve(client)
         result = _build_firm("NVDA")
         return {
-            "status":           "ok",
-            "data":             result,
-            "price_cache_keys": list(_price_cache.keys()),
-            "overview_cached":  list(_overview_cache.keys()),
+            "status":          "ok",
+            "nvda":            result,
+            "price_cached":    list(_price_cache.keys()),
+            "overview_cached": list(_overview_cache.keys()),
+            "td_key_set":      bool(TD_KEY),
+            "av_key_set":      bool(AV_KEY),
         }
     except Exception as e:
         import traceback
@@ -520,24 +568,3 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade validation not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
-
-@router.get("/firms/key-check")
-async def key_check():
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            "https://www.alphavantage.co/query",
-            params={
-                "function": "TIME_SERIES_DAILY",
-                "symbol": "NVDA",
-                "outputsize": "compact",
-                "apikey": AV_KEY,
-            },
-            timeout=15,
-        )
-        body = r.json()
-    return {
-        "key_used": AV_KEY[:6] + "...",   # show first 6 chars only
-        "response_keys": list(body.keys()),
-        "has_data": "Time Series (Daily)" in body,
-        "error": body.get("Note") or body.get("Information") or body.get("Error Message"),
-    }
