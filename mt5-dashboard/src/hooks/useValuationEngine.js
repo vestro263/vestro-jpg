@@ -29,10 +29,12 @@ export function useValuationEngine() {
 
   const fetchFirms = useCallback(async (params = {}) => {
     const qs  = new URLSearchParams(params).toString()
-    const res = await fetch(`${API_BASE}/api/firms${qs ? '?' + qs : ''}`)
+    const res = await fetch(`${API_BASE}/api/firms${qs ? '?' + qs : ''}`, {
+        signal: AbortSignal.timeout(25000)  // 25s timeout
+    })
     if (!res.ok) throw new Error(`firms ${res.status}`)
     return res.json()
-  }, [])
+}, [])
 
   const fetchSignals = useCallback(async (firmId = null, limit = 50) => {
     const params = firmId ? `?firm_id=${firmId}&limit=${limit}` : `?limit=${limit}`

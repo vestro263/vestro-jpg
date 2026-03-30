@@ -161,8 +161,7 @@ _WATCHLIST = [
 
 _firms_cache: list = []
 _firms_cache_time: datetime | None = None
-_FIRMS_CACHE_TTL = timedelta(minutes=2)
-
+_FIRMS_CACHE_TTL = timedelta(minutes=10)
 
 def _score_firm(hist, info) -> dict:
     """Score a firm on momentum, volume spike, RSI."""
@@ -211,47 +210,56 @@ def _score_firm(hist, info) -> dict:
         "top_driver": top_driver,
     }
 
-
 async def _fetch_live_firms() -> list:
     loop = asyncio.get_event_loop()
 
-    def _sync_fetch():
-        results = []
-        tickers = yf.Tickers(" ".join(_WATCHLIST))
-        for symbol in _WATCHLIST:
-            try:
-                t    = tickers.tickers[symbol]
-                info = t.info
-                hist = t.history(period="30d")
+    def _fetch_one(symbol: str):
+        try:
+            t    = yf.Ticker(symbol)
+            hist = t.history(period="30d")
+            info = t.info
 
-                if hist.empty:
-                    continue
+            if hist.empty:
+                return None
 
-                score = _score_firm(hist, info)
-                price = hist["Close"].iloc[-1]
-                prev  = hist["Close"].iloc[-2] if len(hist) >= 2 else price
-                chg   = ((price - prev) / prev * 100) if prev else 0
+            score = _score_firm(hist, info)
+            price = hist["Close"].iloc[-1]
+            prev  = hist["Close"].iloc[-2] if len(hist) >= 2 else price
+            chg   = ((price - prev) / prev * 100) if prev else 0
 
-                results.append({
-                    "id":               hashlib.md5(symbol.encode()).hexdigest()[:12],
-                    "name":             info.get("longName") or info.get("shortName") or symbol,
-                    "domain":           info.get("website", "").replace("https://", "").replace("http://", "").split("/")[0],
-                    "sector":           info.get("sector") or info.get("industryDisp") or "nil",
-                    "country":          info.get("country", "US"),
-                    "stage":            "Public",
-                    "employee_count":   info.get("fullTimeEmployees"),
-                    "total_funding_usd": int(info.get("marketCap", 0)),
-                    "ticker":           symbol,
-                    "price":            round(float(price), 2),
-                    "change_pct":       round(float(chg), 2),
-                    "score":            score,
-                })
-            except Exception:
-                continue
-        return results
+            return {
+                "id":                hashlib.md5(symbol.encode()).hexdigest()[:12],
+                "name":              info.get("longName") or info.get("shortName") or symbol,
+                "domain":            info.get("website", "").replace("https://", "").replace("http://", "").split("/")[0],
+                "sector":            info.get("sector") or info.get("industryDisp") or "Unknown",
+                "country":           info.get("country", "US"),
+                "stage":             "Public",
+                "employee_count":    info.get("fullTimeEmployees"),
+                "total_funding_usd": int(info.get("marketCap", 0)),
+                "ticker":            symbol,
+                "price":             round(float(price), 2),
+                "change_pct":        round(float(chg), 2),
+                "score":             score,
+            }
+        except Exception:
+            return None
 
-    return await loop.run_in_executor(None, _sync_fetch)
+    # Run all tickers concurrently in thread pool, 20s timeout total
+    tasks = [
+        loop.run_in_executor(None, _fetch_one, symbol)
+        for symbol in _WATCHLIST
+    ]
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=20)
+    except asyncio.TimeoutError:
+        # Return whatever completed before timeout
+        done, _ = await asyncio.wait(
+            [asyncio.ensure_future(t) for t in tasks],
+            timeout=0
+        )
+        results = [t.result() for t in done if not t.exception()]
 
+    return [r for r in results if r is not None]
 
 @router.get("/firms")
 async def list_firms(
@@ -285,30 +293,9 @@ async def list_signals(
     firm_id: str | None = None,
     signal_type: str | None = None,
     limit: int = Query(50, le=200),
-    db: AsyncSession = Depends(get_db),
 ):
-    q = select(Signal).order_by(desc(Signal.captured_at)).limit(limit)
-
-    if firm_id:
-        q = q.where(Signal.firm_id == firm_id)
-    if signal_type:
-        q = q.where(Signal.type == signal_type)
-
-    signals = (await db.execute(q)).scalars().all()
-
-    return [
-        {
-            "id": s.id,
-            "firm_id": s.firm_id,
-            "type": s.type,
-            "value": s.value,
-            "text": s.text,
-            "source": s.source,
-            "captured_at": s.captured_at.isoformat(),
-        }
-        for s in signals
-    ]
-
+    # No DB — signals are derived live from yfinance firms cache
+    return []
 # ─────────────────────────────────────────────────────────────
 # 🔥 MT5 REAL-TIME SYSTEM
 # ─────────────────────────────────────────────────────────────
