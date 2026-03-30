@@ -104,6 +104,7 @@ export default function Login() {
               required
             />
             {broker === 'deriv' && (
+                <a
 
                 href="https://app.deriv.com/account/api-token"
                 target="_blank"
