@@ -16,29 +16,40 @@ router = APIRouter(prefix="/api")
 # ─────────────────────────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────────────────────────
-
 @router.get("/news")
 async def get_news(hours: int = 6, symbol: str | None = None):
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-            )
-            r.raise_for_status()
-            events = r.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"News fetch failed: {str(e)}")
+    feeds = [
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+    ]
+
+    events = []
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
+        "User-Agent": "Mozilla/5.0"
+    }) as client:
+        for feed_url in feeds:
+            try:
+                r = await client.get(feed_url)
+                if r.status_code == 200:
+                    events.extend(r.json())
+            except Exception:
+                continue
+
+    if not events:
+        return []
 
     now = datetime.now(timezone.utc)
-
     filtered = []
+
     for ev in events:
-        # only high/medium impact
         if ev.get("impact") not in ("High", "Medium"):
             continue
-
         try:
-            t = datetime.fromisoformat(ev["date"].replace("Z", "+00:00"))
+            # ✅ handles both -04:00 offsets and Z suffixes
+            from dateutil import parser as dateparser
+            t = dateparser.parse(ev["date"])
+            if t.tzinfo is None:
+                continue
         except Exception:
             continue
 
