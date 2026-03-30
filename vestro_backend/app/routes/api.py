@@ -520,3 +520,24 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade validation not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
+
+@router.get("/firms/key-check")
+async def key_check():
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            "https://www.alphavantage.co/query",
+            params={
+                "function": "TIME_SERIES_DAILY",
+                "symbol": "NVDA",
+                "outputsize": "compact",
+                "apikey": AV_KEY,
+            },
+            timeout=15,
+        )
+        body = r.json()
+    return {
+        "key_used": AV_KEY[:6] + "...",   # show first 6 chars only
+        "response_keys": list(body.keys()),
+        "has_data": "Time Series (Daily)" in body,
+        "error": body.get("Note") or body.get("Information") or body.get("Error Message"),
+    }
