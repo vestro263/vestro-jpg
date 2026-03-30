@@ -1,8 +1,4 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
-from app.db import get_db
-from app.models import Firm, Signal, Score
+from fastapi import APIRouter, Query, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
@@ -16,8 +12,17 @@ import os
 
 router = APIRouter(prefix="/api")
 
-TD_KEY  = os.getenv("TWELVE_DATA_KEY", "")
-AV_KEY  = os.getenv("ALPHA_VANTAGE_KEY", "")
+TD_KEY = os.getenv("TWELVE_DATA_KEY", "")
+AV_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+
+# ─────────────────────────────────────────────────────────────
+# HEALTH
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/health")
+async def health():
+    return {"status": "ok", "service": "vestro-backend"}
+
 
 # ─────────────────────────────────────────────────────────────
 # NEWS
@@ -119,15 +124,6 @@ async def news_debug():
 
 
 # ─────────────────────────────────────────────────────────────
-# HEALTH
-# ─────────────────────────────────────────────────────────────
-
-@router.get("/health")
-async def health():
-    return {"status": "ok", "service": "vestro-backend"}
-
-
-# ─────────────────────────────────────────────────────────────
 # WATCHLIST
 # ─────────────────────────────────────────────────────────────
 
@@ -165,26 +161,27 @@ _WATCHLIST = [
 # CACHES
 # ─────────────────────────────────────────────────────────────
 
-# Twelve Data — batch price fetch (all 60 tickers = 1 API call, every 1h)
-_price_cache: dict          = {}   # symbol → {closes, volumes}
+# Twelve Data — batch price fetch (all tickers = 1 API call per symbol, every 1h)
+_price_cache: dict = {}                     # symbol → {closes, volumes}
 _price_cache_time: datetime | None = None
 _PRICE_TTL = timedelta(hours=1)
 
 # Alpha Vantage — overview per ticker (1 call each, once per 24h)
-_overview_cache: dict       = {}   # symbol → overview dict
+_overview_cache: dict = {}                  # symbol → overview dict
 _overview_cache_time: datetime | None = None
 _OVERVIEW_TTL = timedelta(hours=24)
 
-_firms_cache: list          = []
+_firms_cache: list = []
 _firms_cache_time: datetime | None = None
 _FIRMS_CACHE_TTL = timedelta(hours=1)
-_firms_loading              = False
+_firms_loading = False
 
 
 # ─────────────────────────────────────────────────────────────
-# TWELVE DATA — batch price fetch (1 call for all tickers)
-# Free tier: 800 req/day, 8 req/min
-# At 1 refresh/hour = 24 calls/day — well within limits
+# TWELVE DATA — batch price fetch
+# Fetches 32 daily bars per symbol so scoring always has 20+
+# complete trading days even after dropping today's partial bar.
+# Free tier: 800 req/day  →  at 1 refresh/hr = 24 calls/day.
 # ─────────────────────────────────────────────────────────────
 
 async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
@@ -195,10 +192,10 @@ async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
         r = await client.get(
             "https://api.twelvedata.com/time_series",
             params={
-                "symbol":      symbols_str,
-                "interval":    "1day",
-                "outputsize":  30,
-                "apikey":      TD_KEY,
+                "symbol":     symbols_str,
+                "interval":   "1day",
+                "outputsize": 32,        # 30 complete + 2 buffer (today + weekends)
+                "apikey":     TD_KEY,
             },
             timeout=30,
         )
@@ -206,7 +203,9 @@ async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
     except Exception:
         return
 
-    # Twelve Data returns {SYMBOL: {values: [...]}} for batch requests
+    # Twelve Data returns {SYMBOL: {values: [...]}} for batch requests.
+    # values[0] is the MOST RECENT bar (today, possibly incomplete).
+    # We store the full list; scoring skips index 0 (today's partial bar).
     for symbol in _WATCHLIST:
         entry = data.get(symbol, {})
         values = entry.get("values", [])
@@ -216,7 +215,14 @@ async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
             closes  = [float(v["close"])  for v in values]
             volumes = [float(v["volume"]) for v in values]
             if closes:
-                _price_cache[symbol] = {"closes": closes, "volumes": volumes}
+                _price_cache[symbol] = {
+                    "closes":  closes,
+                    "volumes": volumes,
+                    # Keep today's display price separate — shown in UI but not used for scoring
+                    "latest_price":      round(closes[0], 2),
+                    "latest_change_pct": round((closes[0] - closes[1]) / closes[1] * 100, 2)
+                                         if len(closes) >= 2 else 0.0,
+                }
         except Exception:
             continue
 
@@ -224,16 +230,13 @@ async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# ALPHA VANTAGE — overview metadata (1 call per ticker, per 24h)
-# Free tier: 25 req/day
-# 25 tickers covered per day — rotates through full list over 3 days
+# ALPHA VANTAGE — overview metadata
+# Free tier: 25 req/day  →  rotates through full list over 3 days.
 # ─────────────────────────────────────────────────────────────
 
 async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
     global _overview_cache, _overview_cache_time
 
-    # Only fetch symbols not yet cached or stale
-    # Max 20 at a time to stay within 25/day limit (leaving 5 buffer)
     needed = [s for s in _WATCHLIST if s not in _overview_cache][:20]
     if not needed:
         _overview_cache_time = datetime.now(timezone.utc)
@@ -252,27 +255,43 @@ async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
         except Exception:
             pass
 
-    # Sequential to avoid hammering AV rate limit (5 req/min free)
     for symbol in needed:
         await _one(symbol)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)    # respect AV 5 req/min free limit
 
     _overview_cache_time = datetime.now(timezone.utc)
 
 
 # ─────────────────────────────────────────────────────────────
 # SCORING
+#
+# KEY FIX: closes[0] is today's PARTIAL bar (live price, low volume).
+# All scoring uses closes[1:] and volumes[1:] — i.e. yesterday as
+# the most recent COMPLETE session — to prevent vol_spike from being
+# artificially suppressed during market hours.
 # ─────────────────────────────────────────────────────────────
 
 def _score(closes: list, volumes: list) -> dict:
-    if len(closes) < 5:
-        return {"rise_prob": 0.5, "fall_prob": 0.5, "conviction": 50, "top_driver": "insufficient_data"}
+    # Drop index 0 (today's partial/live bar) — use only complete sessions
+    c = closes[1:]
+    v = volumes[1:]
 
-    ret_5d    = (closes[0] - closes[4]) / closes[4]
-    ret_20d   = (closes[0] - closes[19]) / closes[19] if len(closes) >= 20 else 0
-    vol_spike = volumes[0] / (sum(volumes[1:11]) / 10) if len(volumes) >= 10 else 1.0
+    if len(c) < 5:
+        return {
+            "rise_prob":  0.5,
+            "fall_prob":  0.5,
+            "conviction": 50,
+            "top_driver": "insufficient_data",
+        }
 
-    diffs  = [closes[i - 1] - closes[i] for i in range(1, min(15, len(closes)))]
+    ret_5d  = (c[0] - c[4])  / c[4]
+    ret_20d = (c[0] - c[19]) / c[19] if len(c) >= 20 else (c[0] - c[-1]) / c[-1]
+
+    # Volume spike: today's complete volume vs 10-day average
+    vol_spike = v[0] / (sum(v[1:11]) / 10) if len(v) >= 10 else 1.0
+
+    # RSI over last 14 complete sessions
+    diffs  = [c[i - 1] - c[i] for i in range(1, min(15, len(c)))]
     gains  = [d for d in diffs if d > 0]
     losses = [-d for d in diffs if d < 0]
     avg_g  = statistics.mean(gains)  if gains  else 0.001
@@ -311,18 +330,23 @@ def _build_firm(symbol: str) -> dict | None:
     info    = _overview_cache.get(symbol, {})
     score   = _score(closes, volumes)
 
+    # Display price = closes[0] (latest, even if partial) for real-time feel.
+    # Scoring always uses closes[1:] internally (see _score above).
     return {
         "id":                hashlib.md5(symbol.encode()).hexdigest()[:12],
         "name":              info.get("Name") or symbol,
-        "domain":            info.get("OfficialSite", "").replace("https://", "").replace("http://", "").split("/")[0],
+        "domain":            (info.get("OfficialSite") or "")
+                             .replace("https://", "").replace("http://", "").split("/")[0],
         "sector":            info.get("Sector") or "Unknown",
         "country":           info.get("Country", "US"),
         "stage":             "Public",
-        "employee_count":    int(info["FullTimeEmployees"]) if info.get("FullTimeEmployees", "None") not in ("None", "") else None,
-        "total_funding_usd": int(info["MarketCapitalization"]) if info.get("MarketCapitalization", "None") not in ("None", "") else 0,
+        "employee_count":    int(info["FullTimeEmployees"])
+                             if info.get("FullTimeEmployees") not in (None, "None", "") else None,
+        "total_funding_usd": int(info["MarketCapitalization"])
+                             if info.get("MarketCapitalization") not in (None, "None", "") else 0,
         "ticker":            symbol,
-        "price":             round(closes[0], 2),
-        "change_pct":        round((closes[0] - closes[1]) / closes[1] * 100, 2) if len(closes) >= 2 else 0,
+        "price":             price_data["latest_price"],
+        "change_pct":        price_data["latest_change_pct"],
         "score":             score,
     }
 
@@ -338,11 +362,9 @@ async def _refresh_firms() -> None:
     async with httpx.AsyncClient() as client:
         tasks = []
 
-        # Prices via Twelve Data — 1 batch call per hour
         if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
             tasks.append(_fetch_prices_twelve(client))
 
-        # Metadata via Alpha Vantage — rotates through symbols over 3 days
         if _overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL:
             tasks.append(_fetch_overviews_av(client))
 
@@ -394,13 +416,41 @@ async def list_firms(
                 _firms_loading = False
 
     firms = list(_firms_cache)
+
     if sector:
         firms = [f for f in firms if f.get("sector") == sector]
     if min_conviction:
         firms = [f for f in firms if (f.get("score") or {}).get("conviction", 0) >= min_conviction]
 
-    firms = sorted(firms, key=lambda f: (f.get("score") or {}).get("conviction", 0), reverse=True)
+    firms = sorted(
+        firms,
+        key=lambda f: (f.get("score") or {}).get("conviction", 0),
+        reverse=True,
+    )
     return firms[:limit]
+
+
+@router.get("/firms/{firm_id}")
+async def get_firm(firm_id: str):
+    """
+    Fetch a single firm by its hashed ID.
+    Called by fetchFirmDetail() in useValuationEngine.js.
+    """
+    # Ensure cache is warm
+    if not _firms_cache:
+        global _firms_loading
+        if not _firms_loading:
+            _firms_loading = True
+            try:
+                await _refresh_firms()
+            finally:
+                _firms_loading = False
+
+    for firm in _firms_cache:
+        if firm["id"] == firm_id:
+            return firm
+
+    raise HTTPException(status_code=404, detail=f"Firm '{firm_id}' not found")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -413,11 +463,179 @@ async def list_signals(
     signal_type: str | None = None,
     limit: int = Query(50, le=200),
 ):
-    return []
+    """
+    Returns derived signals built from live score data.
+    Consumed by useValuationEngine → signals state.
+    """
+    if not _firms_cache:
+        return []
+
+    firms = list(_firms_cache)
+    if firm_id:
+        firms = [f for f in firms if f["id"] == firm_id]
+
+    signals = []
+    for f in firms:
+        score = f.get("score") or {}
+        conviction = score.get("conviction", 50)
+        rise_prob  = score.get("rise_prob", 0.5)
+        top_driver = score.get("top_driver", "unknown")
+
+        if conviction < 55:
+            continue    # Only surface meaningful signals
+
+        sig_type = (
+            "strong_buy"  if conviction >= 75 and rise_prob >= 0.65 else
+            "buy"         if conviction >= 60 and rise_prob >= 0.55 else
+            "strong_sell" if conviction >= 75 and rise_prob <= 0.35 else
+            "sell"        if conviction >= 60 and rise_prob <= 0.45 else
+            "watch"
+        )
+
+        if signal_type and sig_type != signal_type:
+            continue
+
+        signals.append({
+            "id":         hashlib.md5(f"{f['id']}-{sig_type}".encode()).hexdigest()[:12],
+            "firm_id":    f["id"],
+            "ticker":     f["ticker"],
+            "name":       f["name"],
+            "type":       sig_type,
+            "conviction": conviction,
+            "rise_prob":  rise_prob,
+            "fall_prob":  score.get("fall_prob", round(1 - rise_prob, 2)),
+            "top_driver": top_driver,
+            "price":      f.get("price"),
+            "change_pct": f.get("change_pct"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    signals.sort(key=lambda s: s["conviction"], reverse=True)
+    return signals[:limit]
 
 
 # ─────────────────────────────────────────────────────────────
-# MT5 REAL-TIME SYSTEM
+# WEBSOCKET — /ws/stream
+# Matches WS_BASE + '/ws/stream' in useValuationEngine.js
+# ─────────────────────────────────────────────────────────────
+
+class StreamManager:
+    def __init__(self):
+        self.active: List[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, data):
+        dead = []
+        msg  = json.dumps(data)
+        for ws in self.active:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+stream_manager = StreamManager()
+
+
+@router.websocket("/ws/stream")
+async def ws_stream(ws: WebSocket):
+    """
+    Live score stream consumed by useValuationEngine.js.
+
+    On connect  → sends a snapshot array of all current scores.
+    Every 60s   → recomputes scores, pushes type='score_update' for
+                  any firm whose conviction changed by ≥ 2 points.
+    Handles 'ping' keepalives from the frontend.
+    """
+    await stream_manager.connect(ws)
+
+    # ── Send initial snapshot ──────────────────────────────────
+    # Frontend expects: Array<{firm_id, rise_prob, fall_prob, conviction, top_driver}>
+    if not _firms_cache:
+        try:
+            await _refresh_firms()
+        except Exception:
+            pass
+
+    snapshot = [
+        {
+            "firm_id":    f["id"],
+            "rise_prob":  (f.get("score") or {}).get("rise_prob",  0.5),
+            "fall_prob":  (f.get("score") or {}).get("fall_prob",  0.5),
+            "conviction": (f.get("score") or {}).get("conviction", 50),
+            "top_driver": (f.get("score") or {}).get("top_driver", "unknown"),
+        }
+        for f in _firms_cache
+    ]
+    try:
+        await ws.send_text(json.dumps(snapshot))
+    except Exception:
+        stream_manager.disconnect(ws)
+        return
+
+    # ── Score refresh loop ─────────────────────────────────────
+    prev_convictions: dict[str, int] = {
+        f["id"]: (f.get("score") or {}).get("conviction", 50)
+        for f in _firms_cache
+    }
+
+    async def _refresh_loop():
+        while ws in stream_manager.active:
+            await asyncio.sleep(60)
+
+            try:
+                await _refresh_firms()
+            except Exception:
+                continue
+
+            for f in _firms_cache:
+                score      = f.get("score") or {}
+                conviction = score.get("conviction", 50)
+                fid        = f["id"]
+
+                if abs(conviction - prev_convictions.get(fid, conviction)) >= 2:
+                    prev_convictions[fid] = conviction
+                    update = {
+                        "type":       "score_update",
+                        "firm_id":    fid,
+                        "rise_prob":  score.get("rise_prob",  0.5),
+                        "fall_prob":  score.get("fall_prob",  0.5),
+                        "conviction": conviction,
+                        "top_driver": score.get("top_driver", "unknown"),
+                    }
+                    try:
+                        await ws.send_text(json.dumps(update))
+                    except Exception:
+                        return  # client gone
+
+    loop_task = asyncio.create_task(_refresh_loop())
+
+    # ── Receive loop (handles ping keepalives) ─────────────────
+    try:
+        while True:
+            msg = await ws.receive_text()
+            if msg == "ping":
+                await ws.send_text(json.dumps("pong"))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        loop_task.cancel()
+        stream_manager.disconnect(ws)
+
+
+# ─────────────────────────────────────────────────────────────
+# MT5 REAL-TIME SYSTEM (existing endpoints — unchanged)
 # ─────────────────────────────────────────────────────────────
 
 class ConnectionManager:
@@ -443,11 +661,10 @@ class ConnectionManager:
             self.disconnect(ws)
 
 
-manager = ConnectionManager()
-
-_account_cache   = {}
-_positions_cache = []
-_bot_running     = False
+manager         = ConnectionManager()
+_account_cache  = {}
+_positions_cache: list = []
+_bot_running    = False
 
 
 @router.websocket("/ws")
