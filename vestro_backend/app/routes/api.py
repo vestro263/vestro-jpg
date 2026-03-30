@@ -7,12 +7,56 @@ from pydantic import BaseModel
 from typing import Optional
 import json
 from typing import List
+import httpx
+from datetime import datetime, timezone
+
 
 router = APIRouter(prefix="/api")
 
 # ─────────────────────────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────────────────────────
+
+@router.get("/news")
+async def get_news(hours: int = 6, symbol: str | None = None):
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+            )
+            r.raise_for_status()
+            events = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"News fetch failed: {str(e)}")
+
+    now = datetime.now(timezone.utc)
+
+    filtered = []
+    for ev in events:
+        # only high/medium impact
+        if ev.get("impact") not in ("High", "Medium"):
+            continue
+
+        try:
+            t = datetime.fromisoformat(ev["date"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+
+        diff_hours = (t - now).total_seconds() / 3600
+        if not (0 <= diff_hours <= hours):
+            continue
+
+        if symbol and ev.get("currency", "") not in symbol.upper():
+            continue
+
+        filtered.append({
+            "title":    ev.get("title", ""),
+            "currency": ev.get("currency", ""),
+            "time":     t.isoformat(),
+            "tier":     1 if ev.get("impact") == "High" else 2,
+        })
+
+    return filtered
 
 @router.get("/health")
 async def health():
