@@ -17,32 +17,40 @@ export default function Login() {
   const [metaId, setMetaId]   = useState('')
   const [loading, setLoading] = useState(false)
 
-  async function handleConnect(e) {
-    e.preventDefault()
-    setLoading(true)
-    setAuthError(null)
-    try {
-      const body = {
-        broker,
-        login: loginId,
-        password: token,
-        server,
-        meta_account_id: metaId,
-      }
-      const res  = await fetch(`${API}/api/connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Connection failed')
-      login(broker, data.account.account_id ?? loginId, data.account)
-    } catch (err) {
-      setAuthError(err.message)
-    } finally {
-      setLoading(false)
+ async function handleConnect(e) {
+  e.preventDefault()
+  setLoading(true)
+  setAuthError(null)
+  try {
+    const body = {
+      broker,
+      login: loginId,
+      password: token,
+      server,
+      meta_account_id: metaId,
     }
+
+    const res = await fetch(`${API}/api/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    const raw = await res.text()
+    console.log('STATUS:', res.status)
+    console.log('RAW BODY:', raw)
+
+    if (!raw) throw new Error(`Empty response — status ${res.status}`)
+    const data = JSON.parse(raw)
+    if (!res.ok) throw new Error(data.detail || 'Connection failed')
+    login(broker, data.account.account_id ?? loginId, data.account)
+
+  } catch (err) {
+    setAuthError(err.message)
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <div style={styles.outer}>
