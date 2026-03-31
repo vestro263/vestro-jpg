@@ -66,7 +66,10 @@ Event: ${ev.title}
 Impact: ${ev.tier}
 `
 
-      const res = await axios.post(`${AI_API}/chat`, { prompt })
+      const res = await axios.post(`${AI_API}/chat`, {
+          message: prompt,
+          session_id: ev.currency + '_' + Date.now()
+        })
 
       let data = res.data?.response || res.data
 
