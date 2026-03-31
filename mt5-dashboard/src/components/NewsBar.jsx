@@ -16,26 +16,92 @@ const BIAS_COLORS = {
 
 const ConfidenceBar = ({ value }) => {
   const pct = Math.round(value * 100)
-  const color = pct >= 70 ? '#4ade80' : pct >= 45 ? '#fbbf24' : '#f87171'
+
+  const tier =
+    pct >= 70 ? {
+      label: 'HIGH',
+      color: '#4ade80',
+      glow: '#4ade8066',
+      trackBg: 'rgba(74,222,128,0.08)',
+      labelBg: 'rgba(74,222,128,0.12)',
+      labelBorder: 'rgba(74,222,128,0.25)',
+      segments: 3,
+    } : pct >= 45 ? {
+      label: 'MEDIUM',
+      color: '#fbbf24',
+      glow: '#fbbf2466',
+      trackBg: 'rgba(251,191,36,0.08)',
+      labelBg: 'rgba(251,191,36,0.12)',
+      labelBorder: 'rgba(251,191,36,0.25)',
+      segments: 2,
+    } : {
+      label: 'LOW',
+      color: '#f87171',
+      glow: '#f8717166',
+      trackBg: 'rgba(248,113,113,0.08)',
+      labelBg: 'rgba(248,113,113,0.12)',
+      labelBorder: 'rgba(248,113,113,0.25)',
+      segments: 1,
+    }
+
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-        <span style={{ fontSize: 11, color: '#6b7280', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Confidence</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color }}>{pct}%</span>
+    <div style={{
+      marginTop: 14,
+      background: tier.trackBg,
+      border: `1px solid ${tier.labelBorder}`,
+      borderRadius: 8,
+      padding: '10px 14px',
+    }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{
+            fontSize: 10, color: '#4b5563',
+            textTransform: 'uppercase', letterSpacing: '0.08em'
+          }}>
+            Confidence
+          </span>
+          <span style={{
+            fontSize: 9, fontWeight: 700,
+            color: tier.color,
+            background: tier.labelBg,
+            border: `1px solid ${tier.labelBorder}`,
+            padding: '1px 6px', borderRadius: 4,
+            letterSpacing: '0.07em',
+          }}>
+            {tier.label}
+          </span>
+        </div>
+        <span style={{ fontSize: 15, fontWeight: 800, color: tier.color }}>
+          {pct}%
+        </span>
       </div>
-      <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 99, overflow: 'hidden' }}>
-        <div style={{
-          height: '100%',
-          width: `${pct}%`,
-          background: color,
-          borderRadius: 99,
-          transition: 'width 0.6s cubic-bezier(0.4,0,0.2,1)',
-          boxShadow: `0 0 8px ${color}88`,
-        }} />
+
+      {/* Segmented bar — 5 blocks */}
+      <div style={{ display: 'flex', gap: 4 }}>
+        {[1, 2, 3, 4, 5].map(i => {
+          const filled = i <= Math.round(pct / 20)
+          return (
+            <div key={i} style={{
+              flex: 1, height: 6, borderRadius: 3,
+              background: filled ? tier.color : 'rgba(255,255,255,0.06)',
+              boxShadow: filled ? `0 0 6px ${tier.glow}` : 'none',
+              transition: `background 0.4s ease ${i * 0.06}s, box-shadow 0.4s ease ${i * 0.06}s`,
+            }} />
+          )
+        })}
+      </div>
+
+      {/* Segment labels */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
+        {['0', '20', '40', '60', '80', '100'].map(l => (
+          <span key={l} style={{ fontSize: 8.5, color: '#374151' }}>{l}</span>
+        ))}
       </div>
     </div>
   )
 }
+
 
 const Spinner = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" style={{ animation: 'spin 0.8s linear infinite' }}>
