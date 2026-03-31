@@ -160,7 +160,7 @@ Return JSON only — no markdown, no explanation:
   "pair": "EURUSD",
   "bias": "buy or sell",
   "confidence": 0.0-1.0,
-  "reason": "short explanation"
+  "reason": "4-5 sentence explanation covering: what this event means for the currency, why you chose this bias, and key risks to watch"
 }
 
 News:
