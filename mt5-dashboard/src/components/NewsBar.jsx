@@ -66,7 +66,7 @@ Event: ${ev.title}
 Impact: ${ev.tier}
 `
 
-      const res = await axios.post(`${AI_API}/api/chat`, { prompt })
+      const res = await axios.post(`${AI_API}/chat`, { prompt })
 
       let data = res.data?.response || res.data
 
