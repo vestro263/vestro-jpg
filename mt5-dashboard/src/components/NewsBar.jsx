@@ -160,7 +160,7 @@ Return JSON only — no markdown, no explanation:
   "pair": "EURUSD",
   "bias": "buy or sell",
   "confidence": 0.0-1.0,
-  "reason": "4-5 sentence explanation covering: what this event means for the currency, why you chose this bias, and key risks to watch"
+  "reason": "MINIMUM 4 sentences. Sentence 1: what this economic event measures and why it matters. Sentence 2: how the actual result is likely to compare to expectations and what that means for the currency. Sentence 3: why you chose this specific bias direction. Sentence 4: the key risk or scenario that could invalidate this trade."
 }
 
 News:
