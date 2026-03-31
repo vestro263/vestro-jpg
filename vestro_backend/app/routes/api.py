@@ -9,11 +9,11 @@ import httpx
 import hashlib
 import statistics
 import os
-import yfinance as yf
 
 router = APIRouter(prefix="/api")
 
 AV_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+TD_KEY = os.getenv("TWELVE_DATA_KEY", "")
 
 # ─────────────────────────────────────────────────────────────
 # HEALTH
@@ -122,7 +122,10 @@ _WATCHLIST = [
 
 _price_cache: dict = {}
 _price_cache_time: datetime | None = None
-_PRICE_TTL = timedelta(hours=1)
+
+
+_PRICE_TTL       = timedelta(hours=24)   # was 1
+_FIRMS_CACHE_TTL = timedelta(hours=24)   # was 1
 
 _overview_cache: dict = {}
 _overview_cache_time: datetime | None = None
@@ -131,57 +134,82 @@ _overview_loading = False
 
 _firms_cache: list = []
 _firms_cache_time: datetime | None = None
-_FIRMS_CACHE_TTL = timedelta(hours=1)
+
 _firms_loading = False
 
+import pickle, pathlib
 
-# ─────────────────────────────────────────────────────────────
-# PRICE FETCH — yfinance parallel
-# ─────────────────────────────────────────────────────────────
+_CACHE_FILE = pathlib.Path("/tmp/vestro_price_cache.pkl")
 
-async def _fetch_prices_yfinance() -> None:
-    global _price_cache, _price_cache_time, _yf_info_cache
-    loop = asyncio.get_event_loop()
+async def _fetch_prices_yfinance() -> None:   # Twelve Data version
+    global _price_cache, _price_cache_time
 
-    def _fetch_one(symbol):
+    # ── Load from disk if fresh enough (survives Render restarts)
+    if _CACHE_FILE.exists():
         try:
-            t    = yf.Ticker(symbol)
-            hist = t.history(period="35d")
-            info = t.info
-            if hist.empty:
-                return symbol, None, {}
-            closes  = hist["Close"].tolist()[::-1]
-            volumes = hist["Volume"].tolist()[::-1]
-            return symbol, {
-                "closes":            closes,
-                "volumes":           volumes,
-                "latest_price":      round(float(closes[0]), 2),
-                "latest_change_pct": round(
-                    (closes[0] - closes[1]) / closes[1] * 100, 2
-                ) if len(closes) >= 2 else 0.0,
-            }, info
+            saved = pickle.loads(_CACHE_FILE.read_bytes())
+            age   = datetime.now(timezone.utc) - saved["time"]
+            if age < _PRICE_TTL:
+                _price_cache      = saved["data"]
+                _price_cache_time = saved["time"]
+                return                          # still fresh, skip API call
         except Exception:
-            return symbol, None, {}
+            pass
 
-    tasks = [loop.run_in_executor(None, _fetch_one, s) for s in _WATCHLIST]
-    try:
-        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=25)
-    except asyncio.TimeoutError:
-        done, _ = await asyncio.wait(
-            [asyncio.ensure_future(t) for t in tasks], timeout=0
-        )
-        results = [t.result() for t in done if not t.exception()]
+    # ── Actually fetch from Twelve Data
+    needed = [s for s in _WATCHLIST if s not in _price_cache]
+    if not needed:
+        _price_cache_time = datetime.now(timezone.utc)
+        return
 
-    for item in results:
-        if item is None:
-            continue
-        symbol, data, info = item
-        if data:
-            _price_cache[symbol]   = data
-            _yf_info_cache[symbol] = info
+    BATCH_SIZE = 8
+    batches = [needed[i:i + BATCH_SIZE] for i in range(0, len(needed), BATCH_SIZE)]
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for batch in batches:
+            symbols_str = ",".join(batch)
+            try:
+                r = await client.get(
+                    "https://api.twelvedata.com/time_series",
+                    params={
+                        "symbol":     symbols_str,
+                        "interval":   "1day",
+                        "outputsize": 35,
+                        "apikey":     TD_KEY,
+                    },
+                )
+                data = r.json()
+                if len(batch) == 1:
+                    data = {batch[0]: data}
+
+                for symbol, series in data.items():
+                    values = series.get("values", [])
+                    if not values:
+                        continue
+                    closes  = [float(v["close"])  for v in values]
+                    volumes = [float(v["volume"]) for v in values]
+                    _price_cache[symbol] = {
+                        "closes":            closes,
+                        "volumes":           volumes,
+                        "latest_price":      round(closes[0], 2),
+                        "latest_change_pct": round(
+                            (closes[0] - closes[1]) / closes[1] * 100, 2
+                        ) if len(closes) >= 2 else 0.0,
+                    }
+            except Exception:
+                continue
+            await asyncio.sleep(0.5)
 
     _price_cache_time = datetime.now(timezone.utc)
 
+    # ── Persist to disk
+    try:
+        _CACHE_FILE.write_bytes(pickle.dumps({
+            "data": _price_cache,
+            "time": _price_cache_time,
+        }))
+    except Exception:
+        pass
 # ─────────────────────────────────────────────────────────────
 # OVERVIEW FETCH — Alpha Vantage (background, optional)
 # ─────────────────────────────────────────────────────────────
@@ -266,28 +294,23 @@ def _score(closes: list, volumes: list) -> dict:
         "top_driver": top_driver,
     }
 
-# Add this cache at the top with other caches
-_yf_info_cache: dict = {}
-
 def _build_firm(symbol: str) -> dict | None:
     price_data = _price_cache.get(symbol)
     if not price_data:
         return None
 
-    # Use AV overview if available, else yfinance info cache
     info  = _overview_cache.get(symbol, {})
-    yinfo = _yf_info_cache.get(symbol, {})
     score = _score(price_data["closes"], price_data["volumes"])
 
     return {
         "id":                hashlib.md5(symbol.encode()).hexdigest()[:12],
-        "name":              info.get("Name") or yinfo.get("longName") or yinfo.get("shortName") or symbol,
-        "domain":            (info.get("OfficialSite") or yinfo.get("website") or "").replace("https://", "").replace("http://", "").split("/")[0],
-        "sector":            info.get("Sector") or yinfo.get("sector") or yinfo.get("industryDisp") or "Unknown",
-        "country":           info.get("Country") or yinfo.get("country") or "US",
+        "name":              info.get("Name") or symbol,
+        "domain":            (info.get("OfficialSite") or "").replace("https://", "").replace("http://", "").split("/")[0],
+        "sector":            info.get("Sector") or "Unknown",
+        "country":           info.get("Country") or "US",
         "stage":             "Public",
-        "employee_count":    int(info["FullTimeEmployees"]) if info.get("FullTimeEmployees") not in (None, "None", "") else yinfo.get("fullTimeEmployees"),
-        "total_funding_usd": int(info["MarketCapitalization"]) if info.get("MarketCapitalization") not in (None, "None", "") else int(yinfo.get("marketCap") or 0),
+        "employee_count":    int(info["FullTimeEmployees"]) if info.get("FullTimeEmployees") not in (None, "None", "") else None,
+        "total_funding_usd": int(info["MarketCapitalization"]) if info.get("MarketCapitalization") not in (None, "None", "") else 0,
         "ticker":            symbol,
         "price":             price_data["latest_price"],
         "change_pct":        price_data["latest_change_pct"],
