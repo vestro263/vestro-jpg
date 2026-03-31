@@ -181,7 +181,7 @@ async def _fetch_prices_yfinance() -> None:
         try:
             t    = yf.Ticker(symbol)
             hist = t.history(period="35d")
-            info = t.info   # <-- grab info here too
+            info = t.info
             if hist.empty:
                 return symbol, None, {}
             closes  = hist["Close"].tolist()[::-1]
@@ -211,8 +211,8 @@ async def _fetch_prices_yfinance() -> None:
             continue
         symbol, data, info = item
         if data:
-            _price_cache[symbol]    = data
-            _yf_info_cache[symbol]  = info
+            _price_cache[symbol]   = data
+            _yf_info_cache[symbol] = info
 
     _price_cache_time = datetime.now(timezone.utc)
 
