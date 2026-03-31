@@ -728,3 +728,19 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade validation not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
+
+@router.get("/firms/debug2")
+async def firms_debug2():
+    import traceback
+    loop = asyncio.get_event_loop()
+
+    def _fetch_one_verbose(symbol):
+        try:
+            t = yf.Ticker(symbol)
+            hist = t.history(period="5d")
+            return {"symbol": symbol, "rows": len(hist), "error": None}
+        except Exception as e:
+            return {"symbol": symbol, "rows": 0, "error": str(e), "trace": traceback.format_exc()}
+
+    result = await loop.run_in_executor(None, _fetch_one_verbose, "NVDA")
+    return result
