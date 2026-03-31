@@ -80,7 +80,8 @@ const ConfidenceBar = ({ value }) => {
       {/* Segmented bar — 5 blocks */}
       <div style={{ display: 'flex', gap: 4 }}>
         {[1, 2, 3, 4, 5].map(i => {
-          const filled = i <= Math.round(pct / 20)
+          const filled = i <= Math.ceil((pct / 100) * 5)
+
           return (
             <div key={i} style={{
               flex: 1, height: 6, borderRadius: 3,
