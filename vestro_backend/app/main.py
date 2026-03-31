@@ -47,6 +47,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://r3bel-production.up.railway.app"
         "https://vestro-ui.onrender.com",
         "http://localhost:5173",
     ],
