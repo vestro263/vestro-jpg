@@ -88,40 +88,6 @@ async def get_news(hours: int = 6, symbol: str | None = None):
 
     return filtered
 
-
-@router.get("/news/debug")
-async def news_debug():
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0"
-        }) as client:
-            r = await client.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
-            events = r.json()
-
-        now = datetime.now(timezone.utc)
-        sample = []
-        for ev in events:
-            if ev.get("impact") not in ("High", "Medium"):
-                continue
-            try:
-                t = dateparser.parse(ev["date"])
-                diff = (t - now).total_seconds() / 3600
-            except Exception as e:
-                diff = f"PARSE ERROR: {e}"
-            sample.append({
-                "title":      ev["title"],
-                "impact":     ev["impact"],
-                "date_raw":   ev["date"],
-                "diff_hours": round(diff, 2) if isinstance(diff, float) else diff,
-            })
-
-        return {"now_utc": now.isoformat(), "count": len(sample), "events": sample}
-
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()}
-
-
 # ─────────────────────────────────────────────────────────────
 # WATCHLIST
 # ─────────────────────────────────────────────────────────────
@@ -370,6 +336,22 @@ async def firms_debug():
         import traceback
         return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
 
+
+@router.get("/firms/debug2")
+async def firms_debug2():
+    import traceback
+    loop = asyncio.get_event_loop()
+
+    def _fetch_one_verbose(symbol):
+        try:
+            t = yf.Ticker(symbol)
+            hist = t.history(period="5d")
+            return {"symbol": symbol, "rows": len(hist), "error": None}
+        except Exception as e:
+            return {"symbol": symbol, "rows": 0, "error": str(e), "trace": traceback.format_exc()}
+
+    result = await loop.run_in_executor(None, _fetch_one_verbose, "NVDA")
+    return result
 
 @router.get("/firms")
 async def list_firms(
@@ -728,19 +710,3 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade validation not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
-
-@router.get("/firms/debug2")
-async def firms_debug2():
-    import traceback
-    loop = asyncio.get_event_loop()
-
-    def _fetch_one_verbose(symbol):
-        try:
-            t = yf.Ticker(symbol)
-            hist = t.history(period="5d")
-            return {"symbol": symbol, "rows": len(hist), "error": None}
-        except Exception as e:
-            return {"symbol": symbol, "rows": 0, "error": str(e), "trace": traceback.format_exc()}
-
-    result = await loop.run_in_executor(None, _fetch_one_verbose, "NVDA")
-    return result
