@@ -174,15 +174,17 @@ _firms_loading = False
 # ─────────────────────────────────────────────────────────────
 
 async def _fetch_prices_yfinance() -> None:
-    global _price_cache, _price_cache_time
+    global _price_cache, _price_cache_time, _yf_info_cache
     loop = asyncio.get_event_loop()
 
     def _fetch_one(symbol):
         try:
-            hist = yf.Ticker(symbol).history(period="35d")
+            t    = yf.Ticker(symbol)
+            hist = t.history(period="35d")
+            info = t.info   # <-- grab info here too
             if hist.empty:
-                return symbol, None
-            closes  = hist["Close"].tolist()[::-1]  # newest first
+                return symbol, None, {}
+            closes  = hist["Close"].tolist()[::-1]
             volumes = hist["Volume"].tolist()[::-1]
             return symbol, {
                 "closes":            closes,
@@ -191,9 +193,9 @@ async def _fetch_prices_yfinance() -> None:
                 "latest_change_pct": round(
                     (closes[0] - closes[1]) / closes[1] * 100, 2
                 ) if len(closes) >= 2 else 0.0,
-            }
+            }, info
         except Exception:
-            return symbol, None
+            return symbol, None, {}
 
     tasks = [loop.run_in_executor(None, _fetch_one, s) for s in _WATCHLIST]
     try:
@@ -207,12 +209,12 @@ async def _fetch_prices_yfinance() -> None:
     for item in results:
         if item is None:
             continue
-        symbol, data = item
+        symbol, data, info = item
         if data:
-            _price_cache[symbol] = data
+            _price_cache[symbol]    = data
+            _yf_info_cache[symbol]  = info
 
     _price_cache_time = datetime.now(timezone.utc)
-
 
 # ─────────────────────────────────────────────────────────────
 # OVERVIEW FETCH — Alpha Vantage (background, optional)
@@ -298,24 +300,28 @@ def _score(closes: list, volumes: list) -> dict:
         "top_driver": top_driver,
     }
 
+# Add this cache at the top with other caches
+_yf_info_cache: dict = {}
 
 def _build_firm(symbol: str) -> dict | None:
     price_data = _price_cache.get(symbol)
     if not price_data:
         return None
 
+    # Use AV overview if available, else yfinance info cache
     info  = _overview_cache.get(symbol, {})
+    yinfo = _yf_info_cache.get(symbol, {})
     score = _score(price_data["closes"], price_data["volumes"])
 
     return {
         "id":                hashlib.md5(symbol.encode()).hexdigest()[:12],
-        "name":              info.get("Name") or symbol,
-        "domain":            (info.get("OfficialSite") or "").replace("https://", "").replace("http://", "").split("/")[0],
-        "sector":            info.get("Sector") or "Unknown",
-        "country":           info.get("Country", "US"),
+        "name":              info.get("Name") or yinfo.get("longName") or yinfo.get("shortName") or symbol,
+        "domain":            (info.get("OfficialSite") or yinfo.get("website") or "").replace("https://", "").replace("http://", "").split("/")[0],
+        "sector":            info.get("Sector") or yinfo.get("sector") or yinfo.get("industryDisp") or "Unknown",
+        "country":           info.get("Country") or yinfo.get("country") or "US",
         "stage":             "Public",
-        "employee_count":    int(info["FullTimeEmployees"]) if info.get("FullTimeEmployees") not in (None, "None", "") else None,
-        "total_funding_usd": int(info["MarketCapitalization"]) if info.get("MarketCapitalization") not in (None, "None", "") else 0,
+        "employee_count":    int(info["FullTimeEmployees"]) if info.get("FullTimeEmployees") not in (None, "None", "") else yinfo.get("fullTimeEmployees"),
+        "total_funding_usd": int(info["MarketCapitalization"]) if info.get("MarketCapitalization") not in (None, "None", "") else int(yinfo.get("marketCap") or 0),
         "ticker":            symbol,
         "price":             price_data["latest_price"],
         "change_pct":        price_data["latest_change_pct"],
