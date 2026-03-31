@@ -188,47 +188,86 @@ _firms_loading = False
 async def _fetch_prices_twelve(client: httpx.AsyncClient) -> None:
     global _price_cache, _price_cache_time
 
-    for symbol in _WATCHLIST:
-        try:
-            r = await client.get(
-                "https://api.twelvedata.com/time_series",
-                params={
-                    "symbol": symbol,
-                    "interval": "1day",
-                    "outputsize": 32,
-                    "apikey": TD_KEY,
-                },
-                timeout=15,
-            )
-            data = r.json()
-        except Exception:
-            continue
+    # Batch all symbols in one request (Twelve Data supports comma-separated)
+    symbols_str = ",".join(_WATCHLIST)
+    try:
+        r = await client.get(
+            "https://api.twelvedata.com/time_series",
+            params={
+                "symbol":     symbols_str,
+                "interval":   "1day",
+                "outputsize": 32,
+                "apikey":     TD_KEY,
+            },
+            timeout=30,
+        )
+        data = r.json()
+    except Exception as e:
+        return
 
-        values = data.get("values", [])
+    # Batch response is {SYMBOL: {values: [...]}, ...}
+    # Single symbol response is {values: [...]} — normalize it
+    if "values" in data:
+        data = {_WATCHLIST[0]: data}
+
+    for symbol, series in data.items():
+        values = series.get("values", [])
         if not values:
             continue
-
         try:
-            closes = [float(v["close"]) for v in values]
+            closes  = [float(v["close"])  for v in values]
             volumes = [float(v["volume"]) for v in values]
-
             _price_cache[symbol] = {
-                "closes": closes,
-                "volumes": volumes,
-                "latest_price": round(closes[0], 2),
+                "closes":            closes,
+                "volumes":           volumes,
+                "latest_price":      round(closes[0], 2),
                 "latest_change_pct": round(
                     (closes[0] - closes[1]) / closes[1] * 100, 2
                 ) if len(closes) >= 2 else 0.0,
             }
-
         except Exception:
             continue
 
-        # 🚨 VERY IMPORTANT: avoid rate limit
-        await asyncio.sleep(12)
-
     _price_cache_time = datetime.now(timezone.utc)
 
+import yfinance as yf
+
+async def _fetch_prices_yfinance() -> None:
+    global _price_cache, _price_cache_time
+    loop = asyncio.get_event_loop()
+
+    def _fetch_one(symbol):
+        try:
+            hist = yf.Ticker(symbol).history(period="35d")
+            if hist.empty:
+                return symbol, None
+            closes  = hist["Close"].tolist()[::-1]   # newest first
+            volumes = hist["Volume"].tolist()[::-1]
+            return symbol, {
+                "closes":            closes,
+                "volumes":           volumes,
+                "latest_price":      round(float(closes[0]), 2),
+                "latest_change_pct": round(
+                    (closes[0] - closes[1]) / closes[1] * 100, 2
+                ) if len(closes) >= 2 else 0.0,
+            }
+        except Exception:
+            return symbol, None
+
+    tasks = [loop.run_in_executor(None, _fetch_one, s) for s in _WATCHLIST]
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=25)
+    except asyncio.TimeoutError:
+        done, pending = await asyncio.wait(
+            [asyncio.ensure_future(t) for t in tasks], timeout=0
+        )
+        results = [t.result() for t in done if not t.exception()]
+
+    for symbol, data in results:
+        if data:
+            _price_cache[symbol] = data
+
+    _price_cache_time = datetime.now(timezone.utc)
 # ─────────────────────────────────────────────────────────────
 # ALPHA VANTAGE — overview metadata
 # Free tier: 25 req/day  →  rotates through full list over 3 days.
@@ -355,28 +394,35 @@ def _build_firm(symbol: str) -> dict | None:
 # REFRESH ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────
 async def _refresh_firms() -> None:
-    global _firms_cache, _firms_cache_time, _overview_loading
+    global _firms_cache, _firms_cache_time
 
     now = datetime.now(timezone.utc)
 
-    # ── 1. PRICE FETCH (blocking, required)
-    async with httpx.AsyncClient() as client:
-        if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
-            await _fetch_prices_twelve(client)
+    if _price_cache_time is None or (now - _price_cache_time) > _PRICE_TTL:
+        async with httpx.AsyncClient() as client:
+            if TD_KEY:
+                await _fetch_prices_twelve(client)
+            else:
+                await _fetch_prices_yfinance()   # fallback, no key needed
 
-    # ── 2. BACKGROUND OVERVIEW FETCH (non-blocking, safe)
-    if (
-        (_overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL)
-        and not _overview_loading
+    # Overview fetch stays the same (background, non-blocking)
+    if AV_KEY and (
+        _overview_cache_time is None or (now - _overview_cache_time) > _OVERVIEW_TTL
     ):
-        _overview_loading = True
-        asyncio.create_task(_fetch_overviews_av())
+        asyncio.create_task(_run_overview_fetch())
 
-    # ── 3. BUILD FIRMS IMMEDIATELY
-    _firms_cache = [
-        f for f in (_build_firm(s) for s in _WATCHLIST) if f
-    ]
+    _firms_cache = [f for f in (_build_firm(s) for s in _WATCHLIST) if f]
     _firms_cache_time = datetime.now(timezone.utc)
+
+
+async def _run_overview_fetch():
+    global _overview_loading
+    _overview_loading = True
+    try:
+        async with httpx.AsyncClient() as client:
+            await _fetch_overviews_av(client)
+    finally:
+        _overview_loading = False
 # ─────────────────────────────────────────────────────────────
 # FIRMS ENDPOINTS
 # ─────────────────────────────────────────────────────────────
