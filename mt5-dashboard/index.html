@@ -2,9 +2,52 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/capital.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>mt5-dashboard</title>
+
+    <!-- SEO -->
+    <meta name="description" content="Vestro Capital — Professional forex trading intelligence and market analysis." />
+    <meta name="theme-color" content="#0d1117" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Vestro Capital" />
+    <meta property="og:description" content="Professional forex trading intelligence and market analysis." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/capital.png" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+
+    <title>Vestro Capital</title>
+
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        height: 100%;
+        background: #0d1117;
+        color: #f1f5f9;
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      #root { height: 100%; }
+
+      /* Monospace for numbers/prices */
+      .mono { font-family: 'JetBrains Mono', monospace; }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar { width: 4px; height: 4px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 99px; }
+      ::-webkit-scrollbar-thumb:hover { background: #374151; }
+
+      /* Selection */
+      ::selection { background: rgba(96,165,250,0.2); color: #f1f5f9; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
