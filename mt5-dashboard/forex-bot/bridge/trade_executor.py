@@ -1,10 +1,3 @@
-"""
-Trade Executor — handles all order operations:
-  - Market orders (buy/sell)
-  - Modify SL/TP (break-even, trailing stop)
-  - Partial close at TP1
-  - Full close
-"""
 
 import logging
 import time

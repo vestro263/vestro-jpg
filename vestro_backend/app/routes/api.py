@@ -23,6 +23,11 @@ TD_KEY = os.getenv("TWELVE_DATA_KEY", "")
 async def health():
     return {"status": "ok", "service": "vestro-backend"}
 
+@router.post("/signal/broadcast")
+async def broadcast_signal(data: dict):
+    """Called by signal engine to push signals to frontend."""
+    await manager.broadcast({"type": "signal", **data})
+    return {"status": "ok"}
 
 # ─────────────────────────────────────────────────────────────
 # NEWS

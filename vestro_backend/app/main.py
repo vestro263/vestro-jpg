@@ -14,6 +14,7 @@ from .routes.stream import router as stream_router
 from .workers.scheduler import create_scheduler
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
+from .services.signal_engine import run_signal_loop
 import traceback
 
 
@@ -25,15 +26,19 @@ log = logging.getLogger(__name__)
 settings = get_settings()
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Vestro backend starting up")
     await init_db()
     log.info("DB tables ready")
 
-    log.info("Pre-warming price cache...")
     await _refresh_firms()
     log.info("Price cache ready")
+
+    # Start signal engine
+    asyncio.create_task(run_signal_loop())
+    log.info("Signal engine running")
 
     scheduler = create_scheduler()
     scheduler.start()
@@ -41,7 +46,6 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown(wait=False)
     log.info("Vestro backend shut down")
-
 
 
 app = FastAPI(
