@@ -10,7 +10,6 @@ import useBotStore from './store/botStore'
 import Login from './pages/Login'
 import AccountSelector from './pages/AccountSelector'
 
-
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
   useEffect(() => {
@@ -31,11 +30,13 @@ const PAGES = {
 }
 
 export default function App() {
-  const { accountId, activePage, login } = useBotStore()
+  const {
+    accountId, activePage, login,
+    pendingAccounts, setPendingAccounts
+  } = useBotStore()
   const isLoggedIn = !!accountId
   const isMobile = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
-  const [pendingAccounts, setPendingAccounts] = useState(null)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -48,20 +49,7 @@ export default function App() {
     } else if (accountsParam) {
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
-        if (accounts.length === 1) {
-          // Only one account — log in directly
-          const acc = accounts[0]
-          login('deriv', acc.account_id, {
-            account_id: acc.account_id,
-            balance: acc.balance,
-            currency: acc.currency,
-            equity: acc.balance,
-            profit: 0,
-          })
-        } else {
-          // Multiple accounts — show selector
-          setPendingAccounts(accounts)
-        }
+        setPendingAccounts(accounts)
       } catch {}
       window.history.replaceState({}, '', '/')
     }
@@ -78,9 +66,13 @@ export default function App() {
 
   if (!authChecked) return null
 
-  // Show account selector if multiple accounts
   if (pendingAccounts) {
-    return <AccountSelector accounts={pendingAccounts} />
+    return (
+      <AccountSelector
+        accounts={pendingAccounts}
+        onSelect={() => setPendingAccounts(null)}
+      />
+    )
   }
 
   if (!isLoggedIn) return <Login />

@@ -1,6 +1,5 @@
-// src/store/botStore.js
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'  // ← add this import
+import { persist } from 'zustand/middleware'
 import axios from 'axios'
 
 const API = 'https://vestro-jpg.onrender.com'
@@ -11,9 +10,8 @@ const MAX_RECONNECT = 10
 const backoffDelay = (n) => Math.min(1000 * 2 ** n, 30000)
 
 const useBotStore = create(
-  persist(                                    // ← wrap with persist
+  persist(
     (set, get) => ({
-      // ── ALL YOUR EXISTING STATE (unchanged) ─────────
       connected: false,
       wsError: null,
       ws: null,
@@ -33,26 +31,29 @@ const useBotStore = create(
       botRunning: false,
       setActivePage: (page) => set({ activePage: page }),
 
-      // ── NEW: auth state ──────────────────────────────
+      // auth state
       isLoggedIn: false,
-      broker: null,          // 'deriv' | 'welltrade'
-      accountId: null,       // 'CR123456' or MT5 login
+      broker: null,
+      accountId: null,
       authError: null,
+      pendingAccounts: null,
+
+      setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
       login: (broker, accountId, accountData) => {
-        // after /api/connect succeeds — seed account + connect WS
         set({
           isLoggedIn: true,
           broker,
           accountId,
           authError: null,
+          pendingAccounts: null,
           account: {
             ...get().account,
             ...accountData,
           },
         })
-        get().connect()       // start WS immediately after login
-        get().startPolling()  // start 5s polling
+        get().connect()
+        get().startPolling()
       },
 
       logout: () => {
@@ -64,6 +65,7 @@ const useBotStore = create(
           accountId: null,
           connected: false,
           ws: null,
+          pendingAccounts: null,
           account: { balance: 0, equity: 0, profit: 0, margin_free: 0, currency: 'USD', name: '—', leverage: 0 },
           positions: [],
           signals: [],
@@ -75,7 +77,6 @@ const useBotStore = create(
 
       setAuthError: (err) => set({ authError: err }),
 
-      // ── ALL YOUR EXISTING METHODS (unchanged) ────────
       startBot: async () => {
         try {
           await axios.post(`${API}/api/bot/start`)
@@ -182,8 +183,8 @@ const useBotStore = create(
       },
     }),
     {
-      name: 'vestro-auth',                     // localStorage key
-      partialize: (s) => ({                    // only persist auth — not WS/signals
+      name: 'vestro-auth',
+      partialize: (s) => ({
         broker: s.broker,
         accountId: s.accountId,
       }),

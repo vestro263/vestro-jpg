@@ -1,7 +1,6 @@
-// src/pages/AccountSelector.jsx
 import useBotStore from '../store/botStore'
 
-export default function AccountSelector({ accounts }) {
+export default function AccountSelector({ accounts, onSelect }) {
   const { login } = useBotStore()
 
   function handleSelect(acc) {
@@ -12,6 +11,7 @@ export default function AccountSelector({ accounts }) {
       equity:     acc.balance,
       profit:     0,
     })
+    onSelect()
   }
 
   return (
@@ -42,7 +42,7 @@ export default function AccountSelector({ accounts }) {
               </div>
               <div style={styles.itemRight}>
                 <span style={styles.balance}>
-                  {acc.balance.toLocaleString()} {acc.currency}
+                  {Number(acc.balance).toLocaleString()} {acc.currency}
                 </span>
                 <span style={styles.arrow}>→</span>
               </div>
@@ -110,6 +110,7 @@ const styles = {
     padding: '14px 16px',
     cursor: 'pointer',
     transition: 'border-color 0.15s',
+    width: '100%',
   },
   itemLeft: {
     display: 'flex',
