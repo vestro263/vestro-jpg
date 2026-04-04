@@ -5,7 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
 from .routes.trade import router as trade_router
-
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from .database import init_db, AsyncSessionLocal
 from .routes.auth import router as auth_router
 from .config import get_settings
