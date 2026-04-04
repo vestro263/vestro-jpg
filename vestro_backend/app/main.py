@@ -11,6 +11,10 @@ from .config import get_settings
 from .routes.api import router as api_router, _refresh_firms
 from .routes.stream import router as stream_router
 from .workers.scheduler import create_scheduler
+from fastapi.responses import JSONResponse
+from fastapi.requests import Request
+import traceback
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +41,13 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
     log.info("Vestro backend shut down")
 
+
+@exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc), "traceback": traceback.format_exc()}
+    )
 
 app = FastAPI(
     title="Vestro Valuation Engine",
