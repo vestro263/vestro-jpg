@@ -666,24 +666,39 @@ def get_positions():
 # BOT CONTROL
 # ─────────────────────────────────────────────────────────────
 
+_BOT_STATE_FILE = "/tmp/vestro_bot_running.txt"
+
+def _read_bot_state() -> bool:
+    try:
+        return open(_BOT_STATE_FILE).read().strip() == "1"
+    except:
+        return False
+
+def _write_bot_state(running: bool):
+    try:
+        open(_BOT_STATE_FILE, "w").write("1" if running else "0")
+    except:
+        pass
+
 @router.post("/bot/start")
 def start_bot():
     global _bot_running
     _bot_running = True
+    _write_bot_state(True)
     return {"status": "started"}
-
 
 @router.post("/bot/stop")
 def stop_bot():
     global _bot_running
     _bot_running = False
+    _write_bot_state(False)
     return {"status": "stopped"}
-
 
 @router.get("/bot/status")
 def bot_status():
+    global _bot_running
+    _bot_running = _read_bot_state()
     return {"running": _bot_running}
-
 
 # ─────────────────────────────────────────────────────────────
 # AUTH

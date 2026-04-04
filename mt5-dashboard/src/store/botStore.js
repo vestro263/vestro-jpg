@@ -208,6 +208,7 @@ const useBotStore = create(
         broker:    s.broker,
         accountId: s.accountId,
         account:   s.account,
+        botRunning: s.botRunning,
       }),
     }
   )
