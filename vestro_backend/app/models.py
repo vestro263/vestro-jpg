@@ -3,7 +3,7 @@ from sqlalchemy import (
     ForeignKey, Index, func
 )
 from sqlalchemy.orm import relationship
-from app.database import Base
+from .database import Base
 import uuid
 
 
