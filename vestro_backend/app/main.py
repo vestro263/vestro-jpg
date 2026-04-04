@@ -42,12 +42,6 @@ async def lifespan(app: FastAPI):
     log.info("Vestro backend shut down")
 
 
-@exception_handler(Exception)
-async def debug_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc), "traceback": traceback.format_exc()}
-    )
 
 app = FastAPI(
     title="Vestro Valuation Engine",
@@ -55,6 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs",
 )
+
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc), "traceback": traceback.format_exc()}
+    )
 
 app.add_middleware(
     CORSMiddleware,
