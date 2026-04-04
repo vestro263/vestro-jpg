@@ -32,7 +32,6 @@ export default function App() {
   const { accountId, activePage, login } = useBotStore()
   const isLoggedIn = !!accountId
   const isMobile = useIsMobile()
-  const [authChecked, setAuthChecked] = useState(false)
 
   // Handle Deriv OAuth callback — runs once on mount
   useEffect(() => {
@@ -45,7 +44,10 @@ export default function App() {
     if (error) {
       useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
       window.history.replaceState({}, '', '/')
-    } else if (account_id) {
+      return
+    }
+
+    if (account_id) {
       login('deriv', account_id, {
         account_id,
         balance,
@@ -53,10 +55,9 @@ export default function App() {
         equity: balance,
         profit: 0,
       })
+      // Clean the URL so params don't persist on refresh
       window.history.replaceState({}, '', '/')
     }
-
-    setAuthChecked(true)
   }, [])
 
   useEffect(() => {
@@ -65,9 +66,6 @@ export default function App() {
       useBotStore.getState().startPolling()
     }
   }, [isLoggedIn])
-
-  // Wait until OAuth params are processed before deciding to show Login
-  if (!authChecked) return null
 
   if (!isLoggedIn) return <Login />
 
