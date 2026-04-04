@@ -19,11 +19,6 @@ from .routes.trade import router as trade_router
 from .workers.scheduler import create_scheduler
 from .services.signal_engine import run_signal_loop
 
-from .routes.api import _read_bot_state
-import vestro_backend.app.routes.api as api_module
-api_module._bot_running = _read_bot_state()
-log.info(f"Bot state restored: running={api_module._bot_running}")
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -40,6 +35,11 @@ async def lifespan(app: FastAPI):
 
     await _refresh_firms()
     log.info("Price cache ready")
+
+    # Restore bot state
+    import vestro_backend.app.routes.api as api_module
+    api_module._bot_running = api_module._read_bot_state()
+    log.info(f"Bot state restored: running={api_module._bot_running}")
 
     asyncio.create_task(run_signal_loop())
     log.info("Signal engine running")
