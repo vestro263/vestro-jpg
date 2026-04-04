@@ -40,3 +40,15 @@ async def deriv_callback(token1: str, acct1: str, cur1: str = "USD", db: AsyncSe
         f"&balance={info.get('balance', 0)}"
         f"&currency={info.get('currency', cur1)}"
     )
+
+@router.get("/auth/check/{account_id}")
+async def check_account(account_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Credentials).where(Credentials.user_id == account_id))
+    cred = result.scalar_one_or_none()
+    if not cred:
+        return {"found": False}
+    return {
+        "found": True,
+        "broker": cred.broker,
+        "user_id": cred.user_id,
+    }
