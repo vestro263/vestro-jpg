@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
+const DERIV_APP_ID = '32TJ7uyciFGiB0C0Nw5Uf'
+const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${DERIV_APP_ID}&response_type=token&scope=read,trade`
+
 const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 const BROKERS = [
   { value: 'deriv',     label: 'Deriv' },
@@ -9,47 +12,36 @@ const BROKERS = [
 
 export default function Login() {
   const { login, setAuthError, authError } = useBotStore()
-  const [broker, setBroker]   = useState('deriv')
-  const [loginId, setLoginId] = useState('')
-  const [token, setToken]     = useState('')
-  const [server, setServer]   = useState('')
-  const [metaId, setMetaId]   = useState('')
-  const [loading, setLoading] = useState(false)
+  const [broker, setBroker]     = useState('deriv')
+  const [loginId, setLoginId]   = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading]   = useState(false)
 
- async function handleConnect(e) {
-  e.preventDefault()
-  setLoading(true)
-  setAuthError(null)
-  try {
-    const body = {
-      broker,
-      login: loginId,
-      password: token,
-      server,
-      meta_account_id: metaId,
-    }
-
-    const res = await fetch(`${API}/api/connect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-
-    const raw = await res.text()
-    console.log('STATUS:', res.status)
-    console.log('RAW BODY:', raw)
-
-    if (!raw) throw new Error(`Empty response — status ${res.status}`)
-    const data = JSON.parse(raw)
-    if (!res.ok) throw new Error(data.detail || 'Connection failed')
-    login(broker, data.account.account_id ?? loginId, data.account)
-
-  } catch (err) {
-    setAuthError(err.message)
-  } finally {
-    setLoading(false)
+  function handleDerivOAuth() {
+    window.location.href = DERIV_OAUTH_URL
   }
-}
+
+  async function handleWellTradeConnect(e) {
+    e.preventDefault()
+    setLoading(true)
+    setAuthError(null)
+    try {
+      const res = await fetch(`${API}/api/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broker, login: loginId, password }),
+      })
+      const raw = await res.text()
+      if (!raw) throw new Error(`Empty response — status ${res.status}`)
+      const data = JSON.parse(raw)
+      if (!res.ok) throw new Error(data.detail || 'Connection failed')
+      login(broker, data.account.account_id ?? loginId, data.account)
+    } catch (err) {
+      setAuthError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
     <div style={styles.outer}>
@@ -61,110 +53,66 @@ export default function Login() {
         </div>
         <p style={styles.sub}>Connect your trading account</p>
 
-        <form onSubmit={handleConnect} style={styles.form}>
-
-          {/* Broker selector */}
-          <div style={styles.field}>
-            <label style={styles.label}>Broker</label>
-            <div style={styles.segmented}>
-              {BROKERS.map(b => (
-                <button
-                  key={b.value}
-                  type="button"
-                  onClick={() => setBroker(b.value)}
-                  style={{
-                    ...styles.seg,
-                    ...(broker === b.value ? styles.segActive : {}),
-                  }}
-                >
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Login ID */}
-          <div style={styles.field}>
-            <label style={styles.label}>
-              {broker === 'deriv' ? 'Account ID (e.g. CR123456)' : 'MT5 Login'}
-            </label>
-            <input
-              style={styles.input}
-              value={loginId}
-              onChange={e => setLoginId(e.target.value)}
-              placeholder={broker === 'deriv' ? 'CR123456' : '12345678'}
-              required
-            />
-          </div>
-
-          {/* PAT token / password */}
-          <div style={styles.field}>
-            <label style={styles.label}>
-              {broker === 'deriv' ? 'API Token (PAT)' : 'MT5 Password'}
-            </label>
-            <input
-              style={styles.input}
-              type="password"
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              placeholder={broker === 'deriv' ? 'a1-xxxxxxxxxxxxxxxxx' : '••••••••'}
-              required
-            />
-            {broker === 'deriv' && (
-                <a
-
-                href="https://app.deriv.com/account/api-token"
-                target="_blank"
-                rel="noreferrer"
-                style={styles.hint}
+        {/* Broker switcher */}
+        <div style={styles.field}>
+          <label style={styles.label}>Broker</label>
+          <div style={styles.segmented}>
+            {BROKERS.map(b => (
+              <button
+                key={b.value}
+                type="button"
+                onClick={() => { setBroker(b.value); setAuthError(null) }}
+                style={{ ...styles.seg, ...(broker === b.value ? styles.segActive : {}) }}
               >
-                Get your API token → deriv.com/account/api-token
-              </a>
-            )}
+                {b.label}
+              </button>
+            ))}
           </div>
+        </div>
 
-          {/* WelTrade-only fields */}
-          {broker === 'welltrade' && (
-            <>
-              <div style={styles.field}>
-                <label style={styles.label}>MT5 Server</label>
-                <input
-                  style={styles.input}
-                  value={server}
-                  onChange={e => setServer(e.target.value)}
-                  placeholder="WelTrade-Server"
-                  required
-                />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>MetaApi Account ID</label>
-                <input
-                  style={styles.input}
-                  value={metaId}
-                  onChange={e => setMetaId(e.target.value)}
-                  placeholder="abc123def456..."
-                  required
-                />
-                <a
+        {/* DERIV — OAuth button only */}
+        {broker === 'deriv' && (
+          <div style={{ marginTop: 24 }}>
+            <p style={styles.oauthNote}>
+              You'll be taken to Deriv's secure login page. Once you approve, you'll be connected automatically.
+            </p>
+            <button onClick={handleDerivOAuth} style={styles.btn}>
+              Login with Deriv
+            </button>
+          </div>
+        )}
 
-                  href="https://app.metaapi.cloud"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.hint}
-                >
-                  Get MetaApi account ID → metaapi.cloud
-                </a>
-              </div>
-            </>
-          )}
+        {/* WELLTRADE — MT5 login form */}
+        {broker === 'welltrade' && (
+          <form onSubmit={handleWellTradeConnect} style={styles.form}>
+            <div style={styles.field}>
+              <label style={styles.label}>MT5 Login</label>
+              <input
+                style={styles.input}
+                value={loginId}
+                onChange={e => setLoginId(e.target.value)}
+                placeholder="12345678"
+                required
+              />
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>MT5 Password</label>
+              <input
+                style={styles.input}
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            {authError && <p style={styles.error}>{authError}</p>}
+            <button type="submit" style={styles.btn} disabled={loading}>
+              {loading ? 'Connecting…' : 'Connect account'}
+            </button>
+          </form>
+        )}
 
-          {authError && <p style={styles.error}>{authError}</p>}
-
-          <button type="submit" style={styles.btn} disabled={loading}>
-            {loading ? 'Connecting…' : 'Connect account'}
-          </button>
-
-        </form>
       </div>
     </div>
   )
@@ -215,6 +163,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: 18,
+    marginTop: 24,
   },
   field: {
     display: 'flex',
@@ -234,12 +183,6 @@ const styles = {
     fontSize: 14,
     padding: '10px 14px',
     outline: 'none',
-  },
-  hint: {
-    color: '#3b82f6',
-    fontSize: 12,
-    textDecoration: 'none',
-    marginTop: 2,
   },
   segmented: {
     display: 'flex',
@@ -264,6 +207,12 @@ const styles = {
     background: '#2563eb',
     color: '#fff',
   },
+  oauthNote: {
+    color: '#64748b',
+    fontSize: 13,
+    marginBottom: 16,
+    lineHeight: 1.5,
+  },
   error: {
     color: '#f87171',
     fontSize: 13,
@@ -274,6 +223,7 @@ const styles = {
     padding: '8px 12px',
   },
   btn: {
+    width: '100%',
     background: '#2563eb',
     color: '#fff',
     border: 'none',
@@ -282,6 +232,5 @@ const styles = {
     fontSize: 15,
     fontWeight: 600,
     cursor: 'pointer',
-    marginTop: 4,
   },
 }

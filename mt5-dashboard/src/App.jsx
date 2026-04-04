@@ -29,12 +29,37 @@ const PAGES = {
 }
 
 export default function App() {
-  // ✅ ALL hooks must come first, before any return
-  const { accountId, activePage } = useBotStore()   // ← read activePage from store
+  const { accountId, activePage, login } = useBotStore()
   const isLoggedIn = !!accountId
   const isMobile = useIsMobile()
 
-  // ✅ useEffect before any early return
+  // Handle Deriv OAuth callback — runs once on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const account_id = params.get('account_id')
+    const balance    = parseFloat(params.get('balance') ?? '0')
+    const currency   = params.get('currency') ?? 'USD'
+    const error      = params.get('error')
+
+    if (error) {
+      useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
+      window.history.replaceState({}, '', '/')
+      return
+    }
+
+    if (account_id) {
+      login('deriv', account_id, {
+        account_id,
+        balance,
+        currency,
+        equity: balance,
+        profit: 0,
+      })
+      // Clean the URL so params don't persist on refresh
+      window.history.replaceState({}, '', '/')
+    }
+  }, [])
+
   useEffect(() => {
     if (isLoggedIn && !useBotStore.getState().connected) {
       useBotStore.getState().connect()
@@ -42,7 +67,6 @@ export default function App() {
     }
   }, [isLoggedIn])
 
-  // ✅ Early returns AFTER all hooks
   if (!isLoggedIn) return <Login />
 
   const Page = PAGES[activePage] ?? Dashboard
