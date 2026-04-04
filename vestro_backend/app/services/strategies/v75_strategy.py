@@ -4,10 +4,11 @@ v75_strategy.py
 VESTRO V75 Strategy — Volatility 75 Index
 5-phase pipeline: Data → Features → Patterns → Predict → Risk
 
-FIXES:
-  - fetch_market_data now requests real OHLC candles from Deriv
-    (not raw ticks grouped into 3 candles — that broke EMA200/ADX/RSI)
-  - Balance refreshes from Deriv on every scan so lot sizing is always accurate
+FIXES applied in this revision:
+  - SYMBOL corrected to R_75
+  - execute() method added — was missing entirely
+  - action passed as "rise"/"fall" to match _contract_type() in deriv.py
+  - signal dict normalised before execute_trade_fn call
 """
 
 import httpx
@@ -15,7 +16,6 @@ import json
 import os
 import statistics
 import websockets
-import numpy as np
 
 from .base_strategy import BaseStrategy
 
@@ -24,7 +24,7 @@ BACKEND_URL  = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 
 
 # ============================================================
-# PHASE 2 — FEATURE ENGINE
+# PHASE 2 — FEATURE ENGINE  (unchanged)
 # ============================================================
 
 class _FeatureEngine:
@@ -129,7 +129,7 @@ class _FeatureEngine:
 
 
 # ============================================================
-# PHASE 3 — PATTERN EXTRACTOR
+# PHASE 3 — PATTERN EXTRACTOR  (unchanged)
 # ============================================================
 
 class _PatternExtractor:
@@ -187,7 +187,7 @@ class _PatternExtractor:
 
 
 # ============================================================
-# PHASE 4 — PREDICTION ENGINE
+# PHASE 4 — PREDICTION ENGINE  (unchanged)
 # ============================================================
 
 class _PredictionEngine:
@@ -221,18 +221,18 @@ class _PredictionEngine:
 
         if direction == "buy":
             if ema50[-1] > ema200[-1]:                                 score += 1
-            if 30 <= rsi[-1] <= 55:                                    score += 1  # widened from 45
+            if 30 <= rsi[-1] <= 55:                                    score += 1
             if macd_h[-1] > 0:                                         score += 1
-            if last_c["close"] > last_c["open"] and body / rng > 0.4: score += 1  # relaxed from 0.5
+            if last_c["close"] > last_c["open"] and body / rng > 0.4: score += 1
         else:
             if ema50[-1] < ema200[-1]:                                 score += 1
-            if 45 <= rsi[-1] <= 70:                                    score += 1  # widened from 55-70
+            if 45 <= rsi[-1] <= 70:                                    score += 1
             if macd_h[-1] < 0:                                         score += 1
-            if last_c["close"] < last_c["open"] and body / rng > 0.4: score += 1  # relaxed from 0.5
+            if last_c["close"] < last_c["open"] and body / rng > 0.4: score += 1
 
         if len(volumes) > 1:
             avg_v = statistics.mean(volumes[:-1])
-            if volumes[-1] > avg_v * 1.1:   # relaxed from 1.2
+            if volumes[-1] > avg_v * 1.1:
                 score += 1
         score += 1   # session check
         score += 1   # zone check
@@ -262,7 +262,6 @@ class _PredictionEngine:
 
         checklist = self._entry_checklist(direction)
 
-        # Lowered thresholds: checklist 4/7 and TSS 2/5 (was 5 and 3)
         if checklist < 4 or tss < 2:
             return {"signal": "HOLD",
                     "reason": f"Checklist {checklist}/7, TSS {tss}/5 — insufficient confluence",
@@ -285,7 +284,7 @@ class _PredictionEngine:
 
 
 # ============================================================
-# PHASE 5 — RISK MANAGER
+# PHASE 5 — RISK MANAGER  (unchanged)
 # ============================================================
 
 class _RiskManager:
@@ -328,7 +327,7 @@ class _RiskManager:
 
 class V75Strategy(BaseStrategy):
     NAME   = "V75"
-    SYMBOL = "R_100"
+    SYMBOL = "R_75"          # FIX 1: was R_100
 
     def __init__(self, api_token, broadcast_fn, execute_trade_fn,
                  balance: float = 1000.0, is_prop: bool = False):
@@ -336,32 +335,26 @@ class V75Strategy(BaseStrategy):
         self.balance = balance
         self.is_prop = is_prop
 
-    # ── Phase 1 — fetch real OHLC candles ────────────────────
-    # FIX: previously fetched 200 raw ticks grouped by 60 = only 3 candles.
-    # EMA200 needs 200 candles. Now requests candles directly from Deriv API.
+    # ── Phase 1 ───────────────────────────────────────────────
     async def fetch_market_data(self) -> dict:
         url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
         async with websockets.connect(url) as ws:
-
-            # Authorize and refresh balance in one shot
             await ws.send(json.dumps({"authorize": self.api_token}))
             auth = json.loads(await ws.recv())
             try:
                 self.balance = float(auth["authorize"]["balance"])
             except (KeyError, TypeError):
-                pass  # keep existing balance if auth response malformed
+                pass
 
-            # Request 300 x 1-minute OHLC candles directly
             await ws.send(json.dumps({
                 "ticks_history": self.SYMBOL,
-                "style":         "candles",     # ← OHLC, not ticks
-                "granularity":   60,             # 1-minute candles
-                "count":         300,            # 300 candles — enough for EMA200
+                "style":         "candles",
+                "granularity":   60,
+                "count":         300,
                 "end":           "latest",
             }))
             data = json.loads(await ws.recv())
 
-        # Deriv returns candles as list of {open, high, low, close, epoch}
         raw_candles = data.get("candles", [])
         candles = [
             {
@@ -369,7 +362,7 @@ class V75Strategy(BaseStrategy):
                 "high":   float(c["high"]),
                 "low":    float(c["low"]),
                 "close":  float(c["close"]),
-                "volume": 60,    # 1-min candle = 60 ticks at 1/s
+                "volume": 60,
                 "epoch":  c.get("epoch", 0),
             }
             for c in raw_candles
@@ -381,11 +374,10 @@ class V75Strategy(BaseStrategy):
         )
         return {"candles": candles}
 
-    # ── Phases 2-4 ────────────────────────────────────────────
+    # ── Phases 2–4 ────────────────────────────────────────────
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
 
-        # Need at least 220 candles for EMA200 + buffer
         if len(candles) < 220:
             return {
                 "signal": "HOLD", "symbol": self.SYMBOL,
@@ -405,7 +397,6 @@ class V75Strategy(BaseStrategy):
             f"signal={result['signal']} reason={result['reason']}"
         )
 
-        # Phase 5 — position sizing
         atr_val = features["atr_14"][-1] if features.get("atr_14") else 1000
         risk    = _RiskManager(self.balance, self.is_prop)
         sl_pips = atr_val * 1.5
@@ -441,15 +432,59 @@ class V75Strategy(BaseStrategy):
                 status = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
                 bot_running = status.json().get("running", False)
             if not bot_running:
-                self.logger.info(f"[{self.NAME}] bot not running — skipping execution")
+                self.logger.info(f"[{self.NAME}] bot not running — skipping")
                 return False
             if signal.get("meta", {}).get("atr_zone") == "extreme":
-                self.logger.info(f"[{self.NAME}] ATR extreme — skipping execution")
+                self.logger.info(f"[{self.NAME}] ATR extreme — skipping")
                 return False
-            if signal["amount"] <= 0:
-                self.logger.info(f"[{self.NAME}] lot size 0 — skipping execution")
+            if signal.get("amount", 0) <= 0:
+                self.logger.info(f"[{self.NAME}] lot size 0 — skipping")
                 return False
             return True
         except Exception as e:
             self.logger.error(f"[{self.NAME}] should_execute error: {e}")
             return False
+
+    # ── FIX 2 + 3: execute() was missing entirely ─────────────
+    async def execute(self, signal: dict) -> dict | None:
+        """
+        Called by the base strategy loop after should_execute() returns True.
+        Translates BUY/SELL → rise/fall and calls execute_trade_fn (the router).
+        """
+        if signal["signal"] == "HOLD":
+            return None
+
+        # FIX 3: normalise to "rise"/"fall" — what _contract_type() in deriv.py expects
+        action = "rise" if signal["signal"] == "BUY" else "fall"
+
+        try:
+            result = await self.execute_trade_fn(
+                symbol = self.SYMBOL,       # always use strategy's own symbol
+                action = action,
+                amount = signal["amount"],
+            )
+            self.logger.info(
+                f"[{self.NAME}] trade placed | action={action} "
+                f"amount={signal['amount']} | result={result}"
+            )
+            await self.broadcast_fn({
+                "type":        "trade_executed",
+                "strategy":    self.NAME,
+                "action":      action,
+                "amount":      signal["amount"],
+                "symbol":      self.SYMBOL,
+                "confidence":  signal["confidence"],
+                "contract_id": result.get("contract_id"),
+                "buy_price":   result.get("buy_price"),
+                "payout":      result.get("payout"),
+                "meta":        signal.get("meta", {}),
+            })
+            return result
+        except Exception as e:
+            self.logger.error(f"[{self.NAME}] execute_trade_fn failed: {e}")
+            await self.broadcast_fn({
+                "type":     "trade_error",
+                "strategy": self.NAME,
+                "error":    str(e),
+            })
+            return None
