@@ -49,7 +49,7 @@ export default function Login() {
 
         <div style={styles.brand}>
           <span style={styles.brandDot} />
-          <span style={styles.brandName}>Vestro</span>
+          <span style={styles.brandName}>Vestro Capital </span>
         </div>
         <p style={styles.sub}>Connect your trading account</p>
 

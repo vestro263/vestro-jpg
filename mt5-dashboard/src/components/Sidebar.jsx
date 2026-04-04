@@ -33,7 +33,7 @@ function DesktopSidebar({ activePage, setActivePage, botRunning, startBot, stopB
       {/* Logo */}
       <div style={{ padding: '0 20px 20px', borderBottom: '1px solid #1f2937', marginBottom: 8 }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: '#38bdf8', letterSpacing: '0.05em' }}>
-          ⚡ Vestro
+          Vestro Capital
         </div>
         <div style={{ fontSize: 11, color: '#4b5563', marginTop: 2 }}>MT5 Dashboard</div>
       </div>
