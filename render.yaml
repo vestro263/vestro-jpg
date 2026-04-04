@@ -1,0 +1,30 @@
+# render.yaml  ← put this at the root of your repo
+services:
+
+  # Backend — FastAPI
+  - type: web
+    name: vestro-jpg
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    rootDir: vestro_backend
+    envVars:
+      - key: DERIV_APP_ID
+        value: 32TJ7uyciFGiB0C0Nw5Uf
+      - key: FRONTEND_URL
+        value: https://vestro-ui.onrender.com
+      - key: DATABASE_URL
+        sync: false   # set this manually in Render dashboard
+      - key: ENCRYPT_KEY
+        sync: false   # set this manually in Render dashboard
+
+  # Frontend — React/Vite
+  - type: web
+    name: vestro-ui
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    rootDir: vestro_frontend
+    envVars:
+      - key: VITE_API_URL
+        value: https://vestro-jpg.onrender.com
