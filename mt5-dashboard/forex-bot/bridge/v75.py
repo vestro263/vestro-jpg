@@ -261,13 +261,13 @@ class PatternExtractor:
         TSS: 0-5. Only trades scoring >= 3 qualify (PDF Section 1.2).
         """
         score = 0
-        closes  = [c["close"] for c in self.candles]
-        ema21   = self.features.get("ema_21", [None]*len(closes))
-        ema50   = self.features.get("ema_50", [None]*len(closes))
-        ema200  = self.features.get("ema_200",[None]*len(closes))
-        adx     = self.features.get("adx_14", [0])
-        macd_h  = self.features.get("macd_histogram", [0])
-        volumes = [c["volume"] for c in self.candles]
+        closes = [c["close"] for c in self.candles]
+        ema21 = self.features.get("ema_21", [None] * len(closes))
+        ema50 = self.features.get("ema_50", [None] * len(closes))
+        ema200 = self.features.get("ema_200", [None] * len(closes))
+        adx = self.features.get("adx_14", [0])
+        macd_h = self.features.get("macd_histogram", [0])
+        # ← volumes line removed
 
         if ema21[-1] and ema50[-1] and ema200[-1]:
             bull = ema21[-1] > ema50[-1] > ema200[-1]
@@ -284,10 +284,7 @@ class PatternExtractor:
         if macd_h and macd_h[-1] > 0:
             score += 1
 
-        if volumes:
-            avg_vol = statistics.mean(volumes[:-1]) if len(volumes) > 1 else volumes[0]
-            if volumes[-1] > avg_vol * 1.2:
-                score += 1
+        score += 1  # volume: unconditional (R_75 has no real volume)
 
         return score
 
@@ -337,40 +334,35 @@ class PredictionEngine:
         Returns number of criteria passed (max 7).
         """
         score = 0
-        closes  = [c["close"] for c in self.candles]
-        rsi     = self.features.get("rsi_14", [50])
-        macd_h  = self.features.get("macd_histogram", [0])
-        ema50   = self.features.get("ema_50", [closes[-1]])
-        ema200  = self.features.get("ema_200", [closes[-1]])
-        volumes = [c["volume"] for c in self.candles]
-        last_c  = self.candles[-1]
+        closes = [c["close"] for c in self.candles]
+        rsi = self.features.get("rsi_14", [50])
+        macd_h = self.features.get("macd_histogram", [0])
+        ema50 = self.features.get("ema_50", [closes[-1]])
+        ema200 = self.features.get("ema_200", [closes[-1]])
+        last_c = self.candles[-1]  # ← volumes line removed
 
         if direction == "buy":
             if ema50[-1] > ema200[-1]: score += 1
             if 30 <= rsi[-1] <= 45:    score += 1
             if macd_h[-1] > 0:         score += 1
             body = abs(last_c["close"] - last_c["open"])
-            rng  = last_c["high"] - last_c["low"]
+            rng = last_c["high"] - last_c["low"]
             if last_c["close"] > last_c["open"] and body / (rng + 1e-5) > 0.5:
                 score += 1
-            if len(volumes) > 1:
-                avg_v = statistics.mean(volumes[:-1])
-                if volumes[-1] > avg_v * 1.2: score += 1
-            score += 1   # Session check (assume London/NY during backtest)
-            score += 1   # Zone check (assume retest present)
+            score += 1  # volume: unconditional (R_75 has no real volume)
+            score += 1  # session check
+            score += 1  # zone check
         else:
             if ema50[-1] < ema200[-1]: score += 1
             if 55 <= rsi[-1] <= 70:    score += 1
             if macd_h[-1] < 0:         score += 1
             body = abs(last_c["close"] - last_c["open"])
-            rng  = last_c["high"] - last_c["low"]
+            rng = last_c["high"] - last_c["low"]
             if last_c["close"] < last_c["open"] and body / (rng + 1e-5) > 0.5:
                 score += 1
-            if len(volumes) > 1:
-                avg_v = statistics.mean(volumes[:-1])
-                if volumes[-1] > avg_v * 1.2: score += 1
-            score += 1
-            score += 1
+            score += 1  # volume: unconditional (R_75 has no real volume)
+            score += 1  # session check
+            score += 1  # zone check
 
         return min(score, 7)
 
@@ -404,7 +396,7 @@ class PredictionEngine:
                     "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0}
 
         checklist = self._entry_checklist(direction)
-        if checklist < 5 or tss < 3:
+        if checklist < 4 or tss < 3:
             return {"signal": "HOLD",
                     "reason": f"Checklist {checklist}/7, TSS {tss}/5 — insufficient confluence",
                     "tss": tss, "checklist": checklist, "atr_zone": atr_zone, "confidence": 0.0}
