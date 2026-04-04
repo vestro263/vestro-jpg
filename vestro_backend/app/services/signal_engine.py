@@ -77,7 +77,7 @@ def compute_ma(closes, period):
     return float(np.mean(closes[-period:]))
 
 
-async def fetch_deriv_ticks(api_token: str, symbol: str = "R_100", count: int = 100):
+async def fetch_deriv_ticks(api_token: str, symbol: str = "R_100", count: int = 300):
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": api_token}))
@@ -147,6 +147,32 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
         rsi     = compute_rsi(closes)
         ma_fast = compute_ma(closes, 5)
         ma_slow = compute_ma(closes, 20)
+        atr_val  = compute_atr(closes)
+        adx_val  = compute_adx(closes)
+        macd_val = compute_macd(closes)
+        ema50    = compute_ema(closes, 50)
+        ema200   = compute_ema(closes, 200)
+        ema21    = compute_ema(closes, 21)
+
+        # ── real TSS (mirrors v75_strategy logic) ─────────────
+        tss = 0
+        if ema21 > ema50 > ema200 or ema21 < ema50 < ema200: tss += 1
+        if adx_val > 25:                                      tss += 1
+        if closes[-1] > ema200:                               tss += 1
+        if macd_val > 0:                                      tss += 1
+        tss += 1  # volume unconditional
+
+        # ── real ATR zone ──────────────────────────────────────
+        if len(closes) >= 21:
+            atrs    = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+            avg_atr = float(np.mean(atrs[-21:-1]))
+            ratio   = atr_val / (avg_atr + 1e-10)
+            if ratio < 0.5:   atr_zone = "low"
+            elif ratio < 1.5: atr_zone = "normal"
+            elif ratio < 2.5: atr_zone = "elevated"
+            else:             atr_zone = "extreme"
+        else:
+            atr_zone = "normal"
 
         if rsi < 30 and ma_fast > ma_slow:
             signal = "BUY"
@@ -155,22 +181,26 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
         else:
             signal = "HOLD"
 
-        print(f"[deriv:{cred.user_id}] RSI={rsi:.1f} signal={signal} "
+        print(f"[deriv:{cred.user_id}] RSI={rsi:.1f} TSS={tss}/5 "
+              f"ATR_ZONE={atr_zone} signal={signal} "
               f"{'(runner active — skipping execution)' if runner_is_live else ''}")
 
         await broadcast_to_frontend({
-            "symbol":  symbol,
-            "action":  signal,
-            "rsi":     round(rsi, 2),
-            "ma_fast": round(ma_fast, 4),
-            "ma_slow": round(ma_slow, 4),
+            "symbol": symbol,
+            "action": signal,
             "signal": {
-                "direction": 1 if signal == "BUY" else (-1 if signal == "SELL" else 0),
-                "rsi":       round(rsi, 2),
+                "direction":  1 if signal == "BUY" else (-1 if signal == "SELL" else 0),
+                "rsi":        round(rsi, 2),
+                "adx":        round(adx_val, 2),
+                "atr":        round(atr_val, 5),
+                "ema50":      round(ema50, 4),
+                "ema200":     round(ema200, 4),
+                "macd_hist":  round(macd_val, 5),
+                "tss_score":  tss,
+                "atr_zone":   atr_zone,
             }
         })
 
-        # Only trade via the old loop when the strategy runner is NOT active
         if runner_is_live:
             return
 
@@ -178,13 +208,13 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
             status = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
             bot_running = status.json().get("running", False)
 
-        if signal != "HOLD" and bot_running:
+        # ── guard: don't trade if ATR extreme or TSS too low ──
+        if signal != "HOLD" and bot_running and atr_zone != "extreme" and tss >= 3:
             result = await execute_trade(symbol, signal, 1.0)
             print(f"[deriv:{cred.user_id}] trade result: {result}")
 
     except Exception as e:
         print(f"[signal_engine] deriv error [{cred.user_id}]: {e}")
-
 
 # ============================================================
 # STRATEGY RUNNER BOOT + WATCHDOG

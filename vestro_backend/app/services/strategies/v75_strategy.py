@@ -386,10 +386,10 @@ class V75Strategy(BaseStrategy):
                 "amount": 0.0, "meta": {},
             }
 
-        features  = _FeatureEngine(candles).build_all()
-        patterns  = _PatternExtractor(candles, features)
+        features = _FeatureEngine(candles).build_all()
+        patterns = _PatternExtractor(candles, features)
         predictor = _PredictionEngine(patterns, features, candles)
-        result    = predictor.predict()
+        result = predictor.predict()
 
         self.logger.info(
             f"[{self.NAME}] TSS={result.get('tss')}/5 "
@@ -398,30 +398,49 @@ class V75Strategy(BaseStrategy):
         )
 
         atr_val = features["atr_14"][-1] if features.get("atr_14") else 1000
-        risk    = _RiskManager(self.balance, self.is_prop)
+        risk = _RiskManager(self.balance, self.is_prop)
         sl_pips = atr_val * 1.5
-        lot     = risk.lot_size(sl_pips, result.get("atr_zone", "normal"))
-        levels  = risk.sl_tp(
-            entry     = candles[-1]["close"],
-            direction = "buy" if result["signal"] == "BUY" else "sell",
-            atr_val   = atr_val,
+        lot = risk.lot_size(sl_pips, result.get("atr_zone", "normal"))
+        levels = risk.sl_tp(
+            entry=candles[-1]["close"],
+            direction="buy" if result["signal"] == "BUY" else "sell",
+            atr_val=atr_val,
         )
 
+        # ── broadcast every scan so frontend shows live indicator values ──
+        await self.broadcast_fn({
+            "symbol": self.SYMBOL,
+            "action": result["signal"],
+            "signal": {
+                "direction": 1 if result["signal"] == "BUY" else (-1 if result["signal"] == "SELL" else 0),
+                "rsi": round(features["rsi_14"][-1], 2) if features.get("rsi_14") else 0,
+                "adx": round(features["adx_14"][-1], 2) if features.get("adx_14") else 0,
+                "atr": round(atr_val, 5),
+                "ema50": round(features["ema_50"][-1], 4) if features.get("ema_50") else 0,
+                "ema200": round(features["ema_200"][-1], 4) if features.get("ema_200") else 0,
+                "macd_hist": round(features["macd_histogram"][-1], 5) if features.get("macd_histogram") else 0,
+                "tss_score": result.get("tss", 0),
+                "atr_zone": result.get("atr_zone", "normal"),
+                "confidence": result.get("confidence", 0.0),
+                "reason": result.get("reason", ""),
+            }
+        })
+
         return {
-            "signal":     result["signal"],
-            "symbol":     self.SYMBOL,
+            "signal": result["signal"],
+            "symbol": self.SYMBOL,
             "confidence": result.get("confidence", 0.0),
-            "reason":     result.get("reason", ""),
-            "amount":     lot,
+            "reason": result.get("reason", ""),
+            "amount": lot,
             "meta": {
-                "tss":       result.get("tss"),
+                "tss": result.get("tss"),
                 "checklist": result.get("checklist"),
-                "atr_zone":  result.get("atr_zone"),
-                "atr_val":   round(atr_val, 4),
-                "sl":        levels["sl"],
-                "tp":        levels["tp"],
-                "entry":     candles[-1]["close"],
-                "balance":   self.balance,
+                "atr_zone": result.get("atr_zone"),
+                "atr_val": round(atr_val, 4),
+                "sl": levels["sl"],
+                "tp": levels["tp"],
+                "entry": candles[-1]["close"],
+                "balance": self.balance,
             }
         }
 
