@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
-const DERIV_APP_ID = '32TJ7uyciFGiB0C0Nw5Uf'
-const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${DERIV_APP_ID}&response_type=token&scope=read,trade`
+const DERIV_APP_ID = '132144'
+const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=132144&l=EN&brand=deriv`
 
 const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 const BROKERS = [
