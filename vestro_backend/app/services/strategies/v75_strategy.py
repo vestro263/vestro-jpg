@@ -4,7 +4,10 @@ v75_strategy.py
 VESTRO V75 Strategy — Volatility 75 Index
 5-phase pipeline: Data → Features → Patterns → Predict → Risk
 
-Inherits BaseStrategy so strategy_runner can call it uniformly.
+FIXES:
+  - fetch_market_data now requests real OHLC candles from Deriv
+    (not raw ticks grouped into 3 candles — that broke EMA200/ADX/RSI)
+  - Balance refreshes from Deriv on every scan so lot sizing is always accurate
 """
 
 import httpx
@@ -217,21 +220,21 @@ class _PredictionEngine:
         rng  = last_c["high"] - last_c["low"] + 1e-5
 
         if direction == "buy":
-            if ema50[-1] > ema200[-1]:                               score += 1
-            if 30 <= rsi[-1] <= 45:                                  score += 1
-            if macd_h[-1] > 0:                                       score += 1
-            if last_c["close"] > last_c["open"] and body / rng > 0.5: score += 1
+            if ema50[-1] > ema200[-1]:                                 score += 1
+            if 30 <= rsi[-1] <= 55:                                    score += 1  # widened from 45
+            if macd_h[-1] > 0:                                         score += 1
+            if last_c["close"] > last_c["open"] and body / rng > 0.4: score += 1  # relaxed from 0.5
         else:
-            if ema50[-1] < ema200[-1]:                               score += 1
-            if 55 <= rsi[-1] <= 70:                                  score += 1
-            if macd_h[-1] < 0:                                       score += 1
-            if last_c["close"] < last_c["open"] and body / rng > 0.5: score += 1
+            if ema50[-1] < ema200[-1]:                                 score += 1
+            if 45 <= rsi[-1] <= 70:                                    score += 1  # widened from 55-70
+            if macd_h[-1] < 0:                                         score += 1
+            if last_c["close"] < last_c["open"] and body / rng > 0.4: score += 1  # relaxed from 0.5
 
         if len(volumes) > 1:
             avg_v = statistics.mean(volumes[:-1])
-            if volumes[-1] > avg_v * 1.2:
+            if volumes[-1] > avg_v * 1.1:   # relaxed from 1.2
                 score += 1
-        score += 1   # session check (London/NY assumed)
+        score += 1   # session check
         score += 1   # zone check
         return min(score, 7)
 
@@ -258,7 +261,9 @@ class _PredictionEngine:
                     "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0}
 
         checklist = self._entry_checklist(direction)
-        if checklist < 5 or tss < 3:
+
+        # Lowered thresholds: checklist 4/7 and TSS 2/5 (was 5 and 3)
+        if checklist < 4 or tss < 2:
             return {"signal": "HOLD",
                     "reason": f"Checklist {checklist}/7, TSS {tss}/5 — insufficient confluence",
                     "tss": tss, "checklist": checklist, "atr_zone": atr_zone, "confidence": 0.0}
@@ -318,7 +323,7 @@ class _RiskManager:
 
 
 # ============================================================
-# V75 STRATEGY — wires all phases into BaseStrategy
+# V75 STRATEGY
 # ============================================================
 
 class V75Strategy(BaseStrategy):
@@ -331,47 +336,81 @@ class V75Strategy(BaseStrategy):
         self.balance = balance
         self.is_prop = is_prop
 
-    # ── Phase 1 ───────────────────────────────────────────────
+    # ── Phase 1 — fetch real OHLC candles ────────────────────
+    # FIX: previously fetched 200 raw ticks grouped by 60 = only 3 candles.
+    # EMA200 needs 200 candles. Now requests candles directly from Deriv API.
     async def fetch_market_data(self) -> dict:
         url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
         async with websockets.connect(url) as ws:
+
+            # Authorize and refresh balance in one shot
             await ws.send(json.dumps({"authorize": self.api_token}))
-            await ws.recv()
+            auth = json.loads(await ws.recv())
+            try:
+                self.balance = float(auth["authorize"]["balance"])
+            except (KeyError, TypeError):
+                pass  # keep existing balance if auth response malformed
+
+            # Request 300 x 1-minute OHLC candles directly
             await ws.send(json.dumps({
-                "ticks_history": self.SYMBOL, "count": 200, "end": "latest"
+                "ticks_history": self.SYMBOL,
+                "style":         "candles",     # ← OHLC, not ticks
+                "granularity":   60,             # 1-minute candles
+                "count":         300,            # 300 candles — enough for EMA200
+                "end":           "latest",
             }))
             data = json.loads(await ws.recv())
-        prices = data["history"]["prices"]
 
-        # Convert flat ticks → 60-tick candles
-        candles = []
-        for i in range(0, len(prices) - 60, 60):
-            w = prices[i:i + 60]
-            candles.append({
-                "open": w[0], "high": max(w), "low": min(w),
-                "close": w[-1], "volume": len(w), "spikes": 0,
-            })
-        return {"candles": candles, "raw_prices": prices}
+        # Deriv returns candles as list of {open, high, low, close, epoch}
+        raw_candles = data.get("candles", [])
+        candles = [
+            {
+                "open":   float(c["open"]),
+                "high":   float(c["high"]),
+                "low":    float(c["low"]),
+                "close":  float(c["close"]),
+                "volume": 60,    # 1-min candle = 60 ticks at 1/s
+                "epoch":  c.get("epoch", 0),
+            }
+            for c in raw_candles
+        ]
+
+        self.logger.info(
+            f"[{self.NAME}] fetched {len(candles)} candles | "
+            f"balance={self.balance} | last_close={candles[-1]['close'] if candles else 'N/A'}"
+        )
+        return {"candles": candles}
 
     # ── Phases 2-4 ────────────────────────────────────────────
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
-        if len(candles) < 10:
-            return {"signal": "HOLD", "symbol": self.SYMBOL,
-                    "confidence": 0.0, "reason": "insufficient candles",
-                    "amount": 0.0, "meta": {}}
+
+        # Need at least 220 candles for EMA200 + buffer
+        if len(candles) < 220:
+            return {
+                "signal": "HOLD", "symbol": self.SYMBOL,
+                "confidence": 0.0,
+                "reason": f"insufficient candles ({len(candles)}/220 needed)",
+                "amount": 0.0, "meta": {},
+            }
 
         features  = _FeatureEngine(candles).build_all()
         patterns  = _PatternExtractor(candles, features)
         predictor = _PredictionEngine(patterns, features, candles)
         result    = predictor.predict()
 
+        self.logger.info(
+            f"[{self.NAME}] TSS={result.get('tss')}/5 "
+            f"checklist={result.get('checklist')}/7 "
+            f"signal={result['signal']} reason={result['reason']}"
+        )
+
         # Phase 5 — position sizing
-        atr_val  = features["atr_14"][-1] if features.get("atr_14") else 1000
-        risk     = _RiskManager(self.balance, self.is_prop)
-        sl_pips  = atr_val * 1.5
-        lot      = risk.lot_size(sl_pips, result.get("atr_zone", "normal"))
-        levels   = risk.sl_tp(
+        atr_val = features["atr_14"][-1] if features.get("atr_14") else 1000
+        risk    = _RiskManager(self.balance, self.is_prop)
+        sl_pips = atr_val * 1.5
+        lot     = risk.lot_size(sl_pips, result.get("atr_zone", "normal"))
+        levels  = risk.sl_tp(
             entry     = candles[-1]["close"],
             direction = "buy" if result["signal"] == "BUY" else "sell",
             atr_val   = atr_val,
@@ -387,9 +426,11 @@ class V75Strategy(BaseStrategy):
                 "tss":       result.get("tss"),
                 "checklist": result.get("checklist"),
                 "atr_zone":  result.get("atr_zone"),
+                "atr_val":   round(atr_val, 4),
                 "sl":        levels["sl"],
                 "tp":        levels["tp"],
                 "entry":     candles[-1]["close"],
+                "balance":   self.balance,
             }
         }
 
@@ -403,8 +444,10 @@ class V75Strategy(BaseStrategy):
                 self.logger.info(f"[{self.NAME}] bot not running — skipping execution")
                 return False
             if signal.get("meta", {}).get("atr_zone") == "extreme":
+                self.logger.info(f"[{self.NAME}] ATR extreme — skipping execution")
                 return False
             if signal["amount"] <= 0:
+                self.logger.info(f"[{self.NAME}] lot size 0 — skipping execution")
                 return False
             return True
         except Exception as e:
