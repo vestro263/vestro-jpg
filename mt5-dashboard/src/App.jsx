@@ -8,6 +8,8 @@ import Performance from './pages/Performance'
 import Valuation from './pages/Valuation'
 import useBotStore from './store/botStore'
 import Login from './pages/Login'
+import AccountSelector from './pages/AccountSelector'
+
 
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
@@ -32,32 +34,39 @@ export default function App() {
   const { accountId, activePage, login } = useBotStore()
   const isLoggedIn = !!accountId
   const isMobile = useIsMobile()
+  const [authChecked, setAuthChecked] = useState(false)
+  const [pendingAccounts, setPendingAccounts] = useState(null)
 
-  // Handle Deriv OAuth callback — runs once on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const account_id = params.get('account_id')
-    const balance    = parseFloat(params.get('balance') ?? '0')
-    const currency   = params.get('currency') ?? 'USD'
-    const error      = params.get('error')
+    const accountsParam = params.get('accounts')
+    const error = params.get('error')
 
     if (error) {
       useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
       window.history.replaceState({}, '', '/')
-      return
-    }
-
-    if (account_id) {
-      login('deriv', account_id, {
-        account_id,
-        balance,
-        currency,
-        equity: balance,
-        profit: 0,
-      })
-      // Clean the URL so params don't persist on refresh
+    } else if (accountsParam) {
+      try {
+        const accounts = JSON.parse(decodeURIComponent(accountsParam))
+        if (accounts.length === 1) {
+          // Only one account — log in directly
+          const acc = accounts[0]
+          login('deriv', acc.account_id, {
+            account_id: acc.account_id,
+            balance: acc.balance,
+            currency: acc.currency,
+            equity: acc.balance,
+            profit: 0,
+          })
+        } else {
+          // Multiple accounts — show selector
+          setPendingAccounts(accounts)
+        }
+      } catch {}
       window.history.replaceState({}, '', '/')
     }
+
+    setAuthChecked(true)
   }, [])
 
   useEffect(() => {
@@ -66,6 +75,13 @@ export default function App() {
       useBotStore.getState().startPolling()
     }
   }, [isLoggedIn])
+
+  if (!authChecked) return null
+
+  // Show account selector if multiple accounts
+  if (pendingAccounts) {
+    return <AccountSelector accounts={pendingAccounts} />
+  }
 
   if (!isLoggedIn) return <Login />
 
@@ -100,4 +116,4 @@ export default function App() {
       </main>
     </div>
   )
-}
+}}
