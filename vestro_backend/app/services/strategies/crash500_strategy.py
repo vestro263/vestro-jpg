@@ -43,7 +43,7 @@ COOLDOWN_SEC  = 300      # 5 min between trades
 
 class Crash500Strategy(BaseStrategy):
     NAME   = "Crash500"
-    SYMBOL = "Crash 500 Index"
+    SYMBOL = "CRASH500"
 
     def __init__(self, api_token, broadcast_fn, execute_trade_fn,
                  balance: float = 1000.0):
@@ -206,11 +206,22 @@ class Crash500Strategy(BaseStrategy):
             )
 
             # Always broadcast
-            await self.broadcast({
-                "strategy": self.NAME,
-                "symbol":   signal["symbol"],
-                "action":   signal["signal"],
-                "signal":   signal,
+            await self.broadcast_fn({
+                "symbol": self.SYMBOL,
+                "action": signal["signal"],
+                "signal": {
+                    "direction": 1 if signal["signal"] == "BUY" else 0,
+                    "rsi": 0,  # not computed — spike strategy doesn't use RSI
+                    "adx": 0,  # not computed — spike strategy doesn't use ADX
+                    "atr": round(signal["meta"].get("drop_spike", 0), 5),
+                    "ema50": 0,  # not computed
+                    "ema200": 0,  # not computed
+                    "macd_hist": round(signal["meta"].get("recovery", 0), 5),
+                    "tss_score": signal["meta"].get("score", 0),
+                    "atr_zone": signal["meta"].get("atr_zone", "normal"),
+                    "confidence": signal.get("confidence", 0),
+                    "reason": signal.get("reason", ""),
+                }
             })
 
             if signal["signal"] == "HOLD":
@@ -223,8 +234,10 @@ class Crash500Strategy(BaseStrategy):
             self.logger.info(
                 f"[{self.NAME}] EXECUTING BUY {self.SYMBOL} lot={signal['amount']}"
             )
-            result = await self.execute_trade(
-                "deriv", self.SYMBOL, "BUY", signal["amount"]
+            result = await self.execute_trade_fn(
+                symbol=self.SYMBOL,
+                action="rise",
+                amount=signal["amount"],
             )
             self.logger.info(f"[{self.NAME}] trade result: {result}")
 
@@ -239,12 +252,18 @@ class Crash500Strategy(BaseStrategy):
     # ── Helpers ───────────────────────────────────────────────
     def _hold(self, reason: str, bid: float, score: int = 0) -> dict:
         return {
-            "signal":     "HOLD",
-            "symbol":     self.SYMBOL,
+            "signal": "HOLD",
+            "symbol": self.SYMBOL,
             "confidence": round(score / 4.0, 2),
-            "reason":     reason,
-            "amount":     0.0,
-            "meta":       {"bid": bid, "score": score},
+            "reason": reason,
+            "amount": 0.0,
+            "meta": {
+                "bid": bid,
+                "score": score,
+                "drop_spike": 0.0,
+                "recovery": 0.0,
+                "atr_zone": "low",  # HOLD = no spike = low volatility
+            }
         }
 
     def _calc_lot(self, balance: float) -> float:
