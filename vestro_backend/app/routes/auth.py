@@ -5,7 +5,7 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models import Credentials
 from ..services.credential_store import encrypt
-from ..services.deriv import get_account_info
+from ..services.deriv_ws import get_account_info
 import os
 
 router = APIRouter()
