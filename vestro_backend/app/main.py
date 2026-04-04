@@ -64,6 +64,26 @@ async def debug_exception_handler(request: Request, exc: Exception):
         content={"error": str(exc), "traceback": traceback.format_exc()}
     )
 
+
+async def run_signal_loop():
+    print("[signal_engine] starting...")
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Credentials))
+        creds = result.scalars().all()
+
+    print(f"[signal_engine] credentials found: {len(creds)}")  # ← add this
+
+    deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
+    print(f"[signal_engine] deriv_cred found: {deriv_cred is not None}")  # ← add this
+
+    if deriv_cred:
+        api_token = decrypt(deriv_cred.password)
+        print(f"[signal_engine] booting strategy runner...")  # ← add this
+        await _boot_strategy_runner(api_token)
+    else:
+        print("[signal_engine] NO DERIV CREDENTIALS — runner not started")  # ← add this
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

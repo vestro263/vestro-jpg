@@ -25,16 +25,11 @@ class BaseStrategy(ABC):
     SYMBOL = "R_100"        # Deriv symbol this strategy trades
 
     def __init__(self, api_token: str, broadcast_fn, execute_trade_fn):
-        """
-        Args:
-            api_token:         Decrypted Deriv API token for this account
-            broadcast_fn:      async fn(data: dict) — sends signal to frontend
-            execute_trade_fn:  async fn(broker, symbol, action, amount) — fires trade
-        """
-        self.api_token        = api_token
-        self.broadcast        = broadcast_fn
-        self.execute_trade    = execute_trade_fn
-        self.logger           = logging.getLogger(f"strategy.{self.NAME}")
+        self.api_token = api_token
+        self.broadcast_fn = broadcast_fn  # ← was self.broadcast
+        self.execute_trade_fn = execute_trade_fn  # ← was self.execute_trade
+        self.logger = logging.getLogger(f"strategy.{self.NAME}")
+
 
     @abstractmethod
     async def fetch_market_data(self) -> dict:
@@ -93,11 +88,11 @@ class BaseStrategy(ABC):
             )
 
             # Step 3 — always broadcast
-            await self.broadcast({
+            await self.broadcast_fn({
                 "strategy": self.NAME,
-                "symbol":   signal["symbol"],
-                "action":   signal["signal"],
-                "signal":   signal,
+                "symbol": signal["symbol"],
+                "action": signal["signal"],
+                "signal": signal.get("signal_data", signal),
             })
 
             # Step 4 — execution gate
@@ -113,11 +108,11 @@ class BaseStrategy(ABC):
                 f"[{self.NAME}] EXECUTING {signal['signal']} "
                 f"{signal['symbol']} amount={signal['amount']}"
             )
-            result = await self.execute_trade(
-                "deriv",
-                signal["symbol"],
-                signal["signal"],
-                signal["amount"],
+            # Step 5 — fire trade
+            result = await self.execute_trade_fn(
+                symbol=signal["symbol"],
+                action="rise" if signal["signal"] == "BUY" else "fall",
+                amount=signal["amount"],
             )
             self.logger.info(f"[{self.NAME}] trade result: {result}")
 
