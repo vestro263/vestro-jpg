@@ -2,9 +2,15 @@
 signal_engine.py
 ================
 Delegates all strategy logic to app/services/strategies/.
-Original process_deriv_account loop is preserved untouched.
-StrategyRunner boots V75 + Crash500 in parallel on startup.
-Balance is fetched live from Deriv using the selected account token.
+Original process_deriv_account loop is preserved but GUARDED —
+it skips execution when StrategyRunner is active to prevent
+two systems trading the same account simultaneously.
+
+FIXES:
+  - execute_trade_fn signature now matches V75Strategy.execute() call
+  - StrategyRunner auto-restarts if its task dies
+  - process_deriv_account skips trade execution when runner is live
+  - balance re-fetched on each runner restart
 """
 
 import asyncio
@@ -25,7 +31,7 @@ BACKEND_URL  = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 
 
 # ============================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS  (unchanged)
 # ============================================================
 
 def compute_rsi(closes, period=14):
@@ -89,7 +95,10 @@ async def broadcast_to_frontend(data: dict):
             print(f"[signal_engine] broadcast error: {e}")
 
 
-async def execute_trade(broker: str, symbol: str, action: str, amount: float):
+# FIX 1: signature matches V75Strategy.execute() call:
+#   execute_trade_fn(symbol=..., action=..., amount=...)
+# broker is always "deriv" here — strategies don't need to pass it.
+async def execute_trade(symbol: str, action: str, amount: float, broker: str = "deriv"):
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{BACKEND_URL}/api/trade", json={
@@ -105,9 +114,7 @@ async def execute_trade(broker: str, symbol: str, action: str, amount: float):
 
 
 # ============================================================
-# LIVE BALANCE FETCH
-# Reuses the authorize handshake — Deriv returns the balance
-# of the selected account inside the authorize response for free.
+# LIVE BALANCE FETCH  (unchanged)
 # ============================================================
 
 async def fetch_deriv_balance(api_token: str) -> float:
@@ -126,10 +133,12 @@ async def fetch_deriv_balance(api_token: str) -> float:
 
 
 # ============================================================
-# ORIGINAL DERIV ACCOUNT LOOP (unchanged)
+# ORIGINAL DERIV ACCOUNT LOOP
+# FIX 3: trade execution skipped when StrategyRunner is live.
+# Signal broadcast still runs so the frontend stays updated.
 # ============================================================
 
-async def process_deriv_account(cred):
+async def process_deriv_account(cred, runner_is_live: bool = False):
     try:
         api_token = decrypt(cred.password)
         symbol    = "R_100"
@@ -146,7 +155,8 @@ async def process_deriv_account(cred):
         else:
             signal = "HOLD"
 
-        print(f"[deriv:{cred.user_id}] RSI={rsi:.1f} signal={signal}")
+        print(f"[deriv:{cred.user_id}] RSI={rsi:.1f} signal={signal} "
+              f"{'(runner active — skipping execution)' if runner_is_live else ''}")
 
         await broadcast_to_frontend({
             "symbol":  symbol,
@@ -160,12 +170,16 @@ async def process_deriv_account(cred):
             }
         })
 
+        # Only trade via the old loop when the strategy runner is NOT active
+        if runner_is_live:
+            return
+
         async with httpx.AsyncClient() as client:
             status = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
             bot_running = status.json().get("running", False)
 
         if signal != "HOLD" and bot_running:
-            result = await execute_trade("deriv", symbol, signal, 1.0)
+            result = await execute_trade(symbol, signal, 1.0)
             print(f"[deriv:{cred.user_id}] trade result: {result}")
 
     except Exception as e:
@@ -173,52 +187,74 @@ async def process_deriv_account(cred):
 
 
 # ============================================================
+# STRATEGY RUNNER BOOT + WATCHDOG
+# FIX 2: task is restarted automatically if it crashes.
+# ============================================================
+
+_strategy_runner_task: asyncio.Task | None = None
+
+
+def _runner_is_alive() -> bool:
+    return _strategy_runner_task is not None and not _strategy_runner_task.done()
+
+
+async def _boot_strategy_runner(api_token: str) -> None:
+    global _strategy_runner_task
+
+    balance = await fetch_deriv_balance(api_token)
+
+    runner = StrategyRunner(
+        api_token        = api_token,
+        balance          = balance,
+        broadcast_fn     = broadcast_to_frontend,
+        execute_trade_fn = execute_trade,
+        is_prop          = False,
+    )
+
+    _strategy_runner_task = asyncio.create_task(
+        runner.start(),
+        name="strategy-runner",
+    )
+    print(f"[signal_engine] StrategyRunner booted — balance={balance} ✓")
+
+
+# ============================================================
 # MAIN LOOP
 # ============================================================
 
-_strategy_runner_task = None   # Ensures runner only starts once
-
-
 async def run_signal_loop():
-    global _strategy_runner_task
     print("[signal_engine] starting...")
 
-    # ── Fetch credentials ─────────────────────────────────────
+    # ── Initial credential fetch ──────────────────────────────
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Credentials))
         creds  = result.scalars().all()
 
     deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
 
-    # ── Boot strategy runner ONCE on startup ──────────────────
-    if deriv_cred and _strategy_runner_task is None:
+    # ── Boot runner on startup ────────────────────────────────
+    if deriv_cred:
         api_token = decrypt(deriv_cred.password)
+        await _boot_strategy_runner(api_token)
 
-        # Pull live balance from the selected Deriv account
-        balance = await fetch_deriv_balance(api_token)
-
-        runner = StrategyRunner(
-            api_token        = api_token,
-            balance          = balance,
-            broadcast_fn     = broadcast_to_frontend,
-            execute_trade_fn = execute_trade,
-            is_prop          = False,
-        )
-
-        _strategy_runner_task = asyncio.create_task(
-            runner.start(),
-            name="strategy-runner"
-        )
-        print("[signal_engine] StrategyRunner booted — V75 + Crash500 running in parallel ✓")
-
-    # ── Original loop continues unchanged ─────────────────────
+    # ── Main loop ─────────────────────────────────────────────
     while True:
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Credentials))
             creds  = result.scalars().all()
 
+        deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
+
+        # FIX 2: watchdog — restart runner if it crashed
+        if deriv_cred and not _runner_is_alive():
+            print("[signal_engine] StrategyRunner dead — restarting...")
+            api_token = decrypt(deriv_cred.password)
+            await _boot_strategy_runner(api_token)
+
+        runner_live = _runner_is_alive()
+
         for cred in creds:
             if cred.broker == "deriv":
-                await process_deriv_account(cred)
+                await process_deriv_account(cred, runner_is_live=runner_live)
 
         await asyncio.sleep(30)
