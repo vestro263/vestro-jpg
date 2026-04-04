@@ -1,22 +1,46 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase
 import os
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# Fix for render postgres URLs
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+DATABASE_URL = (DATABASE_URL
+    .replace("postgresql://", "postgresql+asyncpg://")
+    .replace("?ssl=require", "")
+    .replace("&ssl=require", ""))
+
+_connect_args = {}
+if "render.com" in DATABASE_URL:
+    _connect_args = {"ssl": "require"}
+
+engine = create_async_engine(
+    DATABASE_URL,
+    connect_args=_connect_args,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    echo=False,
+)
+
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
 
 class Base(DeclarativeBase):
     pass
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
