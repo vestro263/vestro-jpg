@@ -182,6 +182,7 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
             else:
                 signal = "HOLD"
 
+
             print(f"[deriv:{cred.user_id}:{symbol}] RSI={rsi:.1f} TSS={tss}/5 "
                   f"ATR_ZONE={atr_zone} signal={signal} "
                   f"{'(runner active — skipping execution)' if runner_is_live else ''}")
