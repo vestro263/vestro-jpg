@@ -10,27 +10,18 @@ import os
 
 router = APIRouter()
 
-DERIV_APP_ID   = os.environ["DERIV_APP_ID"]
-FRONTEND_URL   = os.environ.get("FRONTEND_URL", "https://vestro-ui.onrender.com")
+DERIV_APP_ID = os.environ["DERIV_APP_ID"]
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://vestro-ui.onrender.com")
 
 @router.get("/auth/deriv/callback")
-async def deriv_callback(token1: str, db: Session = Depends(get_db)):
-    """
-    Deriv redirects here after OAuth login.
-    URL looks like: /auth/deriv/callback?token1=a1-xxx&acct1=CR123&cur1=USD
-    We grab token1 and use it to fetch account info.
-    """
-    if not token1:
-        raise HTTPException(status_code=400, detail="No token received from Deriv")
-
+async def deriv_callback(token1: str, acct1: str, cur1: str = "USD", db: Session = Depends(get_db)):
     try:
         info = await get_account_info(DERIV_APP_ID, token1)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    account_id = info.get("account_id", "deriv_user")
+    account_id = acct1  # use the account ID Deriv sent directly
 
-    # Store encrypted — same pattern as /api/connect
     cred = db.query(Credentials).filter_by(user_id=account_id).first()
     if not cred:
         cred = Credentials(user_id=account_id)
@@ -42,10 +33,9 @@ async def deriv_callback(token1: str, db: Session = Depends(get_db)):
     cred.meta_account_id = ""
     db.commit()
 
-    # Redirect back to frontend with account info in query params
     return RedirectResponse(
         f"{FRONTEND_URL}"
         f"?account_id={account_id}"
         f"&balance={info.get('balance', 0)}"
-        f"&currency={info.get('currency', 'USD')}"
+        f"&currency={info.get('currency', cur1)}"
     )
