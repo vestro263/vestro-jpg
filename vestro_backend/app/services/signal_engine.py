@@ -172,9 +172,12 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
             else:
                 atr_zone = "normal"
 
-            if rsi < 40 and ma_fast > ma_slow and tss >= 2 and atr_zone != "extreme":
+            macd_bullish = macd_val > 0
+            macd_bearish = macd_val < 0
+
+            if rsi < 45 and ma_fast > ma_slow and macd_bullish:
                 signal = "BUY"
-            elif rsi > 60 and ma_fast < ma_slow and tss >= 2 and atr_zone != "extreme":
+            elif rsi > 55 and ma_fast < ma_slow and macd_bearish:
                 signal = "SELL"
             else:
                 signal = "HOLD"

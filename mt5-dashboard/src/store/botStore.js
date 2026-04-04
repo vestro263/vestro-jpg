@@ -2,55 +2,53 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import axios from 'axios'
 
-const API = 'https://vestro-jpg.onrender.com'
+const API    = 'https://vestro-jpg.onrender.com'
 const WS_URL = 'wss://vestro-jpg.onrender.com/api/ws'
 
 let reconnectAttempts = 0
 const MAX_RECONNECT = 10
-const backoffDelay = (n) => Math.min(1000 * 2 ** n, 30000)
+const backoffDelay  = (n) => Math.min(1000 * 2 ** n, 30000)
 
 const useBotStore = create(
   persist(
     (set, get) => ({
       connected: false,
-      wsError: null,
-      ws: null,
+      wsError:   null,
+      ws:        null,
       account: {
         balance: 0, equity: 0, profit: 0,
         margin_free: 0, currency: 'USD',
-        name: '—', leverage: 0
+        name: '—', leverage: 0,
+        is_virtual: false,
       },
-      signals: [],
-      positions: [],
-      tradeFeed: [],
-      journal: [],
+      signals:        [],
+      positions:      [],
+      tradeFeed:      [],
+      journal:        [],
       journalLoading: false,
-      stats: null,
-      statsLoading: false,
-      activePage: 'dashboard',
-      botRunning: false,
-      setActivePage: (page) => set({ activePage: page }),
+      stats:          null,
+      statsLoading:   false,
+      activePage:     'dashboard',
+      botRunning:     false,
+      setActivePage:  (page) => set({ activePage: page }),
 
-      // auth state
-      isLoggedIn: false,
-      broker: null,
-      accountId: null,
-      authError: null,
+      // auth
+      isLoggedIn:      false,
+      broker:          null,
+      accountId:       null,
+      authError:       null,
       pendingAccounts: null,
 
       setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
       login: (broker, accountId, accountData) => {
         set({
-          isLoggedIn: true,
+          isLoggedIn:      true,
           broker,
           accountId,
-          authError: null,
+          authError:       null,
           pendingAccounts: null,
-          account: {
-            ...get().account,
-            ...accountData,
-          },
+          account: { ...get().account, ...accountData },
         })
         get().connect()
         get().startPolling()
@@ -60,16 +58,16 @@ const useBotStore = create(
         const ws = get().ws
         if (ws) ws.close(1000)
         set({
-          isLoggedIn: false,
-          broker: null,
-          accountId: null,
-          connected: false,
-          ws: null,
+          isLoggedIn:      false,
+          broker:          null,
+          accountId:       null,
+          connected:       false,
+          ws:              null,
           pendingAccounts: null,
-          account: { balance: 0, equity: 0, profit: 0, margin_free: 0, currency: 'USD', name: '—', leverage: 0 },
-          positions: [],
-          signals: [],
-          tradeFeed: [],
+          account: { balance: 0, equity: 0, profit: 0, margin_free: 0, currency: 'USD', name: '—', leverage: 0, is_virtual: false },
+          positions:  [],
+          signals:    [],
+          tradeFeed:  [],
           botRunning: false,
           activePage: 'dashboard',
         })
@@ -127,18 +125,38 @@ const useBotStore = create(
 
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
-            if (data.account) set({ account: data.account })
+            if (data.account)                          set({ account: data.account })
             if (typeof data.bot_running === 'boolean') set({ botRunning: data.bot_running })
             return
           }
+
           if (data.type === 'signal') {
             const entry = { ...data, id: Date.now() + Math.random(), receivedAt: new Date().toLocaleTimeString() }
             set({ signals: [entry, ...state.signals].slice(0, 100) })
+            return
           }
+
+          if (data.type === 'contract_update') {
+            const update = { ...data, id: data.contract_id, time: new Date().toLocaleTimeString() }
+            const existing = state.tradeFeed.findIndex(t => t.contract_id === data.contract_id)
+            if (existing >= 0) {
+              const updated = [...state.tradeFeed]
+              updated[existing] = { ...updated[existing], ...update }
+              set({ tradeFeed: updated })
+            } else {
+              set({ tradeFeed: [update, ...state.tradeFeed].slice(0, 200) })
+            }
+            if (data.is_expired || data.is_sold) {
+              get().fetchAccount()
+            }
+            return
+          }
+
           if (data.type === 'tp1_hit' || data.trade) {
             const item = { ...data, id: Date.now() + Math.random(), time: new Date().toLocaleTimeString() }
             set({ tradeFeed: [item, ...state.tradeFeed].slice(0, 200) })
             get().fetchPositions()
+            return
           }
         }
 
@@ -189,7 +207,7 @@ const useBotStore = create(
       partialize: (s) => ({
         broker:    s.broker,
         accountId: s.accountId,
-        account:   s.account,  // ← persists balance/currency across refresh
+        account:   s.account,
       }),
     }
   )

@@ -5,12 +5,15 @@ from ..database import get_db
 from ..models import Credentials
 from ..services.credential_store import decrypt
 from ..services import welltrade
-from ..services.deriv_ws import get_account_info, execute_trade as deriv_trade
+from ..services.deriv_ws import get_account_info, execute_trade as deriv_trade, watch_contract
 from pydantic import BaseModel
 import os
+import asyncio
+import httpx
 
 router = APIRouter()
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
+BACKEND_URL  = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 
 class TradeBody(BaseModel):
     broker: str
@@ -35,20 +38,46 @@ async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/api/trade")
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Credentials).where(
-            Credentials.broker == body.broker
-        )
+        select(Credentials).where(Credentials.broker == body.broker)
     )
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Broker not connected")
+
     if body.broker == "welltrade":
         return await welltrade.execute_trade(
             cred.meta_account_id, body.symbol,
             body.action, body.volume, body.sl, body.tp
         )
     else:
-        return await deriv_trade(
-            DERIV_APP_ID, decrypt(cred.password),
+        api_token    = decrypt(cred.password)
+        trade_result = await deriv_trade(
+            DERIV_APP_ID, api_token,
             body.symbol, body.action, body.amount
         )
+
+        contract_id = trade_result.get("contract_id")
+        if contract_id:
+            asyncio.create_task(
+                _watch_and_broadcast(contract_id, api_token, body.symbol, trade_result)
+            )
+
+        return trade_result
+
+
+async def _watch_and_broadcast(contract_id: int, api_token: str, symbol: str, trade_result: dict):
+    async with httpx.AsyncClient() as client:
+        async def on_update(data):
+            try:
+                await client.post(
+                    f"{BACKEND_URL}/api/contract/update",
+                    json={**data, "symbol": symbol, "contract_type": trade_result.get("contract_type")},
+                    timeout=5,
+                )
+            except Exception as e:
+                print(f"[trade] contract broadcast error: {e}")
+
+        try:
+            await watch_contract(DERIV_APP_ID, api_token, contract_id, on_update)
+        except Exception as e:
+            print(f"[trade] watch_contract error: {e}")

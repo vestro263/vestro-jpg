@@ -40,28 +40,25 @@ function useIsMobile(breakpoint = 640) {
 }
 
 const S = {
-  page:  { padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 },
-  card:  { background: '#111827', border: '1px solid #1f2937', borderRadius: 12, padding: 16 },
-  h3:    { fontSize: 13, fontWeight: 600, color: '#e5e7eb', marginBottom: 12 },
-  td:    { padding: '7px 10px', fontSize: 12, color: '#d1d5db', borderBottom: '1px solid #1f2937' },
-  th:    { padding: '7px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #374151', textAlign: 'left' },
+  page: { padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 },
+  card: { background: '#111827', border: '1px solid #1f2937', borderRadius: 12, padding: 16 },
+  h3:   { fontSize: 13, fontWeight: 600, color: '#e5e7eb', marginBottom: 12 },
+  td:   { padding: '7px 10px', fontSize: 12, color: '#d1d5db', borderBottom: '1px solid #1f2937' },
+  th:   { padding: '7px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #374151', textAlign: 'left' },
 }
 
-// ── Quick Trade Panel ──────────────────────────────────────────────────────────
+// ── Quick Trade ────────────────────────────────────────────────────────────────
 function QuickTrade({ isMobile }) {
-  const { accountId, signals } = useBotStore()
+  const { signals } = useBotStore()
   const [symbol,       setSymbol]       = useState('R_100')
   const [contractType, setContractType] = useState('rise_fall')
   const [stake,        setStake]        = useState('1')
-  const [loading,      setLoading]      = useState(null)  // 'BUY' | 'SELL' | null
+  const [loading,      setLoading]      = useState(null)
   const [result,       setResult]       = useState(null)
   const [error,        setError]        = useState(null)
 
-  // Auto-fill symbol from latest signal if available
   const latestSymbol = signals[0]?.symbol
-  useEffect(() => {
-    if (latestSymbol) setSymbol(latestSymbol)
-  }, [latestSymbol])
+  useEffect(() => { if (latestSymbol) setSymbol(latestSymbol) }, [latestSymbol])
 
   async function executeTrade(action) {
     setLoading(action)
@@ -69,7 +66,7 @@ function QuickTrade({ isMobile }) {
     setError(null)
     try {
       const res = await fetch(`${API}/api/trade`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           broker:        'deriv',
@@ -81,7 +78,7 @@ function QuickTrade({ isMobile }) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Trade failed')
-      setResult({ action, symbol, stake, contract_type: contractType, time: new Date().toLocaleTimeString() })
+      setResult({ action, symbol, stake, time: new Date().toLocaleTimeString() })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -89,138 +86,67 @@ function QuickTrade({ isMobile }) {
     }
   }
 
-  const selectStyle = {
-    background: '#1f2937',
-    border: '1px solid #374151',
-    borderRadius: 8,
-    color: '#e5e7eb',
-    fontSize: 13,
-    padding: '9px 12px',
-    outline: 'none',
-    width: '100%',
-  }
-
-  const inputStyle = {
-    ...selectStyle,
-    fontFamily: 'monospace',
+  const sel = {
+    background: '#1f2937', border: '1px solid #374151',
+    borderRadius: 8, color: '#e5e7eb', fontSize: 13,
+    padding: '9px 12px', outline: 'none', width: '100%',
   }
 
   return (
     <div style={S.card}>
       <div style={S.h3}>⚡ Quick Trade</div>
-
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr',
-        gap: 10,
-        marginBottom: 14,
-      }}>
-        {/* Symbol */}
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
         <div>
           <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 5 }}>Symbol</div>
-          <select style={selectStyle} value={symbol} onChange={e => setSymbol(e.target.value)}>
-            {SYMBOLS.map(s => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
+          <select style={sel} value={symbol} onChange={e => setSymbol(e.target.value)}>
+            {SYMBOLS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </div>
-
-        {/* Contract Type */}
         <div>
           <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 5 }}>Contract Type</div>
-          <select style={selectStyle} value={contractType} onChange={e => setContractType(e.target.value)}>
-            {CONTRACT_TYPES.map(c => (
-              <option key={c.value} value={c.value}>{c.label}</option>
-            ))}
+          <select style={sel} value={contractType} onChange={e => setContractType(e.target.value)}>
+            {CONTRACT_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
-
-        {/* Stake */}
         <div>
           <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 5 }}>Stake (USD)</div>
           <input
-            style={inputStyle}
-            type="number"
-            min="0.35"
-            step="0.5"
-            value={stake}
-            onChange={e => setStake(e.target.value)}
+            style={{ ...sel, fontFamily: 'monospace' }}
+            type="number" min="0.35" step="0.5"
+            value={stake} onChange={e => setStake(e.target.value)}
             placeholder="1.00"
           />
         </div>
       </div>
 
-      {/* BUY / SELL buttons */}
       <div style={{ display: 'flex', gap: 10 }}>
-        <button
-          onClick={() => executeTrade('BUY')}
-          disabled={!!loading}
-          style={{
-            flex: 1,
-            padding: '13px 0',
-            borderRadius: 8,
-            border: 'none',
-            background: loading === 'BUY' ? '#14532d' : '#16a34a',
-            color: '#fff',
-            fontSize: 14,
-            fontWeight: 700,
-            cursor: loading ? 'not-allowed' : 'pointer',
-            opacity: loading && loading !== 'BUY' ? 0.5 : 1,
-            transition: 'all 0.15s',
-            letterSpacing: '0.5px',
-          }}
-        >
+        <button onClick={() => executeTrade('BUY')} disabled={!!loading} style={{
+          flex: 1, padding: '13px 0', borderRadius: 8, border: 'none',
+          background: loading === 'BUY' ? '#14532d' : '#16a34a',
+          color: '#fff', fontSize: 14, fontWeight: 700,
+          cursor: loading ? 'not-allowed' : 'pointer',
+          opacity: loading && loading !== 'BUY' ? 0.5 : 1,
+        }}>
           {loading === 'BUY' ? 'Placing…' : '▲ BUY / RISE'}
         </button>
-
-        <button
-          onClick={() => executeTrade('SELL')}
-          disabled={!!loading}
-          style={{
-            flex: 1,
-            padding: '13px 0',
-            borderRadius: 8,
-            border: 'none',
-            background: loading === 'SELL' ? '#450a0a' : '#dc2626',
-            color: '#fff',
-            fontSize: 14,
-            fontWeight: 700,
-            cursor: loading ? 'not-allowed' : 'pointer',
-            opacity: loading && loading !== 'SELL' ? 0.5 : 1,
-            transition: 'all 0.15s',
-            letterSpacing: '0.5px',
-          }}
-        >
+        <button onClick={() => executeTrade('SELL')} disabled={!!loading} style={{
+          flex: 1, padding: '13px 0', borderRadius: 8, border: 'none',
+          background: loading === 'SELL' ? '#450a0a' : '#dc2626',
+          color: '#fff', fontSize: 14, fontWeight: 700,
+          cursor: loading ? 'not-allowed' : 'pointer',
+          opacity: loading && loading !== 'SELL' ? 0.5 : 1,
+        }}>
           {loading === 'SELL' ? 'Placing…' : '▼ SELL / FALL'}
         </button>
       </div>
 
-      {/* Result */}
       {result && (
-        <div style={{
-          marginTop: 12,
-          background: '#052e16',
-          border: '1px solid #166534',
-          borderRadius: 8,
-          padding: '10px 14px',
-          fontSize: 12,
-          color: '#4ade80',
-        }}>
+        <div style={{ marginTop: 12, background: '#052e16', border: '1px solid #166534', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#4ade80' }}>
           ✓ {result.action} placed — {result.symbol} · ${result.stake} · {result.time}
         </div>
       )}
-
-      {/* Error */}
       {error && (
-        <div style={{
-          marginTop: 12,
-          background: '#1f1217',
-          border: '1px solid #7f1d1d',
-          borderRadius: 8,
-          padding: '10px 14px',
-          fontSize: 12,
-          color: '#f87171',
-        }}>
+        <div style={{ marginTop: 12, background: '#1f1217', border: '1px solid #7f1d1d', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#f87171' }}>
           ✗ {error}
         </div>
       )}
@@ -236,49 +162,45 @@ export default function Dashboard() {
   } = useBotStore()
 
   const isMobile = useIsMobile()
-
-  const latest = signals[0]
-  const sig    = latest?.signal || {}
+  const latest   = signals[0]
+  const sig      = latest?.signal || {}
 
   useEffect(() => { fetchPositions() }, [])
 
-  const equityCurve = tradeFeed
-    .filter(t => t.trade?.entry)
-    .slice(0, 20)
-    .reverse()
-    .map((t, i) => ({
-      i,
-      val: parseFloat((account.balance + i * 0.5).toFixed(2)),
-    }))
-
   const totalOpenProfit = positions.reduce((s, p) => s + (p.profit || 0), 0)
+
+  // Equity curve from closed trades
+  const equityCurve = tradeFeed
+    .filter(t => t.is_expired || t.is_sold)
+    .slice(0, 30)
+    .reverse()
+    .reduce((acc, t, i) => {
+      const prev = acc[i - 1]?.val ?? account.balance
+      acc.push({ i, val: parseFloat((prev + (t.profit || 0)).toFixed(2)) })
+      return acc
+    }, [])
 
   const grid4 = {
     display: 'grid',
-    gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+    gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(4, minmax(0,1fr))',
     gap: 10,
   }
-
   const grid2 = {
     display: 'grid',
-    gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0, 1fr))',
+    gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0,1fr))',
     gap: 14,
   }
-
   const indicatorGrid = {
     display: 'grid',
-    gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
+    gridTemplateColumns: isMobile ? 'repeat(2,1fr)' : 'repeat(3,1fr)',
     gap: 8,
   }
-
   const btnBase = {
     display: 'inline-flex', alignItems: 'center', gap: 7,
-    padding: '10px 18px',
-    borderRadius: 8, border: 'none',
+    padding: '10px 18px', borderRadius: 8, border: 'none',
     color: '#fff', fontSize: 13, fontWeight: 600,
     cursor: 'pointer', transition: 'opacity 0.15s',
-    minHeight: 44,
-    WebkitTapHighlightColor: 'transparent',
+    minHeight: 44, WebkitTapHighlightColor: 'transparent',
   }
 
   return (
@@ -288,55 +210,32 @@ export default function Dashboard() {
 
       {/* 🤖 BOT CONTROLS */}
       <div style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: 10,
-        background: '#111827',
-        border: '1px solid #1f2937',
-        borderRadius: 12,
-        padding: '12px 14px',
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10,
+        background: '#111827', border: '1px solid #1f2937', borderRadius: 12, padding: '12px 14px',
       }}>
-        <button
-          onClick={startBot}
-          disabled={botRunning}
-          style={{
-            ...btnBase,
-            background: botRunning ? '#14532d' : '#16a34a',
-            cursor: botRunning ? 'not-allowed' : 'pointer',
-            opacity: botRunning ? 0.5 : 1,
-            flex: isMobile ? '1 1 calc(50% - 5px)' : 'none',
-            justifyContent: 'center',
-          }}
-        >
-          <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
-            <polygon points="2,1 11,6 2,11" />
-          </svg>
+        <button onClick={startBot} disabled={botRunning} style={{
+          ...btnBase,
+          background: botRunning ? '#14532d' : '#16a34a',
+          cursor: botRunning ? 'not-allowed' : 'pointer',
+          opacity: botRunning ? 0.5 : 1,
+          flex: isMobile ? '1 1 calc(50% - 5px)' : 'none',
+          justifyContent: 'center',
+        }}>
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11" /></svg>
           Run Bot
         </button>
-
-        <button
-          onClick={stopBot}
-          disabled={!botRunning}
-          style={{
-            ...btnBase,
-            background: !botRunning ? '#450a0a' : '#dc2626',
-            cursor: !botRunning ? 'not-allowed' : 'pointer',
-            opacity: !botRunning ? 0.45 : 1,
-            flex: isMobile ? '1 1 calc(50% - 5px)' : 'none',
-            justifyContent: 'center',
-          }}
-        >
-          <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
-            <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" />
-          </svg>
+        <button onClick={stopBot} disabled={!botRunning} style={{
+          ...btnBase,
+          background: !botRunning ? '#450a0a' : '#dc2626',
+          cursor: !botRunning ? 'not-allowed' : 'pointer',
+          opacity: !botRunning ? 0.45 : 1,
+          flex: isMobile ? '1 1 calc(50% - 5px)' : 'none',
+          justifyContent: 'center',
+        }}>
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" /></svg>
           Stop Bot
         </button>
-
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          ...(isMobile ? { width: '100%', justifyContent: 'center', paddingTop: 2 } : { marginLeft: 4 }),
-        }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, ...(isMobile ? { width: '100%', justifyContent: 'center', paddingTop: 2 } : { marginLeft: 4 }) }}>
           <span style={{
             width: 7, height: 7, borderRadius: '50%',
             background: botRunning ? '#4ade80' : '#4b5563',
@@ -355,18 +254,19 @@ export default function Dashboard() {
           label="Balance"
           value={`$${(account.balance || 0).toLocaleString('en', { minimumFractionDigits: 2 })}`}
           color="#f1f5f9"
+          sub={account.currency || 'USD'}
+        />
+        <StatCard
+          label="Equity"
+          value={`$${(account.equity || account.balance || 0).toLocaleString('en', { minimumFractionDigits: 2 })}`}
+          color="#4ade80"
+          sub={account.is_virtual ? 'Demo account' : 'Real account'}
         />
         <StatCard
           label="Open P&L"
           value={`${totalOpenProfit >= 0 ? '+' : ''}$${totalOpenProfit.toFixed(2)}`}
           color={totalOpenProfit >= 0 ? '#4ade80' : '#f87171'}
           sub={`${positions.length} position${positions.length !== 1 ? 's' : ''} open`}
-        />
-        <StatCard
-          label="Signals Today"
-          value={signals.filter(s => s.signal?.direction !== 0).length}
-          color="#93c5fd"
-          sub={`${signals.length} bars evaluated`}
         />
         <StatCard
           label="Daily D/D"
@@ -382,14 +282,12 @@ export default function Dashboard() {
       {/* 🔲 MAIN GRID */}
       <div style={grid2}>
 
+        {/* Signal */}
         <div style={S.card}>
           <div style={S.h3}>
             Latest signal
-            {latest?.symbol && (
-              <span style={{ color: '#6b7280', marginLeft: 6 }}>{latest.symbol}</span>
-            )}
+            {latest?.symbol && <span style={{ color: '#6b7280', marginLeft: 6 }}>{latest.symbol}</span>}
           </div>
-
           {latest ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -399,12 +297,10 @@ export default function Dashboard() {
                   {latest.receivedAt}
                 </span>
               </div>
-
               <div>
                 <div style={{ fontSize: 11, color: '#6b7280' }}>TSS</div>
                 <TSSBar score={sig.tss_score || 0} />
               </div>
-
               <div style={indicatorGrid}>
                 {[
                   ['RSI', sig.rsi], ['ADX', sig.adx],
@@ -427,6 +323,7 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* Positions */}
         <div style={S.card}>
           <div style={S.h3}>Open positions ({positions.length})</div>
           {positions.length === 0 ? (
@@ -437,29 +334,19 @@ export default function Dashboard() {
             <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 260 }}>
                 <thead>
-                  <tr>
-                    {['Symbol', 'Type', 'Lot', 'P&L'].map(h => (
-                      <th key={h} style={S.th}>{h}</th>
-                    ))}
-                  </tr>
+                  <tr>{['Symbol', 'Type', 'Lot', 'P&L'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {positions.map(p => (
-                    <tr
-                      key={p.ticket}
+                    <tr key={p.ticket}
                       onMouseEnter={e => e.currentTarget.style.background = '#1f2937'}
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                       style={{ transition: 'background 0.1s' }}
                     >
                       <td style={{ ...S.td, fontWeight: 600, color: '#e5e7eb' }}>{p.symbol}</td>
-                      <td style={S.td}>
-                        <DirectionBadge direction={p.type === 'buy' ? 1 : -1} />
-                      </td>
+                      <td style={S.td}><DirectionBadge direction={p.type === 'buy' ? 1 : -1} /></td>
                       <td style={S.td}>{p.volume}</td>
-                      <td style={{
-                        ...S.td, fontWeight: 600,
-                        color: (p.profit || 0) >= 0 ? '#4ade80' : '#f87171',
-                      }}>
+                      <td style={{ ...S.td, fontWeight: 600, color: (p.profit || 0) >= 0 ? '#4ade80' : '#f87171' }}>
                         {(p.profit || 0) >= 0 ? '+' : ''}{(p.profit || 0).toFixed(2)}
                       </td>
                     </tr>
@@ -474,31 +361,23 @@ export default function Dashboard() {
 
       <RiskGauge />
 
+      {/* 📈 EQUITY CURVE */}
       {equityCurve.length > 1 && (
         <div style={S.card}>
-          <div style={S.h3}>Equity</div>
+          <div style={S.h3}>Equity curve</div>
           <ResponsiveContainer width="100%" height={isMobile ? 100 : 120}>
             <LineChart data={equityCurve}>
               <CartesianGrid stroke="#1f2937" />
               <XAxis dataKey="i" hide />
-              <YAxis
-                tick={{ fontSize: 10, fill: '#6b7280' }}
-                tickLine={false}
-                axisLine={false}
-                width={44}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: '#111827', border: '1px solid #1f2937',
-                  borderRadius: 8, fontSize: 12,
-                }}
-              />
+              <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickLine={false} axisLine={false} width={44} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, fontSize: 12 }} />
               <Line dataKey="val" stroke="#38bdf8" dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         </div>
       )}
 
+      {/* 📡 TRADE FEED */}
       <div style={S.card}>
         <div style={S.h3}>Trade feed</div>
         {tradeFeed.length === 0 ? (
@@ -506,21 +385,79 @@ export default function Dashboard() {
             No trades yet
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {tradeFeed.slice(0, 10).map(t => (
-              <div key={t.id} style={{
-                background: '#1f2937', borderRadius: 6,
-                padding: '6px 10px',
-                fontSize: isMobile ? 10 : 11,
-                color: '#9ca3af', fontFamily: 'monospace',
-                overflowX: 'auto',
-                WebkitOverflowScrolling: 'touch',
-                whiteSpace: 'nowrap',
-              }}>
-                <span style={{ color: '#4b5563', marginRight: 8 }}>{t.time}</span>
-                {JSON.stringify(t.trade ?? t)}
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {tradeFeed.slice(0, 15).map(t => {
+              const isLive    = !t.is_expired && !t.is_sold && !!t.contract_id
+              const profit    = t.profit ?? 0
+              const profitPct = t.profit_pct ?? 0
+              const status    = t.is_expired || t.is_sold ? 'closed' : isLive ? 'live' : 'pending'
+
+              return (
+                <div key={t.id ?? t.contract_id} style={{
+                  background:   '#1f2937',
+                  borderRadius: 8,
+                  padding:      '10px 12px',
+                  border:       `1px solid ${isLive ? '#1d4ed8' : profit >= 0 ? '#166534' : '#7f1d1d'}`,
+                  transition:   'border-color 0.3s',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {isLive && (
+                        <span style={{
+                          width: 6, height: 6, borderRadius: '50%',
+                          background: '#3b82f6', boxShadow: '0 0 6px #3b82f6',
+                          display: 'inline-block', flexShrink: 0,
+                        }} />
+                      )}
+                      <span style={{ color: '#e5e7eb', fontSize: 12, fontWeight: 600 }}>
+                        {t.symbol ?? '—'}
+                      </span>
+                      {t.contract_type && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                          background: t.contract_type === 'CALL' ? '#14532d' : '#450a0a',
+                          color:      t.contract_type === 'CALL' ? '#4ade80'  : '#f87171',
+                        }}>
+                          {t.contract_type === 'CALL' ? '▲ RISE' : '▼ FALL'}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 10, color: '#4b5563' }}>{t.time}</span>
+                    </div>
+
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: profit >= 0 ? '#4ade80' : '#f87171' }}>
+                        {profit >= 0 ? '+' : ''}${profit.toFixed(2)}
+                        <span style={{ fontSize: 10, marginLeft: 4, color: profit >= 0 ? '#4ade80' : '#f87171' }}>
+                          ({profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 10, color: '#6b7280' }}>
+                        {status === 'live' ? '● LIVE' : status === 'closed' ? 'Closed' : 'Pending'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live progress bar */}
+                  {isLive && t.buy_price && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ height: 3, background: '#374151', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{
+                          height:     '100%',
+                          width:      `${Math.min(100, Math.max(0, 50 + profitPct))}%`,
+                          background: profit >= 0 ? '#4ade80' : '#f87171',
+                          borderRadius: 2,
+                          transition: 'width 0.5s ease, background 0.3s',
+                        }} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                        <span style={{ fontSize: 10, color: '#6b7280' }}>Entry: {t.entry_spot ?? '—'}</span>
+                        <span style={{ fontSize: 10, color: '#6b7280' }}>Now: {t.current_spot ?? '—'}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

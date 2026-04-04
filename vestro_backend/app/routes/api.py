@@ -738,3 +738,9 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade validation not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
+
+@router.post("/contract/update")
+async def contract_update(data: dict):
+    """Called by contract watcher to push live P&L to frontend."""
+    await manager.broadcast({"type": "contract_update", **data})
+    return {"status": "ok"}

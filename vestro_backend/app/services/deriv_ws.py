@@ -92,3 +92,47 @@ async def execute_trade(
             "symbol":         symbol,
             "longcode":       c.get("longcode", ""),
         }
+
+
+async def watch_contract(app_id: str, api_token: str, contract_id: int, callback):
+    """
+    Subscribes to contract updates and calls callback(data) on each tick
+    until the contract is sold/expired.
+    """
+    url = _WS_URL.format(app_id=app_id)
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"authorize": api_token}))
+        auth = json.loads(await ws.recv())
+        if "error" in auth:
+            raise ValueError(f"Deriv auth error: {auth['error']['message']}")
+
+        await ws.send(json.dumps({
+            "proposal_open_contract": 1,
+            "contract_id": contract_id,
+            "subscribe": 1,
+        }))
+
+        while True:
+            msg = json.loads(await ws.recv())
+            if "error" in msg:
+                break
+            contract = msg.get("proposal_open_contract", {})
+            if not contract:
+                continue
+
+            await callback({
+                "contract_id":  contract_id,
+                "status":       contract.get("status", "open"),
+                "buy_price":    contract.get("buy_price", 0),
+                "bid_price":    contract.get("bid_price", 0),
+                "profit":       contract.get("profit", 0),
+                "profit_pct":   contract.get("profit_percentage", 0),
+                "entry_spot":   contract.get("entry_spot", 0),
+                "current_spot": contract.get("current_spot", 0),
+                "expiry_time":  contract.get("expiry_time", 0),
+                "is_expired":   contract.get("is_expired", False),
+                "is_sold":      contract.get("is_sold", False),
+            })
+
+            if contract.get("is_expired") or contract.get("is_sold"):
+                break
