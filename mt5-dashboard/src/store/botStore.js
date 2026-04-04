@@ -42,17 +42,22 @@ const useBotStore = create(
       setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
       login: (broker, accountId, accountData) => {
-        set({
-          isLoggedIn:      true,
-          broker,
-          accountId,
-          authError:       null,
-          pendingAccounts: null,
-          account: { ...get().account, ...accountData },
-        })
-        get().connect()
-        get().startPolling()
-      },
+          set({
+            isLoggedIn:      true,
+            broker,
+            accountId,
+            authError:       null,
+            pendingAccounts: null,
+            account: { ...get().account, ...accountData },
+          })
+          get().connect()
+          get().startPolling()
+          // Sync bot status from backend
+          fetch(`${API}/api/bot/status`)
+            .then(r => r.json())
+            .then(d => set({ botRunning: d.running }))
+            .catch(() => {})
+        },
 
       logout: () => {
         const ws = get().ws

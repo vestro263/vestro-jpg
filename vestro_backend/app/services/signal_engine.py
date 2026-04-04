@@ -228,31 +228,31 @@ async def _boot_strategy_runner(api_token: str) -> None:
 
 async def run_signal_loop():
     print("[signal_engine] starting...")
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Credentials))
-        creds  = result.scalars().all()
-
-    deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
-
-    if deriv_cred:
-        await _boot_strategy_runner(decrypt(deriv_cred.password))
+    await asyncio.sleep(5)  # wait for DB to be fully ready
 
     while True:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Credentials))
-            creds  = result.scalars().all()
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(Credentials))
+                creds  = result.scalars().all()
 
-        deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
+            print(f"[signal_engine] credentials found: {len(creds)}")
 
-        if deriv_cred and not _runner_is_alive():
-            print("[signal_engine] StrategyRunner dead — restarting...")
-            await _boot_strategy_runner(decrypt(deriv_cred.password))
+            deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
 
-        runner_live = _runner_is_alive()
+            if deriv_cred and not _runner_is_alive():
+                print("[signal_engine] booting strategy runner...")
+                await _boot_strategy_runner(decrypt(deriv_cred.password))
 
-        for cred in creds:
-            if cred.broker == "deriv":
-                await process_deriv_account(cred, runner_is_live=runner_live)
+            runner_live = _runner_is_alive()
+
+            for cred in creds:
+                if cred.broker == "deriv":
+                    await process_deriv_account(cred, runner_is_live=runner_live)
+
+        except Exception as e:
+            print(f"[signal_engine] loop error: {e}")
+            import traceback
+            traceback.print_exc()
 
         await asyncio.sleep(30)
