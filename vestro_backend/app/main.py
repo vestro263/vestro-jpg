@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
+from .routes.trade import router as trade_router
 
 from .database import init_db, AsyncSessionLocal
 from .routes.auth import router as auth_router
@@ -72,3 +73,4 @@ app.add_middleware(
 app.include_router(api_router)
 app.include_router(stream_router)
 app.include_router(auth_router)
+app.include_router(trade_router)

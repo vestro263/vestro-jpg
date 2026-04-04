@@ -147,7 +147,9 @@ const useBotStore = create(
 
       fetchAccount: async () => {
         try {
-          const { data } = await axios.get(`${API}/api/account`)
+          const { accountId } = get()
+          if (!accountId) return
+          const { data } = await axios.get(`${API}/api/account/${accountId}`)
           set({ account: data })
         } catch {}
       },
@@ -185,8 +187,9 @@ const useBotStore = create(
     {
       name: 'vestro-auth',
       partialize: (s) => ({
-        broker: s.broker,
+        broker:    s.broker,
         accountId: s.accountId,
+        account:   s.account,  // ← persists balance/currency across refresh
       }),
     }
   )
