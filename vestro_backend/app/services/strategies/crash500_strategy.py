@@ -86,7 +86,7 @@ class Crash500Strategy(BaseStrategy):
 
     # ── Phase 2 — run the 4-check entry checklist ─────────────
     async def compute_signal(self, market_data: dict) -> dict:
-        from ....ml.calibration_loader import get_thresholds
+        from ml.calibration_loader import get_thresholds
         t = get_thresholds(self.SYMBOL)
 
         now = market_data["now"]
