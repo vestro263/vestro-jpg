@@ -11,7 +11,7 @@ import websockets
 import pathlib
 from ml.signal_log_model import SignalLog
 
-from datetime import datetime, timezone
+from datetime import datetime
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds
 from ml.outcome_labeler    import run_labeler
@@ -223,7 +223,7 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
                         tss_score=tss,
                         atr_zone=atr_zone,
                         confidence=0.0,
-                        captured_at=datetime.now(timezone.utc),
+                        captured_at=datetime.utcnow(),
                     ))
                     await db.commit()
             except Exception as log_err:
