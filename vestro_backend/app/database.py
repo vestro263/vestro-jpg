@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 import os
 
-from .ml.signal_log_model import SignalLog, CalibrationConfig, SignalLogBase
+from ..ml.signal_log_model import SignalLog, CalibrationConfig, SignalLogBase
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
