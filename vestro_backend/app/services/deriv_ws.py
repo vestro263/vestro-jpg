@@ -4,6 +4,9 @@ import websockets
 _WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
 async def _authorized_ws(app_id: str, api_token: str):
     """Async context manager: yields an authorized WebSocket."""
     url = _WS_URL.format(app_id=app_id)
@@ -113,7 +116,10 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
         if "error" in auth:
-            raise ValueError(f"Deriv auth error: {auth['error']['message']}")
+            return {
+                "status": "error",
+                "message": f"Auth error: {auth['error']['message']}"
+            }
 
         await ws.send(json.dumps({
             "proposal_open_contract": 1,
