@@ -12,10 +12,6 @@ def gen_id():
 
 
 class User(Base):
-    """
-    One row per person who signs in with Google.
-    Links their email identity to one or more Deriv accounts (Credentials rows).
-    """
     __tablename__ = "users"
 
     id         = Column(String, primary_key=True, default=gen_id)
@@ -25,20 +21,18 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
     last_login = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    # All Deriv accounts this user has connected via OAuth
     credentials = relationship(
-        "Credentials", back_populates="user",
-        cascade="all, delete-orphan",
-        foreign_keys="Credentials.user_id",
+        "Credentials",
+        back_populates="user",
+        cascade="all, delete-orphan"
     )
-
 
 class Credentials(Base):
     __tablename__ = "credentials"
 
     id              = Column(Integer, primary_key=True)
-    user_id         = Column(String, unique=True, index=True)  # Deriv loginid e.g. CR123456
-    google_user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    user_id         = Column(String, ForeignKey("users.id"), index=True)  # ✅ single FK
+
     broker          = Column(String)
     login           = Column(String)
     password        = Column(String)
@@ -46,9 +40,10 @@ class Credentials(Base):
     api_token       = Column(String)
     meta_account_id = Column(String)
 
-    user = relationship("User", back_populates="credentials",
-                        foreign_keys=[google_user_id],
-                        primaryjoin="Credentials.google_user_id == User.id")
+    user = relationship(
+        "User",
+        back_populates="credentials"
+    )
 
 class Firm(Base):
     __tablename__ = "firms"
