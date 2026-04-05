@@ -23,8 +23,11 @@ async def get_account_info(app_id: str, api_token: str) -> dict:
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
-        if "error" in auth:
-            raise ValueError(f"Deriv auth error: {auth['error']['message']}")
+        if "error" in p_resp:
+            return {
+                "status": "error",
+                "message": p_resp["error"]["message"]
+            }
         a = auth["authorize"]
 
         await ws.send(json.dumps({"balance": 1}))
@@ -68,7 +71,10 @@ async def execute_trade(
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
         if "error" in auth:
-            raise ValueError(f"Deriv auth error: {auth['error']['message']}")
+            return {
+                "status": "error",
+                "message": auth["error"]["message"]
+            }
 
         await ws.send(json.dumps({
             "proposal":      1,
