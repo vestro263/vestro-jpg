@@ -38,7 +38,7 @@ class Credentials(Base):
 
     id              = Column(Integer, primary_key=True)
     user_id         = Column(String, unique=True, index=True)  # Deriv loginid e.g. CR123456
-    google_user_id  = Column(String, nullable=True, index=True) # ← NEW: links to User.id
+    google_user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     broker          = Column(String)
     login           = Column(String)
     password        = Column(String)
