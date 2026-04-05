@@ -20,6 +20,10 @@ from .workers.scheduler import create_scheduler
 from app.services.signal_engine import run_signal_loop
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from app.db import engine
+from app.models import Base
+
+
 # ------------------ LOGGING ------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +83,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def reset_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 # ------------------ GLOBAL ERROR HANDLER ------------------
 @app.exception_handler(Exception)
