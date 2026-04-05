@@ -187,7 +187,23 @@ Impact: ${ev.tier}
     }
   }
 
-  if (loading || events.length === 0) return null
+  if (loading) {
+  return <div style={{color:'#6b7280'}}>Loading events...</div>
+}
+
+if (events.length === 0) {
+  return (
+    <div style={{
+      padding: '6px 20px',
+      color: '#6b7280',
+      fontSize: 11,
+      background: '#0d1117',
+      borderBottom: '1px solid rgba(255,255,255,0.06)'
+    }}>
+      No recent economic events (last {symbol ? '12' : '6'} hrs)
+    </div>
+  )
+}
 
   const biasMeta = analysis ? (BIAS_COLORS[analysis.bias?.toLowerCase()] ?? BIAS_COLORS.buy) : null
 
