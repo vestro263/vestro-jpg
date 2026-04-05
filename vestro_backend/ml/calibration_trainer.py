@@ -39,7 +39,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sqlalchemy import select, delete
 
-from ..database import AsyncSessionLocal
+from ..app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog, CalibrationConfig
 
 logger = logging.getLogger(__name__)
