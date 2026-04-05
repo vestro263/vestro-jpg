@@ -36,6 +36,10 @@ async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
     else:
         return await get_account_info(DERIV_APP_ID, decrypt(cred.password))
 
+from fastapi import HTTPException
+
+MIN_STAKE = 0.35  # 🔥 define once
+
 @router.post("/api/trade")
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     if body.account_id:
@@ -49,26 +53,64 @@ async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
             .order_by(Credentials.id.desc())
             .limit(1)
         )
+
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Broker not connected")
 
+    # =========================
+    # ✅ WELLTRADE (unchanged)
+    # =========================
     if body.broker == "welltrade":
         return await welltrade.execute_trade(
-            cred.meta_account_id, body.symbol,
-            body.action, body.volume, body.sl, body.tp
-        )
-    else:
-        api_token    = decrypt(cred.password)
-        trade_result = await deriv_trade(
-            DERIV_APP_ID, api_token,
-            body.symbol, body.action, body.amount
+            cred.meta_account_id,
+            body.symbol,
+            body.action,
+            body.volume,
+            body.sl,
+            body.tp
         )
 
+    # =========================
+    # ✅ DERIV FIX STARTS HERE
+    # =========================
+    else:
+        # 🔥 VALIDATE stake BEFORE hitting Deriv
+        amount = float(body.amount or 0)
+
+        if amount < MIN_STAKE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Minimum stake is {MIN_STAKE}"
+            )
+
+        api_token = decrypt(cred.password)
+
+        trade_result = await deriv_trade(
+            DERIV_APP_ID,
+            api_token,
+            body.symbol,
+            body.action,
+            amount
+        )
+
+        # 🔥 Handle safe error (no crash)
+        if trade_result.get("status") == "error":
+            raise HTTPException(
+                status_code=400,
+                detail=trade_result.get("message")
+            )
+
         contract_id = trade_result.get("contract_id")
+
         if contract_id:
             asyncio.create_task(
-                _watch_and_broadcast(contract_id, api_token, body.symbol, trade_result)
+                _watch_and_broadcast(
+                    contract_id,
+                    api_token,
+                    body.symbol,
+                    trade_result
+                )
             )
 
         return trade_result

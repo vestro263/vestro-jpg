@@ -79,7 +79,10 @@ async def execute_trade(
         }))
         p_resp = json.loads(await ws.recv())
         if "error" in p_resp:
-            raise ValueError(f"Proposal failed: {p_resp['error']['message']}")
+            return {
+                "status": "error",
+                "message": p_resp["error"]["message"]
+            }
 
         proposal_id = p_resp["proposal"]["id"]
         ask_price   = p_resp["proposal"]["ask_price"]
