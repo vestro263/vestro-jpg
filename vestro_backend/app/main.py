@@ -85,10 +85,7 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def create_tables():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+
 
 # ------------------ GLOBAL ERROR HANDLER ------------------
 @app.exception_handler(Exception)
