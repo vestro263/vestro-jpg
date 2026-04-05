@@ -21,7 +21,7 @@ from typing import Optional
 
 from sqlalchemy import select
 
-from ..app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal
 from .signal_log_model import CalibrationConfig
 
 logger = logging.getLogger(__name__)
