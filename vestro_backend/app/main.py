@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .database import init_db
+from .database import init_db, get_db
 from .config import get_settings
 from .routes.api import router as api_router, _refresh_firms
 from .routes.stream import router as stream_router
