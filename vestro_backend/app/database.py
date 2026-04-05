@@ -45,7 +45,7 @@ async def init_db():
     # Deferred import — avoids circular dependency at module load time.
     # (calibration_loader imports AsyncSessionLocal from this module, so
     #  importing signal_log_model at the top level would create a cycle.)
-    from .ml.signal_log_model import SignalLogBase  # noqa: F401
+    from ml.signal_log_model import SignalLogBase  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
