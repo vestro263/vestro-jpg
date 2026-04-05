@@ -32,6 +32,7 @@ class Credentials(Base):
 
     id              = Column(Integer, primary_key=True)
     user_id         = Column(String, ForeignKey("users.id"), index=True)  # ✅ single FK
+    google_user_id = Column(String, index=True, nullable=True)
 
     broker          = Column(String)
     login           = Column(String)
