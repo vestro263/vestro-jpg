@@ -2,22 +2,7 @@
 signal_logger.py
 ================
 Writes one SignalLog row per signal computed by any strategy.
-
-USAGE — call from base_strategy.py right after compute_signal() returns:
-
-    from ..ml.signal_logger import log_signal
-    ...
-    signal = await self.compute_signal(market_data)
-    await log_signal(signal, strategy_name=self.NAME)
-
-For Crash500 which overrides run() directly, call it inside run()
-right after compute_signal():
-
-    signal = await self.compute_signal(market_data)
-    await log_signal(signal, strategy_name=self.NAME)
-
-The logger is fire-and-forget: it never raises, so a DB error never
-kills the strategy pipeline.
+Fire-and-forget — never raises, so a DB error never kills the pipeline.
 """
 
 import logging
@@ -30,20 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_features(signal: dict, strategy_name: str) -> dict:
-    """
-    Pull indicator values out of the signal dict that strategies already
-    compute and pass to broadcast_fn / return from compute_signal().
-    Both V75 and Crash500 pack everything into signal["meta"] and the
-    top-level signal dict.
-    """
-    meta = signal.get("meta", {})
-    sig_inner = signal.get("signal", {})   # some callers nest indicators here
+    meta       = signal.get("meta", {})
+    # V75 packs computed indicators into "indicators" key.
+    # Crash500 doesn't use this key — it falls back to meta.
+    indicators = signal.get("indicators", {})
 
-    # Direction integer
     raw_signal = signal.get("signal", "HOLD")
     if isinstance(raw_signal, dict):
-        # Crash500 overrides run() and constructs its own broadcast dict;
-        # in compute_signal() it always returns signal as a string key.
         raw_signal = "HOLD"
     direction = 1 if raw_signal == "BUY" else (-1 if raw_signal == "SELL" else 0)
 
@@ -57,19 +35,19 @@ def _extract_features(signal: dict, strategy_name: str) -> dict:
         tp_price    = meta.get("tp"),
         amount      = signal.get("amount"),
 
-        # ── V75 indicators ────────────────────────────────────
-        rsi         = sig_inner.get("rsi")        if isinstance(sig_inner, dict) else None,
-        adx         = sig_inner.get("adx")        if isinstance(sig_inner, dict) else None,
-        atr         = sig_inner.get("atr")        if isinstance(sig_inner, dict) else meta.get("atr_val"),
-        ema_50      = sig_inner.get("ema50")      if isinstance(sig_inner, dict) else None,
-        ema_200     = sig_inner.get("ema200")     if isinstance(sig_inner, dict) else None,
-        macd_hist   = sig_inner.get("macd_hist")  if isinstance(sig_inner, dict) else None,
+        # V75 indicators — populated from indicators key
+        rsi         = indicators.get("rsi"),
+        adx         = indicators.get("adx"),
+        atr         = indicators.get("atr") or meta.get("atr_val"),
+        ema_50      = indicators.get("ema_50"),
+        ema_200     = indicators.get("ema_200"),
+        macd_hist   = indicators.get("macd_hist"),
         tss_score   = meta.get("tss"),
         checklist   = meta.get("checklist"),
         confidence  = signal.get("confidence"),
         atr_zone    = meta.get("atr_zone"),
 
-        # ── Crash500 extras ───────────────────────────────────
+        # Crash500 extras — populated from meta
         drop_spike  = meta.get("drop_spike"),
         recovery    = meta.get("recovery"),
         spike_score = meta.get("score"),
@@ -86,10 +64,7 @@ def _extract_features(signal: dict, strategy_name: str) -> dict:
 
 
 async def log_signal(signal: dict, strategy_name: str) -> str | None:
-    """
-    Persist one SignalLog row.  Returns the new row's id, or None on error.
-    Never raises — logging failures must not kill the strategy pipeline.
-    """
+    """Persist one SignalLog row. Returns new row id, or None on error."""
     try:
         fields = _extract_features(signal, strategy_name)
         row    = SignalLog(**fields)
@@ -111,10 +86,7 @@ async def log_signal(signal: dict, strategy_name: str) -> str | None:
 
 
 async def mark_executed(log_id: str) -> None:
-    """
-    Call this after execute_trade_fn() succeeds so we can filter
-    the training set to only rows where we actually entered the market.
-    """
+    """Mark a signal row as having resulted in a real trade."""
     if not log_id:
         return
     try:
@@ -133,10 +105,7 @@ async def mark_executed(log_id: str) -> None:
 async def mark_failed(log_id: str, reason: str = "execution_failed") -> None:
     """
     Called by base_strategy when execute_trade_fn returns a non-success result.
-    Logs the failure reason so the trainer can distinguish:
-      - never attempted  (executed=False, fail_reason=None)
-      - attempted, failed (executed=False, fail_reason set)
-      - filled           (executed=True)
+    Distinguishes: never attempted / attempted+failed / filled.
     """
     if not log_id:
         return
