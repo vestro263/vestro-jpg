@@ -10,6 +10,8 @@ import useBotStore from './store/botStore'
 import Login from './pages/Login'
 import AccountSelector from './pages/AccountSelector'
 
+const API = 'https://vestro-jpg.onrender.com'
+
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
   useEffect(() => {
@@ -44,9 +46,10 @@ export default function App() {
     const error         = params.get('error')
 
     if (error) {
-      // OAuth failure
       useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
       window.history.replaceState({}, '', '/')
+      setAuthChecked(true)
+
     } else if (accountsParam) {
       // Fresh OAuth callback — overwrite saved list and show selector
       try {
@@ -54,13 +57,27 @@ export default function App() {
         setDerivAccounts(accounts)
       } catch {}
       window.history.replaceState({}, '', '/')
-    } else if (!isLoggedIn) {
-      // No OAuth callback and not logged in — restore selector from persisted list
-      const saved = useBotStore.getState().derivAccounts
-      if (saved?.length) setPendingAccounts(saved)
-    }
+      setAuthChecked(true)
 
-    setAuthChecked(true)
+    } else if (!isLoggedIn) {
+      // Try persisted list first, fall back to fetching from backend
+      const saved = useBotStore.getState().derivAccounts
+      if (saved?.length) {
+        setPendingAccounts(saved)
+        setAuthChecked(true)
+      } else {
+        fetch(`${API}/api/accounts`)
+          .then(r => r.json())
+          .then(accounts => {
+            if (accounts?.length) setDerivAccounts(accounts)
+          })
+          .catch(() => {})
+          .finally(() => setAuthChecked(true))
+      }
+
+    } else {
+      setAuthChecked(true)
+    }
   }, [])
 
   useEffect(() => {
@@ -72,7 +89,7 @@ export default function App() {
 
   if (!authChecked) return null
 
-  if (pendingAccounts) {
+  if (pendingAccounts?.length) {
     return (
       <AccountSelector
         accounts={pendingAccounts}
