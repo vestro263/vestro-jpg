@@ -5,111 +5,150 @@ const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 const AI_API = 'https://r3bel-production.up.railway.app'
 
 const IMPACT = {
-  1: { bg: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.25)', text: '#f87171', dot: '#ef4444', label: 'HIGH' },
-  2: { bg: 'rgba(245,158,11,0.08)', border: 'rgba(245,158,11,0.25)', text: '#fbbf24', dot: '#f59e0b', label: 'MED' },
+  1: { lbl: 'HIGH', dot: '#ff3131', chipClass: 'high' },
+  2: { lbl: 'MED',  dot: '#ffb800', chipClass: 'med'  },
 }
 
-const BIAS_COLORS = {
-  buy:  { bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.3)',  text: '#4ade80' },
-  sell: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)', text: '#f87171' },
+const LOAD_LINES = [
+  'CONNECTING TO AI ENGINE...',
+  'PARSING MACRO CONTEXT...',
+  'COMPUTING BIAS VECTOR...',
+  'GENERATING SIGNAL...',
+]
+
+function fmt(iso) {
+  return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
 }
 
-const ConfidenceBar = ({ value }) => {
-  const pct = Math.round(value * 100)
-
-  const tier =
-    pct >= 70 ? {
-      label: 'HIGH',
-      color: '#4ade80',
-      glow: '#4ade8066',
-      trackBg: 'rgba(74,222,128,0.08)',
-      labelBg: 'rgba(74,222,128,0.12)',
-      labelBorder: 'rgba(74,222,128,0.25)',
-      segments: 3,
-    } : pct >= 45 ? {
-      label: 'MEDIUM',
-      color: '#fbbf24',
-      glow: '#fbbf2466',
-      trackBg: 'rgba(251,191,36,0.08)',
-      labelBg: 'rgba(251,191,36,0.12)',
-      labelBorder: 'rgba(251,191,36,0.25)',
-      segments: 2,
-    } : {
-      label: 'LOW',
-      color: '#f87171',
-      glow: '#f8717166',
-      trackBg: 'rgba(248,113,113,0.08)',
-      labelBg: 'rgba(248,113,113,0.12)',
-      labelBorder: 'rgba(248,113,113,0.25)',
-      segments: 1,
-    }
-
-  return (
-    <div style={{
-      marginTop: 14,
-      background: tier.trackBg,
-      border: `1px solid ${tier.labelBorder}`,
-      borderRadius: 8,
-      padding: '10px 14px',
-    }}>
-      {/* Header row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{
-            fontSize: 10, color: '#4b5563',
-            textTransform: 'uppercase', letterSpacing: '0.08em'
-          }}>
-            Confidence
-          </span>
-          <span style={{
-            fontSize: 9, fontWeight: 700,
-            color: tier.color,
-            background: tier.labelBg,
-            border: `1px solid ${tier.labelBorder}`,
-            padding: '1px 6px', borderRadius: 4,
-            letterSpacing: '0.07em',
-          }}>
-            {tier.label}
-          </span>
-        </div>
-        <span style={{ fontSize: 15, fontWeight: 800, color: tier.color }}>
-          {pct}%
-        </span>
-      </div>
-
-      {/* Segmented bar — 5 blocks */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {[1, 2, 3, 4, 5].map(i => {
-          const filled = i <= Math.ceil((pct / 100) * 5)
-
-          return (
-            <div key={i} style={{
-              flex: 1, height: 6, borderRadius: 3,
-              background: filled ? tier.color : 'rgba(255,255,255,0.06)',
-              boxShadow: filled ? `0 0 6px ${tier.glow}` : 'none',
-              transition: `background 0.4s ease ${i * 0.06}s, box-shadow 0.4s ease ${i * 0.06}s`,
-            }} />
-          )
-        })}
-      </div>
-
-      {/* Segment labels */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
-        {['0', '20', '40', '60', '80', '100'].map(l => (
-          <span key={l} style={{ fontSize: 8.5, color: '#374151' }}>{l}</span>
-        ))}
-      </div>
-    </div>
-  )
+const styles = {
+  strip: {
+    display: 'flex',
+    alignItems: 'stretch',
+    height: 30,
+    background: '#0a0f0a',
+    borderTop: '1px solid #0f2a0f',
+    borderBottom: '1px solid #0f2a0f',
+    overflow: 'hidden',
+    fontFamily: "'Share Tech Mono', monospace",
+    width: '100%',
+    flexShrink: 0,
+  },
+  label: {
+    display: 'flex', alignItems: 'center', gap: 5,
+    padding: '0 10px', flexShrink: 0,
+    borderRight: '1px solid #0f2a0f',
+    background: '#031203',
+  },
+  labelDot: {
+    width: 5, height: 5, borderRadius: '50%',
+    background: '#ff3131',
+  },
+  labelTxt: {
+    fontSize: 8, color: '#1e5c1e',
+    letterSpacing: '0.16em', textTransform: 'uppercase',
+  },
+  chipsWrap: {
+    display: 'flex', alignItems: 'center', flex: 1,
+    overflowX: 'auto', scrollbarWidth: 'none',
+  },
+  empty: {
+    padding: '0 14px', fontSize: 11,
+    color: '#1e5c1e', whiteSpace: 'nowrap',
+  },
+  clock: {
+    display: 'flex', alignItems: 'center',
+    padding: '0 10px', flexShrink: 0,
+    borderLeft: '1px solid #0f2a0f',
+    fontSize: 10, color: '#1e5c1e', letterSpacing: '0.06em',
+    whiteSpace: 'nowrap',
+  },
+  // modal
+  modalWrap: {
+    position: 'absolute',
+    top: 30,
+    left: 0,
+    width: 320,
+    background: '#0a0f0a',
+    border: '1px solid #0f2a0f',
+    borderTop: 'none',
+    zIndex: 50,
+    fontFamily: "'Share Tech Mono', monospace",
+    animation: 'fadeUp 0.18s ease',
+  },
+  mHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '4px 10px',
+    background: '#031203',
+    borderBottom: '1px solid #0f2a0f',
+    fontSize: 8, letterSpacing: '0.14em',
+    color: '#1e5c1e', textTransform: 'uppercase',
+  },
+  mBody: { padding: '10px 12px' },
+  sigRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 },
+  sigCell: { border: '1px solid #0f2a0f', padding: '7px 9px' },
+  sigLbl: { fontSize: 7, color: '#1e5c1e', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 3 },
+  confRow: { border: '1px solid #0f2a0f', padding: '7px 9px', marginBottom: 8 },
+  reasonBox: { border: '1px solid #0f2a0f', padding: '7px 9px' },
+  reasonLbl: { fontSize: 7, color: '#1e5c1e', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 5 },
+  reasonTxt: { fontSize: 10, color: 'rgba(0,255,65,0.55)', lineHeight: 1.65 },
+  segsWrap: { display: 'flex', gap: 2, margin: '2px 0' },
+  clbls: { display: 'flex', justifyContent: 'space-between', fontSize: 7, color: '#1e5c1e', marginTop: 2 },
+  loadLines: { display: 'flex', flexDirection: 'column', gap: 4 },
+  loadLine: { fontSize: 10, color: '#2db52d' },
+  errBox: {
+    border: '1px solid rgba(255,49,49,0.25)',
+    background: 'rgba(255,49,49,0.05)',
+    padding: '8px 10px',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+  },
+  errTxt: { fontSize: 10, color: '#ff3131' },
+  retryBtn: {
+    background: 'rgba(255,49,49,0.12)',
+    border: '1px solid rgba(255,49,49,0.2)',
+    color: '#ff3131', fontFamily: "'Share Tech Mono', monospace",
+    fontSize: 8, padding: '2px 7px', cursor: 'pointer',
+    letterSpacing: '0.1em', textTransform: 'uppercase',
+  },
+  closeBtn: {
+    background: 'none', border: 'none',
+    color: '#1e5c1e', cursor: 'pointer',
+    fontSize: 14, lineHeight: 1, padding: '0 2px',
+    fontFamily: "'Share Tech Mono', monospace",
+  },
 }
 
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  @keyframes fadeUp { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .newsbar-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 0 12px; height: 100%; border: none; outline: none;
+    background: transparent; font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; color: #00ff41; cursor: pointer; white-space: nowrap;
+    border-right: 1px solid #0f2a0f; border-left: 2px solid transparent;
+    transition: background 0.1s;
+  }
+  .newsbar-chip:hover { background: rgba(0,255,65,0.06); }
+  .newsbar-chip.high { border-left-color: #ff3131; }
+  .newsbar-chip.med  { border-left-color: #ffb800; }
+  .newsbar-badge { font-size: 7px; padding: 1px 3px; letter-spacing: 0.05em; }
+  .badge-h { color:#ff3131; background:rgba(255,49,49,0.12); border:1px solid rgba(255,49,49,0.2); }
+  .badge-m { color:#ffb800; background:rgba(255,184,0,0.10); border:1px solid rgba(255,184,0,0.18); }
+  .newsbar-dot { animation: pulse 1.2s infinite; }
+  .cur-blink::after { content:'_'; animation: blink .75s step-end infinite; }
+  .spin { animation: spin .7s linear infinite; display:inline-block; font-size:9px; }
+  .newsbar-chips-wrap::-webkit-scrollbar { display: none; }
+`
 
-const Spinner = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" style={{ animation: 'spin 0.8s linear infinite' }}>
-    <circle cx="12" cy="12" r="10" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="3" />
-    <path d="M12 2a10 10 0 0 1 10 10" fill="none" stroke="#60a5fa" strokeWidth="3" strokeLinecap="round" />
-  </svg>
-)
+const EMPTY_MESSAGES = [
+  'Market in low-volatility phase',
+  'No catalysts detected',
+  'Waiting for macro drivers',
+  'Calm before volatility',
+]
 
 export default function NewsBar({ symbol = null }) {
   const [events, setEvents]     = useState([])
@@ -117,345 +156,250 @@ export default function NewsBar({ symbol = null }) {
   const [selected, setSelected] = useState(null)
   const [analysis, setAnalysis] = useState(null)
   const [loadingAI, setLoadingAI] = useState(false)
+  const [loadStep, setLoadStep] = useState(0)
   const [error, setError]       = useState(null)
-  const modalRef = useRef(null)
+  const [clock, setClock]       = useState('')
+  const [emptyIdx, setEmptyIdx] = useState(0)
+  const wrapRef = useRef(null)
 
-  // Close modal on Escape
+  // Clock
+  useEffect(() => {
+    const tick = () => {
+      const n = new Date()
+      setClock(n.toUTCString().slice(17, 22) + ' UTC')
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  // Rotate empty state messages
+  useEffect(() => {
+    const id = setInterval(() => setEmptyIdx(i => (i + 1) % EMPTY_MESSAGES.length), 3000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ESC to close
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') setSelected(null) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Click outside to close
   useEffect(() => {
-    const fetchNews = async () => {
+    const onClick = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setSelected(null)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [])
+
+  // Fetch events
+  useEffect(() => {
+    const fetch_ = async () => {
       setLoading(true)
       try {
         const url = symbol
           ? `${API}/api/news?symbol=${symbol}&hours=12`
           : `${API}/api/news?hours=6`
         const res = await axios.get(url)
-        setEvents(Array.isArray(res.data) ? res.data.slice(0, 6) : [])
+        setEvents(Array.isArray(res.data) ? res.data.slice(0, 8) : [])
       } catch {
         setEvents([])
       } finally {
         setLoading(false)
       }
     }
-    fetchNews()
+    fetch_()
   }, [symbol])
 
-  const handleClick = async (ev) => {
+  const handleChip = async (ev) => {
+    if (selected?.title === ev.title) { setSelected(null); return }
     setSelected(ev)
     setAnalysis(null)
     setError(null)
     setLoadingAI(true)
+    setLoadStep(0)
+
+    // Animate load lines
+    let step = 0
+    const iv = setInterval(() => {
+      step++
+      setLoadStep(step)
+      if (step >= LOAD_LINES.length) clearInterval(iv)
+    }, 380)
 
     try {
-      const message = `
-You are a forex trading assistant.
-
-Return JSON only — no markdown, no explanation:
-{
-  "pair": "EURUSD",
-  "bias": "buy or sell",
-  "confidence": 0.0-1.0,
-  "reason": "MINIMUM 4 sentences. Sentence 1: what this economic event measures and why it matters. Sentence 2: how the actual result is likely to compare to expectations and what that means for the currency. Sentence 3: why you chose this specific bias direction. Sentence 4: the key risk or scenario that could invalidate this trade."
-}
-
-News:
+      const message = `You are a forex trading assistant. Return JSON only, no markdown:
+{"pair":"EURUSD","bias":"buy or sell","confidence":0.0,"reason":"4 sentences minimum."}
 Currency: ${ev.currency}
 Event: ${ev.title}
-Impact: ${ev.tier}
-`
+Impact tier: ${ev.tier}`
+
       const res = await axios.post(`${AI_API}/chat`, {
         message,
-        session_id: `${ev.currency}_${Date.now()}`
+        session_id: `${ev.currency}_${Date.now()}`,
       })
-
+      clearInterval(iv)
       let data = res.data?.response || res.data
       if (typeof data === 'string') {
         try { data = JSON.parse(data.replace(/```json|```/g, '').trim()) } catch {}
       }
-
-      if (!data?.pair) throw new Error('Unexpected response format')
+      if (!data?.pair) throw new Error()
       setAnalysis(data)
-    } catch (err) {
-      setError('Analysis failed. Please try again.')
+    } catch {
+      clearInterval(iv)
+      setError(true)
     } finally {
       setLoadingAI(false)
     }
   }
 
-  if (loading) {
-  return <div style={{color:'#6b7280'}}>Loading events...</div>
-}
+  // Confidence bar
+  const ConfBar = ({ value }) => {
+    const pct = Math.round(value * 100)
+    const tier = pct >= 70 ? 'g' : pct >= 45 ? 'a' : 'r'
+    const tierLbl = pct >= 70 ? 'HIGH' : pct >= 45 ? 'MED' : 'LOW'
+    const color = tier === 'g' ? '#00ff41' : tier === 'a' ? '#ffb800' : '#ff3131'
+    const filled = Math.ceil((pct / 100) * 10)
+    return (
+      <div style={styles.confRow}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+          <span style={{ fontSize: 7, color: '#1e5c1e', letterSpacing: '0.14em', textTransform: 'uppercase' }}>CONFIDENCE</span>
+          <span style={{ fontSize: 11, color }}>{tierLbl} {pct}%</span>
+        </div>
+        <div style={styles.segsWrap}>
+          {[...Array(10)].map((_, i) => (
+            <div key={i} style={{
+              flex: 1, height: 5,
+              background: i < filled ? color : '#0f2a0f',
+              transition: `background 0.3s ease ${i * 0.04}s`,
+            }} />
+          ))}
+        </div>
+        <div style={styles.clbls}><span>0</span><span>50</span><span>100</span></div>
+      </div>
+    )
+  }
 
-if (events.length === 0) {
-  return (
-    <div style={{
-      padding: '6px 20px',
-      color: '#6b7280',
-      fontSize: 11,
-      background: '#0d1117',
-      borderBottom: '1px solid rgba(255,255,255,0.06)'
-    }}>
-      No recent economic events (last {symbol ? '12' : '6'} hrs)
-    </div>
-  )
-}
-
-  const biasMeta = analysis ? (BIAS_COLORS[analysis.bias?.toLowerCase()] ?? BIAS_COLORS.buy) : null
+  const c = selected ? (IMPACT[selected.tier] || IMPACT[2]) : null
 
   return (
     <>
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(6px) scale(0.98); }
-          to   { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes shimmer {
-          0%   { background-position: -200% center; }
-          100% { background-position:  200% center; }
-        }
-        .news-chip:hover {
-          filter: brightness(1.2);
-          transform: translateY(-1px);
-        }
-        .news-chip { transition: transform 0.15s ease, filter 0.15s ease; }
-        .close-btn:hover { background: rgba(255,255,255,0.1) !important; }
-        .retry-btn:hover { opacity: 0.8; }
-      `}</style>
+      <style>{CSS}</style>
+      <div style={{ position: 'relative', width: '100%' }} ref={wrapRef}>
 
-      {/* ── NEWS BAR ── */}
-      <div style={{
-        background: '#0d1117',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        padding: '7px 20px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        overflowX: 'auto',
-        scrollbarWidth: 'none',
-      }}>
-        {/* Label */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 5,
-          flexShrink: 0,
-          paddingRight: 8,
-          borderRight: '1px solid rgba(255,255,255,0.07)',
-        }}>
-          <span style={{
-            width: 5, height: 5, borderRadius: '50%',
-            background: '#ef4444',
-            boxShadow: '0 0 6px #ef4444',
-            animation: 'spin 2s linear infinite',
-            flexShrink: 0,
-          }} />
-          <span style={{
-            fontSize: 9.5,
-            color: '#4b5563',
-            textTransform: 'uppercase',
-            letterSpacing: '0.1em',
-            fontWeight: 600,
-          }}>
-            Events
-          </span>
-        </div>
+        {/* ── STRIP ── */}
+        <div style={styles.strip}>
+          {/* Label */}
+          <div style={styles.label}>
+            <span className="newsbar-dot" style={styles.labelDot} />
+            <span style={styles.labelTxt}>ECO</span>
+          </div>
 
-        {events.map((ev, i) => {
-          const c = IMPACT[ev.tier] || IMPACT[2]
-          const timeStr = new Date(ev.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-
-          return (
-            <button
-              key={i}
-              className="news-chip"
-              onClick={() => handleClick(ev)}
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 7,
-                background: c.bg,
-                border: `1px solid ${c.border}`,
-                borderRadius: 6,
-                padding: '4px 10px',
-                whiteSpace: 'nowrap',
-                outline: 'none',
-                fontFamily: 'inherit',
-              }}
-            >
-              <span style={{
-                fontSize: 8.5,
-                fontWeight: 700,
-                color: c.dot,
-                letterSpacing: '0.06em',
-                background: `${c.dot}22`,
-                padding: '1px 4px',
-                borderRadius: 3,
-              }}>
-                {c.label}
+          {/* Chips */}
+          <div className="newsbar-chips-wrap" style={styles.chipsWrap}>
+            {loading ? (
+              <span style={{ ...styles.empty, color: '#1e5c1e' }}>
+                SCANNING CALENDAR <span className="spin">⟳</span>
               </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: c.text }}>
-                {ev.currency}
+            ) : events.length === 0 ? (
+              <span style={{ ...styles.empty, transition: 'opacity 0.4s ease' }}>
+                {EMPTY_MESSAGES[emptyIdx]}
               </span>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>
-                {ev.title.length > 28 ? ev.title.slice(0, 28) + '…' : ev.title}
-              </span>
-              <span style={{ fontSize: 10, color: '#4b5563', marginLeft: 2 }}>
-                {timeStr}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-
-      {/* ── AI MODAL ── */}
-      {selected && (
-        <div
-          onClick={() => setSelected(null)}
-          style={{
-            position: 'fixed', inset: 0,
-            background: 'rgba(0,0,0,0.65)',
-            backdropFilter: 'blur(4px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 999,
-          }}
-        >
-          <div
-            ref={modalRef}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: '#0d1117',
-              border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 12,
-              padding: '20px 22px',
-              width: 380,
-              boxShadow: '0 24px 60px rgba(0,0,0,0.6)',
-              animation: 'fadeUp 0.2s ease',
-            }}
-          >
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9', lineHeight: 1.3 }}>
-                  {selected.title}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
-                  {(() => {
-                    const c = IMPACT[selected.tier] || IMPACT[2]
-                    return (
-                      <>
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, color: c.dot,
-                          background: `${c.dot}22`, padding: '1px 5px', borderRadius: 3,
-                          letterSpacing: '0.07em',
-                        }}>{c.label} IMPACT</span>
-                        <span style={{ fontSize: 11, color: '#6b7280' }}>{selected.currency}</span>
-                      </>
-                    )
-                  })()}
-                </div>
-              </div>
-              <button
-                className="close-btn"
-                onClick={() => setSelected(null)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: '#6b7280',
-                  fontSize: 18,
-                  lineHeight: 1,
-                  padding: '2px 6px',
-                  borderRadius: 6,
-                  transition: 'background 0.15s',
-                }}
-              >×</button>
-            </div>
-
-            <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', marginBottom: 16 }} />
-
-            {/* Loading state */}
-            {loadingAI && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#6b7280', padding: '8px 0' }}>
-                <Spinner />
-                <span style={{ fontSize: 12 }}>Analyzing market impact…</span>
-              </div>
-            )}
-
-            {/* Error state */}
-            {error && !loadingAI && (
-              <div style={{
-                background: 'rgba(239,68,68,0.08)',
-                border: '1px solid rgba(239,68,68,0.2)',
-                borderRadius: 8, padding: '10px 14px',
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              }}>
-                <span style={{ fontSize: 12, color: '#f87171' }}>{error}</span>
-                <button
-                  className="retry-btn"
-                  onClick={() => handleClick(selected)}
-                  style={{
-                    background: 'rgba(239,68,68,0.15)',
-                    border: '1px solid rgba(239,68,68,0.25)',
-                    borderRadius: 5, padding: '3px 10px',
-                    color: '#f87171', fontSize: 11, cursor: 'pointer',
-                    transition: 'opacity 0.15s',
-                  }}
-                >Retry</button>
-              </div>
-            )}
-
-            {/* Analysis result */}
-            {analysis && !loadingAI && (
-              <div style={{ animation: 'fadeUp 0.25s ease' }}>
-                {/* Pair + Bias */}
-                <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-                  <div style={{
-                    flex: 1,
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.07)',
-                    borderRadius: 8, padding: '10px 14px',
-                  }}>
-                    <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Pair</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: '0.02em' }}>{analysis.pair}</div>
-                  </div>
-                  <div style={{
-                    flex: 1,
-                    background: biasMeta.bg,
-                    border: `1px solid ${biasMeta.border}`,
-                    borderRadius: 8, padding: '10px 14px',
-                  }}>
-                    <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Bias</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: biasMeta.text, textTransform: 'uppercase' }}>{analysis.bias}</div>
-                  </div>
-                </div>
-
-                {/* Confidence bar */}
-                <ConfidenceBar value={analysis.confidence} />
-
-                {/* Reason */}
-                <div style={{
-                  marginTop: 14,
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.06)',
-                  borderRadius: 8, padding: '10px 14px',
-                }}>
-                  <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Analysis</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6 }}>{analysis.reason}</div>
-                </div>
-              </div>
+            ) : (
+              events.map((ev, i) => {
+                const imp = IMPACT[ev.tier] || IMPACT[2]
+                return (
+                  <button
+                    key={i}
+                    className={`newsbar-chip ${imp.chipClass}`}
+                    onClick={() => handleChip(ev)}
+                  >
+                    <span className={`newsbar-badge ${imp.lbl === 'HIGH' ? 'badge-h' : 'badge-m'}`}>
+                      {imp.lbl}
+                    </span>
+                    <span style={{ color: '#00ff41', fontWeight: 700, fontSize: 10 }}>{ev.currency}</span>
+                    <span style={{ color: 'rgba(0,255,65,0.5)', fontSize: 10 }}>
+                      {ev.title.length > 26 ? ev.title.slice(0, 26) + '…' : ev.title}
+                    </span>
+                    <span style={{ color: '#1e5c1e', fontSize: 9 }}>{fmt(ev.time)}</span>
+                  </button>
+                )
+              })
             )}
           </div>
+
+          {/* Clock */}
+          <div style={styles.clock}>{clock}</div>
         </div>
-      )}
+
+        {/* ── DROPDOWN MODAL ── */}
+        {selected && (
+          <div style={styles.modalWrap}>
+            {/* Header */}
+            <div style={styles.mHeader}>
+              <span>
+                <span className={`newsbar-badge ${c.lbl === 'HIGH' ? 'badge-h' : 'badge-m'}`} style={{ marginRight: 5 }}>
+                  {c.lbl}
+                </span>
+                {selected.currency} — {selected.title.length > 32 ? selected.title.slice(0, 32) + '…' : selected.title}
+              </span>
+              <button style={styles.closeBtn} onClick={() => setSelected(null)}>×</button>
+            </div>
+
+            <div style={styles.mBody}>
+              {/* Loading */}
+              {loadingAI && (
+                <div style={styles.loadLines}>
+                  {LOAD_LINES.slice(0, loadStep + 1).map((line, i) => (
+                    <div key={i} style={styles.loadLine}>
+                      {'>'} {line} {i === loadStep ? <span className="spin">⟳</span> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Error */}
+              {error && !loadingAI && (
+                <div style={styles.errBox}>
+                  <span style={styles.errTxt}>Analysis failed. Try again.</span>
+                  <button style={styles.retryBtn} onClick={() => handleChip(selected)}>RETRY</button>
+                </div>
+              )}
+
+              {/* Result */}
+              {analysis && !loadingAI && (() => {
+                const pct = Math.round(analysis.confidence * 100)
+                const isBuy = analysis.bias?.toLowerCase() === 'buy'
+                return (
+                  <div style={{ animation: 'fadeUp 0.2s ease' }}>
+                    <div style={styles.sigRow}>
+                      <div style={styles.sigCell}>
+                        <div style={styles.sigLbl}>PAIR</div>
+                        <div style={{ fontSize: 22, color: '#00ff41', letterSpacing: '0.03em' }}>{analysis.pair}</div>
+                      </div>
+                      <div style={styles.sigCell}>
+                        <div style={styles.sigLbl}>BIAS</div>
+                        <div style={{ fontSize: 20, color: isBuy ? '#00ff41' : '#ff3131', letterSpacing: '0.02em' }}>
+                          {isBuy ? '▲ BUY' : '▼ SELL'}
+                        </div>
+                      </div>
+                    </div>
+                    <ConfBar value={analysis.confidence} />
+                    <div style={styles.reasonBox}>
+                      <div style={styles.reasonLbl}>ANALYSIS</div>
+                      <div className="cur-blink" style={styles.reasonTxt}>{analysis.reason}</div>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        )}
+
+      </div>
     </>
   )
 }
