@@ -32,7 +32,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timedelta
 
 import websockets
 from sqlalchemy import select, update
@@ -40,16 +41,16 @@ from sqlalchemy import select, update
 from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog
 
-logger      = logging.getLogger(__name__)
+logger       = logging.getLogger(__name__)
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
 
 # ── How many ticks to fetch per window (Deriv max = 5000) ─────
 WINDOW_TICKS = {
-    "15m": 900,    # 15 min × 1 tick/s ≈ 900; fetch 1000 to be safe
+    "15m": 900,
     "30m": 1800,
     "60m": 3600,
-    "90m": 5000,   # capped at Deriv max
-    "4h":  5000,   # capped — will use candles fallback for 4h
+    "90m": 5000,
+    "4h":  5000,
 }
 
 # ── Time deltas for each window ───────────────────────────────
@@ -153,18 +154,19 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
     Fetch unlabeled SignalLog rows and write back triple-barrier labels.
     Returns the number of rows labeled this run.
     """
-    now        = datetime.now(timezone.utc)
-    # Only process rows old enough for the 15m window to have elapsed
+    # ── Use naive UTC throughout to match DB column type ──────
+    now        = datetime.utcnow()
+    now_epoch  = int(time.time())
     cutoff_15m = now - timedelta(minutes=16)
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(SignalLog)
             .where(
-                SignalLog.label_15m == None,          # noqa: E711
+                SignalLog.label_15m  == None,         # noqa: E711
                 SignalLog.captured_at <= cutoff_15m,
                 SignalLog.entry_price != None,         # noqa: E711
-                SignalLog.signal != "HOLD",
+                SignalLog.signal      != "HOLD",
             )
             .order_by(SignalLog.captured_at)
             .limit(batch_size)
@@ -180,7 +182,8 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
 
     for row in rows:
         try:
-            entry_epoch = int(row.captured_at.replace(tzinfo=timezone.utc).timestamp())
+            # captured_at is naive UTC — convert to epoch directly
+            entry_epoch = int((row.captured_at - datetime(1970, 1, 1)).total_seconds())
             symbol      = row.symbol
             entry_price = row.entry_price
             direction   = row.direction  # +1 or -1
@@ -190,8 +193,7 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
             sl = row.sl_price
 
             if tp is None or sl is None:
-                # Fallback: use 1× ATR distance (stored in atr column)
-                atr_val = row.atr or (entry_price * 0.005)  # 0.5% of price
+                atr_val = row.atr or (entry_price * 0.005)
                 if direction == 1:
                     tp = entry_price + atr_val
                     sl = entry_price - atr_val
@@ -199,15 +201,15 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                     tp = entry_price - atr_val
                     sl = entry_price + atr_val
 
-            # Fetch ticks covering the longest window we need (4h or 90m)
+            # Fetch ticks covering the longest window (4h)
             max_window = WINDOW_SECONDS["4h"]
-            end_epoch  = entry_epoch + max_window + 60  # +60s buffer
+            end_epoch  = min(entry_epoch + max_window + 60, now_epoch)
 
             ticks = await _fetch_ticks_range(
                 api_token   = api_token,
                 symbol      = symbol,
                 start_epoch = entry_epoch,
-                end_epoch   = min(end_epoch, int(now.timestamp())),
+                end_epoch   = end_epoch,
                 count       = 5000,
             )
 
@@ -219,7 +221,7 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
             labels = {}
             for window_name, window_secs in WINDOW_SECONDS.items():
                 # Skip windows that haven't elapsed yet
-                if entry_epoch + window_secs > int(now.timestamp()):
+                if entry_epoch + window_secs > now_epoch:
                     continue
                 labels[window_name] = _triple_barrier_label(
                     ticks          = ticks,
@@ -232,6 +234,7 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 )
 
             if not labels:
+                logger.info(f"[outcome_labeler] row={row.id} — no windows elapsed yet, skipping")
                 continue
 
             update_vals = {
@@ -253,7 +256,6 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 f"signal={row.signal} labels={labels} row={row.id}"
             )
 
-            # Small pause to avoid hammering Deriv WS
             await asyncio.sleep(0.5)
 
         except Exception as e:
@@ -281,6 +283,5 @@ async def run_labeler(api_token: str) -> None:
 
 
 if __name__ == "__main__":
-    import os
     token = os.environ.get("DERIV_API_TOKEN", "")
     asyncio.run(run_labeler(token))
