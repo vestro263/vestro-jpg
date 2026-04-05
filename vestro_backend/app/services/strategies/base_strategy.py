@@ -116,7 +116,7 @@ class BaseStrategy(ABC):
 
             # ── Step 3: Log Signal (ML dataset)
             try:
-                from ..ml.signal_logger import log_signal
+                from ....ml.signal_logger import log_signal
                 self._last_log_id = await log_signal(
                     signal,
                     strategy_name=self.NAME
@@ -170,7 +170,7 @@ class BaseStrategy(ABC):
             if result and result.get("status") in ("filled", "success"):
                 if self._last_log_id:
                     try:
-                        from ..ml.signal_logger import mark_executed
+                        from ....ml.signal_logger import mark_executed
                         await mark_executed(self._last_log_id)
                     except Exception as e:
                         self.logger.warning(f"[{self.NAME}] mark_executed failed: {e}")
@@ -178,7 +178,7 @@ class BaseStrategy(ABC):
                 # Optional: track failed executions
                 if self._last_log_id:
                     try:
-                        from ..ml.signal_logger import mark_failed
+                        from ....ml.signal_logger import mark_failed
                         await mark_failed(
                             self._last_log_id,
                             reason=result.get("error", "execution_failed") if result else "no_result"
