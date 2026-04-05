@@ -9,6 +9,7 @@ import httpx
 import hashlib
 import statistics
 import os
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/api")
 
@@ -652,10 +653,13 @@ async def update_positions(data: list):
     return {"status": "ok"}
 
 
-@router.get("/account")
-def get_account():
-    return _account_cache
+_account_cache = {}  # or whatever your cache is
 
+@router.get("/account/{account_id}")
+def get_account(account_id: str):
+    if account_id not in _account_cache:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return _account_cache[account_id]
 
 @router.get("/positions")
 def get_positions():
