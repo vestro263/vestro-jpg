@@ -12,8 +12,8 @@ import pathlib
 
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds
-from ..ml.outcome_labeler    import run_labeler
-from ...ml.calibration_trainer import run_trainer
+from ml.outcome_labeler    import run_labeler
+from ml.calibration_trainer import run_trainer
 
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
