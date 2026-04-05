@@ -3,11 +3,11 @@ import logging
 import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.requests import Request
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from .database import init_db
@@ -19,6 +19,7 @@ from .routes.trade import router as trade_router
 from .workers.scheduler import create_scheduler
 from .services.signal_engine import run_signal_loop
 
+# ------------------ LOGGING ------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -26,10 +27,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 settings = get_settings()
 
-
+# ------------------ LIFESPAN ------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Vestro backend starting up")
+
     await init_db()
     log.info("DB tables ready")
 
@@ -47,11 +49,14 @@ async def lifespan(app: FastAPI):
     scheduler = create_scheduler()
     scheduler.start()
     log.info("Scheduler running")
+
     yield
+
     scheduler.shutdown(wait=False)
     log.info("Vestro backend shut down")
 
 
+# ------------------ APP INIT ------------------
 app = FastAPI(
     title="Vestro Valuation Engine",
     version="1.0.0",
@@ -59,25 +64,48 @@ app = FastAPI(
     docs_url="/docs",
 )
 
-@app.exception_handler(Exception)
-async def debug_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc), "traceback": traceback.format_exc()}
-    )
+# ------------------ CORS ------------------
+ALLOWED_ORIGINS = [
+    "https://r3bel-production.up.railway.app",
+    "https://vestro-ui.onrender.com",
+    "http://localhost:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://r3bel-production.up.railway.app",
-        "https://vestro-ui.onrender.com",
-        "http://localhost:5173",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ------------------ GLOBAL ERROR HANDLER ------------------
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    log.error("Unhandled error: %s", str(exc))
+    log.error(traceback.format_exc())
+
+    response = JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+    # ✅ Ensure CORS headers are ALWAYS present
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    return response
+
+
+# ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
 app.include_router(auth_router)
