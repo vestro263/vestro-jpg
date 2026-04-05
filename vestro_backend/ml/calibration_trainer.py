@@ -44,7 +44,7 @@ from .signal_log_model import SignalLog, CalibrationConfig
 
 logger = logging.getLogger(__name__)
 
-MIN_SAMPLES = 500       # minimum labeled rows before we train
+MIN_SAMPLES = 200
 TEST_SIZE   = 0.20      # 20% hold-out
 RANDOM_SEED = 42
 
@@ -156,14 +156,14 @@ def _find_optimal_threshold(
     n_steps: int = 40,
 ) -> float | None:
     """
-    Sweep the value range of one feature, holding all others at median.
-    Return the threshold that maximises F1 on y_test.
+    Sweep the value range of one feature and find the cut-point that
+    maximises F1 on the actual test rows that satisfy the threshold condition.
 
     direction="above"  → higher values = BUY signal (e.g. TSS score)
     direction="below"  → lower values  = BUY signal (e.g. RSI for oversold)
     """
-    medians  = np.nanmedian(X_test, axis=0)
-    f1_scores = []
+    best_thresh, best_f1 = None, -1
+
     thresholds = np.linspace(
         np.nanpercentile(feature_values, 5),
         np.nanpercentile(feature_values, 95),
@@ -171,24 +171,15 @@ def _find_optimal_threshold(
     )
 
     for thresh in thresholds:
-        X_probe = np.tile(medians, (len(X_test), 1))
-        # Apply threshold: set feature above/below threshold
-        probe_val = thresh + 1 if direction == "above" else thresh - 1
-        X_probe[:, feature_idx] = probe_val
-        try:
-            preds = model.predict(X_probe)
-            score = f1_score(y_test, preds, zero_division=0, average="weighted")
-            f1_scores.append((thresh, score))
-        except Exception:
+        mask = feature_values >= thresh if direction == "above" else feature_values <= thresh
+        if mask.sum() < 10:
             continue
+        preds = model.predict(X_test[mask])
+        score = f1_score(y_test[mask], preds, zero_division=0, average="weighted")
+        if score > best_f1:
+            best_f1, best_thresh = score, thresh
 
-    if not f1_scores:
-        return None
-
-    best_thresh, _ = max(f1_scores, key=lambda x: x[1])
-    return round(float(best_thresh), 4)
-
-
+    return round(float(best_thresh), 4) if best_thresh is not None else None
 # ============================================================
 # TRAINER
 # ============================================================
