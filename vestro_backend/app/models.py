@@ -36,18 +36,17 @@ class User(Base):
 class Credentials(Base):
     __tablename__ = "credentials"
 
-    id              = Column(Integer, primary_key=True)
-    user_id         = Column(String, ForeignKey("users.id"), nullable=True, index=True)
-    deriv_account   = Column(String, index=True)   # Deriv loginid e.g. CR123456
-    broker          = Column(String)               # "deriv" | "welltrade"
-    login           = Column(String)               # encrypted
-    password        = Column(String)               # encrypted (API token for Deriv)
-    server          = Column(String)               # encrypted
-    api_token       = Column(String)               # encrypted (Deriv token, same as password)
-    meta_account_id = Column(String)               # MetaApi account ID
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)  # Deriv account ID
+    broker = Column(String)               # "deriv" | "welltrade"
+    login = Column(String)                # encrypted
+    password = Column(String)             # encrypted (API token for Deriv)
+    server = Column(String)               # encrypted
+    api_token = Column(String)            # encrypted (Deriv token, same as password)
+    meta_account_id = Column(String)      # MetaApi account ID
 
-    user = relationship("User", back_populates="credentials",
-                        foreign_keys=[user_id])
+    # Relationship to User
+    user = relationship("User", back_populates="credentials", foreign_keys=[user_id])
 
 
 class Firm(Base):
