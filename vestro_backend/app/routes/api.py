@@ -9,6 +9,12 @@ import httpx
 import hashlib
 import statistics
 import os
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+from ..database import get_db
+from ..models import Credentials
+from ..services.credential_store import decrypt
+import websockets
 
 router = APIRouter(prefix="/api")
 
@@ -656,6 +662,39 @@ async def update_positions(data: list):
 def get_account():
     return _account_cache
 
+
+@router.get("/accounts")
+async def list_accounts(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Credentials))
+    creds  = result.scalars().all()
+
+    accounts = []
+    for cred in creds:
+        try:
+            api_token = decrypt(cred.password)
+            async with websockets.connect(
+                f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
+            ) as ws:
+                await ws.send(json.dumps({"authorize": api_token}))
+                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+            if "error" in resp:
+                continue
+
+            auth = resp["authorize"]
+            accounts.append({
+                "account_id": auth.get("loginid"),
+                "balance":    auth.get("balance", 0.0),
+                "currency":   auth.get("currency", "USD"),
+                "name":       auth.get("fullname", ""),
+                "type":       "demo" if auth.get("is_virtual", 0) == 1 else "real",
+                "broker":     "deriv",
+            })
+        except Exception as e:
+            print(f"[accounts] failed to fetch {cred.user_id}: {e}")
+            continue
+
+    return accounts
 
 @router.get("/positions")
 def get_positions():
