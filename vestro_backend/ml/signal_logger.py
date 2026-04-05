@@ -8,7 +8,7 @@ Fire-and-forget — never raises, so a DB error never kills the pipeline.
 import logging
 from datetime import datetime, timezone
 
-from ..app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog
 
 logger = logging.getLogger(__name__)

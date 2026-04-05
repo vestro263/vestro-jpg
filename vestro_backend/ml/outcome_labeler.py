@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 import websockets
 from sqlalchemy import select, update
 
-from ..app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog
 
 logger      = logging.getLogger(__name__)
