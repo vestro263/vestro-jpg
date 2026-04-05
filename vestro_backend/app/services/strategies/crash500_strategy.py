@@ -59,18 +59,42 @@ class Crash500Strategy(BaseStrategy):
     async def fetch_market_data(self) -> dict:
         url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
         async with websockets.connect(url) as ws:
+
+            # ── Auth ──────────────────────────────────────────────
             await ws.send(json.dumps({"authorize": self.api_token}))
-            await ws.recv()
+            auth_raw = await ws.recv()
+            auth_data = json.loads(auth_raw)
+
+            if "error" in auth_data:
+                raise RuntimeError(f"[Crash500] auth failed: {auth_data['error']}")
+
+            # ── Request tick history ──────────────────────────────
             await ws.send(json.dumps({
                 "ticks_history": "CRASH500",
                 "count": 150,
                 "end": "latest"
             }))
-            data = json.loads(await ws.recv())
 
-        prices     = data["history"]["prices"]
+            # ── Wait for history frame (skip unrelated frames) ────
+            data = None
+            for _ in range(5):
+                raw = await ws.recv()
+                frame = json.loads(raw)
+
+                if "error" in frame:
+                    raise RuntimeError(f"[Crash500] Deriv error: {frame['error']}")
+
+                if "history" in frame:
+                    data = frame
+                    break
+
+            if data is None:
+                raise RuntimeError(f"[Crash500] history frame never received — last frame: {frame}")
+
+        # ── Parse ─────────────────────────────────────────────────
+        prices = data["history"]["prices"]
         timestamps = data["history"]["times"]
-        now        = time.time()
+        now = time.time()
 
         # Rebuild price history from fetched ticks
         for ts, price in zip(timestamps, prices):
@@ -78,10 +102,10 @@ class Crash500Strategy(BaseStrategy):
 
         latest_bid = float(prices[-1])
         return {
-            "prices":    prices,
-            "times":     timestamps,
-            "latest":    latest_bid,
-            "now":       now,
+            "prices": prices,
+            "times": timestamps,
+            "latest": latest_bid,
+            "now": now,
         }
 
     # ── Phase 2 — run the 4-check entry checklist ─────────────
