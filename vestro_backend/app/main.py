@@ -18,7 +18,8 @@ from .routes.auth import router as auth_router
 from .routes.trade import router as trade_router
 from .workers.scheduler import create_scheduler
 from app.services.signal_engine import run_signal_loop
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 # ------------------ LOGGING ------------------
 logging.basicConfig(
     level=logging.INFO,
