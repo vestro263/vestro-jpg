@@ -104,6 +104,13 @@ async def debug_exception_handler(request: Request, exc: Exception):
 
     return response
 
+@app.get("/debug/tables")
+async def list_tables(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(text(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+    ))
+    return {"tables": [r[0] for r in result.fetchall()]}
+
 
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
