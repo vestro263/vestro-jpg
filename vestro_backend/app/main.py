@@ -112,6 +112,56 @@ async def debug_exception_handler(request: Request, exc: Exception):
 
     return response
 
+@app.get("/debug/ml")
+async def check_ml_data(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    results = {}
+
+    ml_tables = ["signal_logs", "calibration_config"]
+
+    for table in ml_tables:
+        try:
+            count = await db.execute(text(f"SELECT COUNT(*) FROM {table}"))
+            results[table] = {"count": count.scalar()}
+        except Exception as e:
+            results[table] = {"error": str(e)}
+
+    # Check labeled vs unlabeled signal_logs
+    try:
+        labeled = await db.execute(text(
+            "SELECT COUNT(*) FROM signal_logs WHERE label_15m IS NOT NULL"
+        ))
+        unlabeled = await db.execute(text(
+            "SELECT COUNT(*) FROM signal_logs WHERE label_15m IS NULL"
+        ))
+        recent = await db.execute(text(
+            "SELECT strategy, signal, confidence, captured_at FROM signal_logs ORDER BY captured_at DESC LIMIT 5"
+        ))
+        rows = recent.fetchall()
+        results["signal_logs"]["labeled"]   = labeled.scalar()
+        results["signal_logs"]["unlabeled"] = unlabeled.scalar()
+        results["signal_logs"]["recent"]    = [
+            {"strategy": r[0], "signal": r[1], "confidence": r[2], "captured_at": str(r[3])}
+            for r in rows
+        ]
+    except Exception as e:
+        results["signal_logs"]["detail_error"] = str(e)
+
+    # Check calibration config
+    try:
+        configs = await db.execute(text(
+            "SELECT symbol, strategy, precision, f1, n_samples, trained_at FROM calibration_config"
+        ))
+        results["calibration_config"]["rows"] = [
+            {"symbol": r[0], "strategy": r[1], "precision": r[2],
+             "f1": r[3], "n_samples": r[4], "trained_at": str(r[5])}
+            for r in configs.fetchall()
+        ]
+    except Exception as e:
+        results["calibration_config"]["detail_error"] = str(e)
+
+    return results
+
 @app.get("/debug/tables")
 async def list_tables(db: AsyncSession = Depends(get_db)):
     result = await db.execute(text(

@@ -228,12 +228,12 @@ async def _boot_strategy_runner(api_token: str) -> None:
     _strategy_runner_task = asyncio.create_task(runner.start(), name="strategy-runner")
     print(f"[signal_engine] StrategyRunner booted — balance={balance} ✓")
 
-
 async def run_signal_loop():
     print("[signal_engine] starting...")
-    await asyncio.sleep(5)  # wait for DB to be fully ready
+    await asyncio.sleep(5)
 
     _loop_count = 0
+    deriv_cred = None  # ← initialize here so it's always defined
 
     while True:
         try:
@@ -248,8 +248,6 @@ async def run_signal_loop():
             if deriv_cred and not _runner_is_alive():
                 print("[signal_engine] booting strategy runner...")
                 await _boot_strategy_runner(decrypt(deriv_cred.password))
-
-                # Start calibration hot-reload background task (runs every 30 min)
                 asyncio.create_task(start_reload_loop(), name="calibration-reload")
 
             runner_live = _runner_is_alive()
@@ -263,17 +261,21 @@ async def run_signal_loop():
             import traceback
             traceback.print_exc()
 
-        _loop_count += 1
+        finally:
+            _loop_count += 1
 
-        # Run labeler every 5 minutes (every 10 × 30s loops)
-        if _loop_count % 10 == 0 and deriv_cred:
-            asyncio.create_task(
-                run_labeler(decrypt(deriv_cred.password)),
-                name="outcome-labeler"
-            )
+            # Label outcomes every 5 min
+            if _loop_count % 10 == 0 and deriv_cred:
+                asyncio.create_task(
+                    run_labeler(decrypt(deriv_cred.password)),
+                    name=f"outcome-labeler-{_loop_count}"
+                )
 
-        # Run trainer once per hour (every 120 × 30s loops)
-        if _loop_count % 120 == 0:
-            asyncio.create_task(run_trainer(), name="calibration-trainer")
+            # Train every hour
+            if _loop_count % 120 == 0:
+                asyncio.create_task(
+                    run_trainer(),
+                    name=f"calibration-trainer-{_loop_count}"
+                )
 
         await asyncio.sleep(30)
