@@ -23,6 +23,7 @@ class TradeBody(BaseModel):
     amount: float = 1.0
     sl: float = 0
     tp: float = 0
+    account_id: str = ""
 
 @router.get("/api/account/{user_id}")
 async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
@@ -37,9 +38,17 @@ async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/api/trade")
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Credentials).where(Credentials.broker == body.broker)
-    )
+    if body.account_id:
+        result = await db.execute(
+            select(Credentials).where(Credentials.user_id == body.account_id)
+        )
+    else:
+        result = await db.execute(
+            select(Credentials)
+            .where(Credentials.broker == body.broker)
+            .order_by(Credentials.id.desc())
+            .limit(1)
+        )
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Broker not connected")
@@ -63,7 +72,6 @@ async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
             )
 
         return trade_result
-
 
 async def _watch_and_broadcast(contract_id: int, api_token: str, symbol: str, trade_result: dict):
     async with httpx.AsyncClient() as client:

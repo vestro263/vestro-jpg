@@ -49,7 +49,7 @@ const S = {
 
 // ── Quick Trade ────────────────────────────────────────────────────────────────
 function QuickTrade({ isMobile }) {
-  const { signals } = useBotStore()
+  const { signals, accountId } = useBotStore()
   const [symbol,       setSymbol]       = useState('R_100')
   const [contractType, setContractType] = useState('rise_fall')
   const [stake,        setStake]        = useState('1')
@@ -73,6 +73,7 @@ function QuickTrade({ isMobile }) {
           symbol,
           action,
           amount:        parseFloat(stake) || 1,
+          account_id: accountId,
           contract_type: contractType,
         }),
       })
