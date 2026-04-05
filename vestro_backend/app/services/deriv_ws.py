@@ -90,7 +90,10 @@ async def execute_trade(
         await ws.send(json.dumps({"buy": proposal_id, "price": ask_price}))
         b_resp = json.loads(await ws.recv())
         if "error" in b_resp:
-            raise ValueError(f"Buy failed: {b_resp['error']['message']}")
+            return {
+                "status": "error",
+                "message": b_resp["error"]["message"]
+            }
 
         c = b_resp["buy"]
         return {
