@@ -23,10 +23,10 @@ async def get_account_info(app_id: str, api_token: str) -> dict:
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
-        if "error" in p_resp:
+        if "error" in auth:                          # FIX: was p_resp (undefined)
             return {
-                "status": "error",
-                "message": p_resp["error"]["message"]
+                "status":  "error",
+                "message": auth["error"]["message"]  # FIX: was p_resp
             }
         a = auth["authorize"]
 
@@ -48,9 +48,6 @@ async def get_account_info(app_id: str, api_token: str) -> dict:
         }
 
 
-# Action values accepted from the router / strategy:
-#   "rise" | "BUY"  → CALL
-#   "fall" | "SELL" → PUT
 def _contract_type(action: str) -> str:
     return "CALL" if action.upper() in {"RISE", "BUY", "CALL"} else "PUT"
 
@@ -71,10 +68,7 @@ async def execute_trade(
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
         if "error" in auth:
-            return {
-                "status": "error",
-                "message": auth["error"]["message"]
-            }
+            return {"status": "error", "message": auth["error"]["message"]}
 
         await ws.send(json.dumps({
             "proposal":      1,
@@ -88,10 +82,7 @@ async def execute_trade(
         }))
         p_resp = json.loads(await ws.recv())
         if "error" in p_resp:
-            return {
-                "status": "error",
-                "message": p_resp["error"]["message"]
-            }
+            return {"status": "error", "message": p_resp["error"]["message"]}
 
         proposal_id = p_resp["proposal"]["id"]
         ask_price   = p_resp["proposal"]["ask_price"]
@@ -99,10 +90,7 @@ async def execute_trade(
         await ws.send(json.dumps({"buy": proposal_id, "price": ask_price}))
         b_resp = json.loads(await ws.recv())
         if "error" in b_resp:
-            return {
-                "status": "error",
-                "message": b_resp["error"]["message"]
-            }
+            return {"status": "error", "message": b_resp["error"]["message"]}
 
         c = b_resp["buy"]
         return {
@@ -122,15 +110,12 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
         if "error" in auth:
-            return {
-                "status": "error",
-                "message": f"Auth error: {auth['error']['message']}"
-            }
+            return {"status": "error", "message": f"Auth error: {auth['error']['message']}"}
 
         await ws.send(json.dumps({
             "proposal_open_contract": 1,
-            "contract_id": contract_id,
-            "subscribe": 1,
+            "contract_id":            contract_id,
+            "subscribe":              1,
         }))
 
         while True:
@@ -143,16 +128,16 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
 
             await callback({
                 "contract_id":  contract_id,
-                "status":       contract.get("status", "open"),
-                "buy_price":    contract.get("buy_price", 0),
-                "bid_price":    contract.get("bid_price", 0),
-                "profit":       contract.get("profit", 0),
-                "profit_pct":   contract.get("profit_percentage", 0),
-                "entry_spot":   contract.get("entry_spot", 0),
-                "current_spot": contract.get("current_spot", 0),
-                "expiry_time":  contract.get("expiry_time", 0),
-                "is_expired":   contract.get("is_expired", False),
-                "is_sold":      contract.get("is_sold", False),
+                "status":       contract.get("status",             "open"),
+                "buy_price":    contract.get("buy_price",          0),
+                "bid_price":    contract.get("bid_price",          0),
+                "profit":       contract.get("profit",             0),
+                "profit_pct":   contract.get("profit_percentage",  0),
+                "entry_spot":   contract.get("entry_spot",         0),
+                "current_spot": contract.get("current_spot",       0),
+                "expiry_time":  contract.get("expiry_time",        0),
+                "is_expired":   contract.get("is_expired",         False),
+                "is_sold":      contract.get("is_sold",            False),
             })
 
             if contract.get("is_expired") or contract.get("is_sold"):

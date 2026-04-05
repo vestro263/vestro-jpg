@@ -10,7 +10,7 @@ import useBotStore from './store/botStore'
 import Login from './pages/Login'
 import AccountSelector from './pages/AccountSelector'
 
-const API = 'https://vestro-jpg.onrender.com'
+const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
@@ -23,12 +23,12 @@ function useIsMobile(bp = 768) {
 }
 
 const PAGES = {
-  dashboard: Dashboard,
+  dashboard:  Dashboard,
   valuations: Valuation,
-  signals: Signals,
-  positions: Positions,
-  journal: Journal,
-  stats: Performance,
+  signals:    Signals,
+  positions:  Positions,
+  journal:    Journal,
+  stats:      Performance,
 }
 
 export default function App() {
@@ -36,6 +36,7 @@ export default function App() {
     accountId, activePage,
     pendingAccounts, setPendingAccounts, setDerivAccounts,
   } = useBotStore()
+
   const isLoggedIn  = !!accountId
   const isMobile    = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
@@ -43,41 +44,62 @@ export default function App() {
   useEffect(() => {
     const params        = new URLSearchParams(window.location.search)
     const accountsParam = params.get('accounts')
+    const userIdParam   = params.get('user_id')
     const error         = params.get('error')
 
-    if (error) {
-      useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
-      window.history.replaceState({}, '', '/')
-      setAuthChecked(true)
+    // Always clean the URL
+    window.history.replaceState({}, '', '/')
 
-    } else if (accountsParam) {
-      // Fresh OAuth callback — overwrite saved list and show selector
+    if (error) {
+      useBotStore.getState().setAuthError(
+        error === 'google_auth_failed'  ? 'Google sign-in failed. Please try again.' :
+        error === 'no_deriv_accounts'   ? 'No Deriv accounts found. Please connect one.' :
+        'Something went wrong. Please try again.'
+      )
+      setAuthChecked(true)
+      return
+    }
+
+    if (accountsParam) {
+      // OAuth callback — backend already saved to DB, just show selector
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
-        setDerivAccounts(accounts)
+        if (Array.isArray(accounts) && accounts.length) {
+          setDerivAccounts(accounts)   // saves + shows selector
+        }
       } catch {}
-      window.history.replaceState({}, '', '/')
       setAuthChecked(true)
-
-    } else if (!isLoggedIn) {
-      // Try persisted list first, fall back to fetching from backend
-      const saved = useBotStore.getState().derivAccounts
-      if (saved?.length) {
-        setPendingAccounts(saved)
-        setAuthChecked(true)
-      } else {
-        fetch(`${API}/api/accounts`)
-          .then(r => r.json())
-          .then(accounts => {
-            if (accounts?.length) setDerivAccounts(accounts)
-          })
-          .catch(() => {})
-          .finally(() => setAuthChecked(true))
-      }
-
-    } else {
-      setAuthChecked(true)
+      return
     }
+
+    if (isLoggedIn) {
+      // Already have an active session
+      setAuthChecked(true)
+      return
+    }
+
+    // Check if we have a persisted user_id — verify it's still valid
+    const savedUserId = useBotStore.getState().account?.user_id
+    if (savedUserId) {
+      fetch(`${API}/auth/check/${savedUserId}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.found && data.accounts?.length) {
+            // Re-build account list from check response and show selector
+            const saved = useBotStore.getState().derivAccounts
+            if (saved?.length) {
+              setPendingAccounts(saved)
+            }
+          }
+          // else — fall through to Login
+        })
+        .catch(() => {})
+        .finally(() => setAuthChecked(true))
+      return
+    }
+
+    // No session at all — show Login
+    setAuthChecked(true)
   }, [])
 
   useEffect(() => {
@@ -104,19 +126,9 @@ export default function App() {
 
   if (isMobile) {
     return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: '100dvh',
-        background: '#030712',
-      }}>
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh', background: '#030712' }}>
         <Sidebar />
-        <main style={{
-          flex: 1,
-          overflowY: 'auto',
-          WebkitOverflowScrolling: 'touch',
-          paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))',
-        }}>
+        <main style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))' }}>
           <Page />
         </main>
       </div>

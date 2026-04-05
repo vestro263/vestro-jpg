@@ -1,30 +1,61 @@
 import useBotStore from '../store/botStore'
 
+const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
+
 export default function AccountSelector({ accounts, onSelect }) {
   const { login } = useBotStore()
 
-  function handleSelect(acc) {
+  async function handleSelect(acc) {
+    // Tell backend which account is active for this user
+    if (acc.user_id) {
+      try {
+        await fetch(`${API}/auth/set-active-account`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            deriv_account: acc.account_id,
+            user_id:       acc.user_id,
+          }),
+        })
+      } catch (e) {
+        console.warn('[AccountSelector] set-active-account failed:', e)
+      }
+    }
+
     login('deriv', acc.account_id, {
       account_id: acc.account_id,
       balance:    acc.balance,
       currency:   acc.currency,
       equity:     acc.balance,
       profit:     0,
+      email:      acc.email  || '',
+      user_id:    acc.user_id || '',
     })
     onSelect()
   }
 
+  // Separate real vs demo for cleaner display
+  const real = accounts.filter(a => a.type !== 'demo')
+  const demo = accounts.filter(a => a.type === 'demo')
+  const sorted = [...real, ...demo]
+
   return (
     <div style={styles.outer}>
       <div style={styles.card}>
+
         <div style={styles.brand}>
           <span style={styles.brandDot} />
           <span style={styles.brandName}>Vestro</span>
         </div>
+
+        {accounts[0]?.email && (
+          <p style={styles.email}>{accounts[0].email}</p>
+        )}
+
         <p style={styles.sub}>Select an account to trade with</p>
 
         <div style={styles.list}>
-          {accounts.map(acc => (
+          {sorted.map(acc => (
             <button
               key={acc.account_id}
               style={styles.item}
@@ -42,13 +73,26 @@ export default function AccountSelector({ accounts, onSelect }) {
               </div>
               <div style={styles.itemRight}>
                 <span style={styles.balance}>
-                  {Number(acc.balance).toLocaleString()} {acc.currency}
+                  {Number(acc.balance).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })} {acc.currency}
                 </span>
                 <span style={styles.arrow}>→</span>
               </div>
             </button>
           ))}
         </div>
+
+        <button
+          style={styles.addAccount}
+          onClick={() => {
+            window.location.href = `${API}/auth/google`
+          }}
+        >
+          + Connect another account
+        </button>
+
       </div>
     </div>
   )
@@ -75,7 +119,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   brandDot: {
     width: 10,
@@ -90,15 +134,21 @@ const styles = {
     fontWeight: 600,
     letterSpacing: '-0.5px',
   },
+  email: {
+    color: '#3b82f6',
+    fontSize: 13,
+    margin: '0 0 4px',
+    fontFamily: 'monospace',
+  },
   sub: {
     color: '#64748b',
     fontSize: 14,
-    margin: '0 0 28px',
+    margin: '0 0 24px',
   },
   list: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 12,
+    gap: 10,
   },
   item: {
     display: 'flex',
@@ -109,8 +159,8 @@ const styles = {
     borderRadius: 10,
     padding: '14px 16px',
     cursor: 'pointer',
-    transition: 'border-color 0.15s',
     width: '100%',
+    transition: 'border-color 0.15s',
   },
   itemLeft: {
     display: 'flex',
@@ -142,5 +192,16 @@ const styles = {
   arrow: {
     color: '#3b82f6',
     fontSize: 16,
+  },
+  addAccount: {
+    width: '100%',
+    marginTop: 16,
+    background: 'transparent',
+    border: '1px dashed #2a3f5f',
+    borderRadius: 10,
+    color: '#475569',
+    fontSize: 13,
+    padding: '12px 0',
+    cursor: 'pointer',
   },
 }
