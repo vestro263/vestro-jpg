@@ -2,6 +2,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 import os
 
+from .ml.signal_log_model import SignalLog, CalibrationConfig, SignalLogBase
+
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 if DATABASE_URL.startswith("postgres://"):
@@ -44,3 +46,6 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # NEW — creates signal_logs + calibration_config tables
+        from .ml.signal_log_model import SignalLogBase
+        await conn.run_sync(SignalLogBase.metadata.create_all)

@@ -11,6 +11,9 @@ import websockets
 import pathlib
 
 from .strategies.strategy_runner import StrategyRunner
+from .ml.calibration_loader import start_reload_loop, get_thresholds
+from .ml.outcome_labeler    import run_labeler
+from .ml.calibration_trainer import run_trainer
 
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
@@ -123,7 +126,7 @@ async def fetch_deriv_balance(api_token: str) -> float:
 # ============================================================
 
 async def process_deriv_account(cred, runner_is_live: bool = False):
-    for symbol in ["R_100", "R_75"]:
+    for symbol in ["R_75"]:
         try:
             api_token = decrypt(cred.password)
             closes    = list(await fetch_deriv_ticks(api_token, symbol))
@@ -230,6 +233,8 @@ async def run_signal_loop():
     print("[signal_engine] starting...")
     await asyncio.sleep(5)  # wait for DB to be fully ready
 
+    _loop_count = 0
+
     while True:
         try:
             async with AsyncSessionLocal() as db:
@@ -244,6 +249,9 @@ async def run_signal_loop():
                 print("[signal_engine] booting strategy runner...")
                 await _boot_strategy_runner(decrypt(deriv_cred.password))
 
+                # Start calibration hot-reload background task (runs every 30 min)
+                asyncio.create_task(start_reload_loop(), name="calibration-reload")
+
             runner_live = _runner_is_alive()
 
             for cred in creds:
@@ -254,5 +262,18 @@ async def run_signal_loop():
             print(f"[signal_engine] loop error: {e}")
             import traceback
             traceback.print_exc()
+
+        _loop_count += 1
+
+        # Run labeler every 5 minutes (every 10 × 30s loops)
+        if _loop_count % 10 == 0 and deriv_cred:
+            asyncio.create_task(
+                run_labeler(decrypt(deriv_cred.password)),
+                name="outcome-labeler"
+            )
+
+        # Run trainer once per hour (every 120 × 30s loops)
+        if _loop_count % 120 == 0:
+            asyncio.create_task(run_trainer(), name="calibration-trainer")
 
         await asyncio.sleep(30)

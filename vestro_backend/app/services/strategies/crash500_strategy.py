@@ -18,7 +18,7 @@ import os
 import time
 import websockets
 from collections import deque
-
+from ..ml.signal_logger import log_signal, mark_executed
 from .base_strategy import BaseStrategy
 
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
@@ -86,6 +86,9 @@ class Crash500Strategy(BaseStrategy):
 
     # ── Phase 2 — run the 4-check entry checklist ─────────────
     async def compute_signal(self, market_data: dict) -> dict:
+        from ..ml.calibration_loader import get_thresholds
+        t = get_thresholds(self.SYMBOL)
+
         now = market_data["now"]
         bid = market_data["latest"]
         hist = list(self._price_history)
@@ -95,46 +98,52 @@ class Crash500Strategy(BaseStrategy):
 
         prices = [p for _, p in hist]
 
+        # ── 🔥 CALIBRATED THRESHOLDS ──
+        spike_threshold = getattr(t, "spike_min", None) or MIN_SPIKE_PTS
+        recovery_threshold = getattr(t, "recovery_min", None) or RECOVERY_PTS
+
         # [1] Spike depth
-        cutoff_spike  = now - SPIKE_WINDOW_S
-        recent_prices = [p for t, p in hist if t >= cutoff_spike]
-        high_spike    = max(recent_prices) if recent_prices else bid
-        drop_spike    = high_spike - bid
-        spike_ok      = drop_spike >= MIN_SPIKE_PTS
+        cutoff_spike = now - SPIKE_WINDOW_S
+        recent_prices = [p for t_, p in hist if t_ >= cutoff_spike]
+        high_spike = max(recent_prices) if recent_prices else bid
+        drop_spike = high_spike - bid
+
+        spike_ok = drop_spike >= spike_threshold
 
         # Track spike low
         if spike_ok:
             if self._spike_low is None or bid < self._spike_low:
-                self._spike_low    = bid
+                self._spike_low = bid
                 self._spike_low_ts = now
+
         # Expire stale spike low (45s)
         if self._spike_low is not None and (now - self._spike_low_ts) > 45.0:
-            self._spike_low    = None
+            self._spike_low = None
             self._spike_low_ts = 0.0
 
         # [2] Recovery off spike low
-        recovery    = bid - self._spike_low if self._spike_low is not None else 0.0
-        recovery_ok = recovery >= RECOVERY_PTS
+        recovery = bid - self._spike_low if self._spike_low is not None else 0.0
+        recovery_ok = recovery >= recovery_threshold
 
         # [3] Broad trend: bid > price 30s ago
         cutoff_30s = now - TREND_WINDOW_S
-        old_prices = [p for t, p in hist if t <= cutoff_30s]
-        trend_ok   = len(old_prices) > 0 and bid > old_prices[-1]
-        trend_ref  = old_prices[-1] if old_prices else bid
+        old_prices = [p for t_, p in hist if t_ <= cutoff_30s]
+        trend_ok = len(old_prices) > 0 and bid > old_prices[-1]
+        trend_ref = old_prices[-1] if old_prices else bid
 
-        # [4] Micro momentum: last 5 ticks net positive
+        # [4] Micro momentum
         micro_delta = 0.0
-        micro_ok    = False
+        micro_ok = False
         if len(prices) >= MICRO_TICKS + 1:
             micro_delta = bid - prices[-(MICRO_TICKS + 1)]
-            micro_ok    = micro_delta > 0
+            micro_ok = micro_delta > 0
 
-        score  = sum([spike_ok, recovery_ok, trend_ok, micro_ok])
+        score = sum([spike_ok, recovery_ok, trend_ok, micro_ok])
         passed = spike_ok and recovery_ok and trend_ok and micro_ok
 
         reason = (
-            f"spike={drop_spike:.1f}pts({'OK' if spike_ok else f'need>={MIN_SPIKE_PTS}'}) | "
-            f"recovery={recovery:.2f}pts({'OK' if recovery_ok else f'need>={RECOVERY_PTS}'}) | "
+            f"spike={drop_spike:.1f}pts({'OK' if spike_ok else f'need>={spike_threshold}'}) | "
+            f"recovery={recovery:.2f}pts({'OK' if recovery_ok else f'need>={recovery_threshold}'}) | "
             f"trend={'UP' if trend_ok else 'DOWN'}(ref={trend_ref:.3f}) | "
             f"micro={'UP' if micro_ok else 'DOWN'}({micro_delta:+.3f}) | "
             f"score={score}/4"
@@ -147,19 +156,25 @@ class Crash500Strategy(BaseStrategy):
         lot = self._calc_lot(self.balance)
 
         return {
-            "signal":     "BUY",
-            "symbol":     self.SYMBOL,
+            "signal": "BUY",
+            "symbol": self.SYMBOL,
             "confidence": round(score / 4.0, 2),
-            "reason":     reason,
-            "amount":     lot,
+            "reason": reason,
+            "amount": lot,
             "meta": {
-                "bid":           bid,
-                "score":         score,
-                "drop_spike":    round(drop_spike, 2),
-                "recovery":      round(recovery, 2),
-                "sl":            round(bid - SL_POINTS, 3),
-                "tp":            round(bid + TP_POINTS, 3),
-                "atr_zone":      "elevated" if score >= 3 else "normal",
+                "bid": bid,
+                "score": score,
+                "drop_spike": round(drop_spike, 2),
+                "recovery": round(recovery, 2),
+                "sl": round(bid - SL_POINTS, 3),
+                "tp": round(bid + TP_POINTS, 3),
+                "atr_zone": "elevated" if score >= 3 else "normal",
+
+                # 🔥 calibration snapshot (important for ML/debugging)
+                "thresholds": {
+                    "spike_min": spike_threshold,
+                    "recovery_min": recovery_threshold,
+                }
             }
         }
 
@@ -198,6 +213,8 @@ class Crash500Strategy(BaseStrategy):
         try:
             market_data = await self.fetch_market_data()
             signal      = await self.compute_signal(market_data)
+
+            log_id = await log_signal(signal, strategy_name=self.NAME)
 
             self.logger.info(
                 f"[{self.NAME}] signal={signal['signal']} "
@@ -239,6 +256,7 @@ class Crash500Strategy(BaseStrategy):
                 action="rise",
                 amount=signal["amount"],
             )
+            await mark_executed(log_id)
             self.logger.info(f"[{self.NAME}] trade result: {result}")
 
             # Update tracking

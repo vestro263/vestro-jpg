@@ -133,9 +133,11 @@ class _FeatureEngine:
 # ============================================================
 
 class _PatternExtractor:
-    def __init__(self, candles: list, features: dict):
-        self.candles  = candles
+    def __init__(self, patterns: _PatternExtractor, features: dict, candles: list, thresholds):
+        self.patterns = patterns
         self.features = features
+        self.candles  = candles
+        self.t        = thresholds
 
     def trend_strength_score(self) -> int:
         score  = 0
@@ -195,6 +197,7 @@ class _PredictionEngine:
         self.patterns = patterns
         self.features = features
         self.candles  = candles
+        self.thresholds = thresholds
 
     def _atr_zone(self) -> str:
         atr_vals = self.features.get("atr_14", [1])
@@ -207,79 +210,163 @@ class _PredictionEngine:
         return "extreme"
 
     def _entry_checklist(self, direction: str) -> int:
-        score   = 0
-        closes  = [c["close"] for c in self.candles]
-        rsi     = self.features.get("rsi_14",  [50])
-        macd_h  = self.features.get("macd_histogram", [0])
-        ema50   = self.features.get("ema_50",  [closes[-1]])
-        ema200  = self.features.get("ema_200", [closes[-1]])
+        score = 0
+        closes = [c["close"] for c in self.candles]
+        rsi = self.features.get("rsi_14", [50])
+        macd_h = self.features.get("macd_histogram", [0])
+        ema50 = self.features.get("ema_50", [closes[-1]])
+        ema200 = self.features.get("ema_200", [closes[-1]])
         volumes = [c["volume"] for c in self.candles]
-        last_c  = self.candles[-1]
+        last_c = self.candles[-1]
 
         body = abs(last_c["close"] - last_c["open"])
-        rng  = last_c["high"] - last_c["low"] + 1e-5
+        rng = last_c["high"] - last_c["low"] + 1e-5
+
+        # ── 🔥 CALIBRATED THRESHOLDS ──
+        rsi_buy_min = getattr(self.t, "rsi_buy_min", 30)
+        rsi_buy_max = getattr(self.t, "rsi_buy_max", 55)
+        rsi_sell_min = getattr(self.t, "rsi_sell_min", 45)
+        rsi_sell_max = getattr(self.t, "rsi_sell_max", 70)
+
+        body_ratio_min = getattr(self.t, "body_ratio_min", 0.4)
+        vol_mult = getattr(self.t, "volume_spike_mult", 1.1)
 
         if direction == "buy":
-            if ema50[-1] > ema200[-1]:                                 score += 1
-            if 30 <= rsi[-1] <= 55:                                    score += 1
-            if macd_h[-1] > 0:                                         score += 1
-            if last_c["close"] > last_c["open"] and body / rng > 0.4: score += 1
-        else:
-            if ema50[-1] < ema200[-1]:                                 score += 1
-            if 45 <= rsi[-1] <= 70:                                    score += 1
-            if macd_h[-1] < 0:                                         score += 1
-            if last_c["close"] < last_c["open"] and body / rng > 0.4: score += 1
+            if ema50[-1] > ema200[-1]:
+                score += 1
 
+            # ✅ FULL RSI RANGE
+            if rsi_buy_min <= rsi[-1] <= rsi_buy_max:
+                score += 1
+
+            if macd_h[-1] > 0:
+                score += 1
+
+            if last_c["close"] > last_c["open"] and body / rng > body_ratio_min:
+                score += 1
+
+        else:
+            if ema50[-1] < ema200[-1]:
+                score += 1
+
+            # ✅ FULL RSI RANGE
+            if rsi_sell_min <= rsi[-1] <= rsi_sell_max:
+                score += 1
+
+            if macd_h[-1] < 0:
+                score += 1
+
+            if last_c["close"] < last_c["open"] and body / rng > body_ratio_min:
+                score += 1
+
+        # ── Volume confirmation (calibrated) ──
         if len(volumes) > 1:
             avg_v = statistics.mean(volumes[:-1])
-            if volumes[-1] > avg_v * 1.1:
+            if volumes[-1] > avg_v * vol_mult:
                 score += 1
-        score += 1   # session check
-        score += 1   # zone check
+
+        # ── Soft checks (can be calibrated later) ──
+        score += 1  # session check
+        score += 1  # zone check
+
         return min(score, 7)
 
     def predict(self) -> dict:
-        tss      = self.patterns.trend_strength_score()
-        diverge  = self.patterns.rsi_divergence()
+        tss = self.patterns.trend_strength_score()
+        diverge = self.patterns.rsi_divergence()
         compress = self.patterns.compression_zone()
+
         atr_zone = self._atr_zone()
-        closes   = [c["close"] for c in self.candles]
-        ema21    = self.features.get("ema_21",  [closes[-1]])
-        ema50    = self.features.get("ema_50",  [closes[-1]])
-        ema200   = self.features.get("ema_200", [closes[-1]])
 
-        if atr_zone == "extreme":
-            return {"signal": "HOLD", "reason": "ATR extreme — stand aside",
-                    "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0}
+        closes = [c["close"] for c in self.candles]
+        ema21 = self.features.get("ema_21", [closes[-1]])
+        ema50 = self.features.get("ema_50", [closes[-1]])
+        ema200 = self.features.get("ema_200", [closes[-1]])
 
+        # ── Adaptive ATR filter ──
+        blocked_zones = getattr(self.t, "blocked_atr_zones", ["extreme"])
+        if atr_zone in blocked_zones:
+            return {
+                "signal": "HOLD",
+                "reason": f"ATR zone '{atr_zone}' blocked",
+                "tss": tss,
+                "checklist": 0,
+                "atr_zone": atr_zone,
+                "confidence": 0.0
+            }
+
+        # ── Trend direction ──
         bull_stack = ema21[-1] > ema50[-1] > ema200[-1]
         bear_stack = ema21[-1] < ema50[-1] < ema200[-1]
-        direction  = "buy" if bull_stack else ("sell" if bear_stack else None)
+        direction = "buy" if bull_stack else ("sell" if bear_stack else None)
 
         if not direction:
-            return {"signal": "HOLD", "reason": "EMA stack indeterminate",
-                    "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0}
+            return {
+                "signal": "HOLD",
+                "reason": "EMA stack indeterminate",
+                "tss": tss,
+                "checklist": 0,
+                "atr_zone": atr_zone,
+                "confidence": 0.0
+            }
 
+        # ── Entry checklist ──
         checklist = self._entry_checklist(direction)
 
-        if checklist < 4 or tss < 2:
-            return {"signal": "HOLD",
-                    "reason": f"Checklist {checklist}/7, TSS {tss}/5 — insufficient confluence",
-                    "tss": tss, "checklist": checklist, "atr_zone": atr_zone, "confidence": 0.0}
+        # ── 🔥 CALIBRATED GATES (FIXED) ──
+        min_checklist = getattr(self.t, "checklist_min", 4)
+        min_tss = getattr(self.t, "tss_min", 2)
 
-        confidence = min(1.0, (tss / 5) * 0.5 + (checklist / 7) * 0.5)
-        signal     = "BUY" if direction == "buy" else "SELL"
+        if checklist < min_checklist or tss < min_tss:
+            return {
+                "signal": "HOLD",
+                "reason": (
+                    f"Checklist {checklist}/{min_checklist}, "
+                    f"TSS {tss}/{min_tss} — filtered"
+                ),
+                "tss": tss,
+                "checklist": checklist,
+                "atr_zone": atr_zone,
+                "confidence": 0.0
+            }
+
+        # ── Adaptive confidence ──
+        w_tss = getattr(self.t, "w_tss", 0.5)
+        w_chk = getattr(self.t, "w_checklist", 0.5)
+
+        confidence = min(
+            1.0,
+            (tss / 5) * w_tss +
+            (checklist / 7) * w_chk
+        )
+
+        # Optional: calibrated confidence floor
+        min_conf = getattr(self.t, "confidence_min", 0.0)
+        if confidence < min_conf:
+            return {
+                "signal": "HOLD",
+                "reason": f"confidence {confidence:.2f} < {min_conf}",
+                "tss": tss,
+                "checklist": checklist,
+                "atr_zone": atr_zone,
+                "confidence": confidence
+            }
+
+        signal = "BUY" if direction == "buy" else "SELL"
 
         return {
-            "signal":      signal,
-            "price":       closes[-1],
-            "confidence":  round(confidence, 3),
-            "tss":         tss,
-            "checklist":   checklist,
-            "atr_zone":    atr_zone,
-            "divergence":  diverge,
+            "signal": signal,
+            "price": closes[-1],
+            "confidence": round(confidence, 3),
+            "tss": tss,
+            "checklist": checklist,
+            "atr_zone": atr_zone,
+            "divergence": diverge,
             "spike_ready": compress and signal == "SELL",
-            "reason":      f"TSS {tss}/5, Checklist {checklist}/7, {atr_zone.upper()} ATR",
+            "reason": (
+                f"TSS {tss}/5, Checklist {checklist}/7, "
+                f"{atr_zone.upper()} ATR"
+            ),
         }
 
 
@@ -378,6 +465,10 @@ class V75Strategy(BaseStrategy):
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
 
+        # ── Load ML-calibrated thresholds ──
+        from ..ml.calibration_loader import get_thresholds
+        t = get_thresholds(self.SYMBOL)  # always returns Thresholds object
+
         if len(candles) < 220:
             return {
                 "signal": "HOLD", "symbol": self.SYMBOL,
@@ -391,16 +482,42 @@ class V75Strategy(BaseStrategy):
         predictor = _PredictionEngine(patterns, features, candles)
         result = predictor.predict()
 
+        # ─────────────────────────────────────
+        # 🔥 APPLY CALIBRATION FILTER (CRITICAL)
+        # ─────────────────────────────────────
+
+        confidence = result.get("confidence", 0.0)
+        tss = result.get("tss", 0)
+
+        # Block weak signals using learned thresholds
+        if confidence < t.min_confidence or tss < t.min_tss:
+            result["signal"] = "HOLD"
+            result["reason"] = (
+                f"filtered by calibration "
+                f"(conf {confidence:.2f}<{t.min_confidence}, "
+                f"tss {tss}<{t.min_tss})"
+            )
+
         self.logger.info(
-            f"[{self.NAME}] TSS={result.get('tss')}/5 "
+            f"[{self.NAME}] TSS={tss}/5 "
             f"checklist={result.get('checklist')}/7 "
-            f"signal={result['signal']} reason={result['reason']}"
+            f"conf={confidence:.2f} "
+            f"signal={result['signal']} "
+            f"reason={result['reason']}"
         )
 
         atr_val = features["atr_14"][-1] if features.get("atr_14") else 1000
+
         risk = _RiskManager(self.balance, self.is_prop)
-        sl_pips = atr_val * 1.5
-        lot = risk.lot_size(sl_pips, result.get("atr_zone", "normal"))
+
+        # Optional: adaptive SL multiplier
+        sl_mult = getattr(t, "sl_atr_mult", 1.5)
+        sl_pips = atr_val * sl_mult
+
+        # Optional: volatility scaling
+        atr_zone = result.get("atr_zone", "normal")
+        lot = risk.lot_size(sl_pips, atr_zone)
+
         levels = risk.sl_tp(
             entry=candles[-1]["close"],
             direction="buy" if result["signal"] == "BUY" else "sell",
@@ -419,9 +536,9 @@ class V75Strategy(BaseStrategy):
                 "ema50": round(features["ema_50"][-1], 4) if features.get("ema_50") else 0,
                 "ema200": round(features["ema_200"][-1], 4) if features.get("ema_200") else 0,
                 "macd_hist": round(features["macd_histogram"][-1], 5) if features.get("macd_histogram") else 0,
-                "tss_score": result.get("tss", 0),
-                "atr_zone": result.get("atr_zone", "normal"),
-                "confidence": result.get("confidence", 0.0),
+                "tss_score": tss,
+                "atr_zone": atr_zone,
+                "confidence": confidence,
                 "reason": result.get("reason", ""),
             }
         })
@@ -429,18 +546,25 @@ class V75Strategy(BaseStrategy):
         return {
             "signal": result["signal"],
             "symbol": self.SYMBOL,
-            "confidence": result.get("confidence", 0.0),
+            "confidence": confidence,
             "reason": result.get("reason", ""),
-            "amount": lot,
+            "amount": lot if result["signal"] != "HOLD" else 0.0,
             "meta": {
-                "tss": result.get("tss"),
+                "tss": tss,
                 "checklist": result.get("checklist"),
-                "atr_zone": result.get("atr_zone"),
+                "atr_zone": atr_zone,
                 "atr_val": round(atr_val, 4),
                 "sl": levels["sl"],
                 "tp": levels["tp"],
                 "entry": candles[-1]["close"],
                 "balance": self.balance,
+
+                # 🔥 Include calibration snapshot (VERY IMPORTANT)
+                "thresholds": {
+                    "min_confidence": t.min_confidence,
+                    "min_tss": t.min_tss,
+                    "sl_atr_mult": getattr(t, "sl_atr_mult", 1.5),
+                }
             }
         }
 
