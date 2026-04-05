@@ -8,8 +8,11 @@ import uuid
 from app.db import engine
 from app.models import Base
 
-Base.metadata.drop_all(bind=engine)
-Base.metadata.create_all(bind=engine)
+@app.on_event("startup")
+async def reset_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 def gen_id():
     return str(uuid.uuid4())
