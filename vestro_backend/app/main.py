@@ -112,6 +112,11 @@ async def list_tables(db: AsyncSession = Depends(get_db)):
     ))
     return {"tables": [r[0] for r in result.fetchall()]}
 
+@app.get("/debug/creds")
+async def check_creds(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(text("SELECT id, user_id, broker FROM credentials"))
+    rows = result.fetchall()
+    return {"count": len(rows), "rows": [{"id": r[0], "user_id": r[1], "broker": r[2]} for r in rows]}
 
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
