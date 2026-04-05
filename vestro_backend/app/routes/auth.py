@@ -97,6 +97,7 @@ async def google_callback(
         )
         token_data = token_resp.json()
         if "error" in token_data:
+            print(f"[google_callback] token error: {token_data}")
             return RedirectResponse(f"{FRONTEND_URL}?error=google_token_failed")
 
         # Get user info
