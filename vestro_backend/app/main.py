@@ -114,7 +114,7 @@ async def debug_exception_handler(request: Request, exc: Exception):
 
 @app.get("/debug/ml")
 async def check_ml_data(db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import text
+
     results = {}
 
     ml_tables = ["signal_logs", "calibration_config"]
@@ -175,6 +175,17 @@ async def check_creds(db: AsyncSession = Depends(get_db)):
     rows = result.fetchall()
     return {"count": len(rows), "rows": [{"id": r[0], "user_id": r[1], "broker": r[2]} for r in rows]}
 
+@app.get("/debug/ml-detail")
+async def ml_detail(db: AsyncSession = Depends(get_db)):
+
+    r1 = await db.execute(text("SELECT signal, COUNT(*) FROM signal_logs GROUP BY signal"))
+    r2 = await db.execute(text("SELECT COUNT(*) FROM signal_logs WHERE entry_price IS NOT NULL"))
+    r3 = await db.execute(text("SELECT COUNT(*) FROM signal_logs WHERE entry_price IS NULL"))
+    return {
+        "signals_breakdown": {r[0]: r[1] for r in r1.fetchall()},
+        "has_entry_price":   r2.scalar(),
+        "no_entry_price":    r3.scalar(),
+    }
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
