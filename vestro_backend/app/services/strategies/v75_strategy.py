@@ -418,7 +418,7 @@ class V75Strategy(BaseStrategy):
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
 
-        from ....ml.calibration_loader import get_thresholds
+        from ...ml.calibration_loader import get_thresholds
         t = get_thresholds(self.SYMBOL)
 
         if len(candles) < 220:
