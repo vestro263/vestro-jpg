@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import text
 import os
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -41,12 +42,17 @@ async def get_db():
         finally:
             await session.close()
 
-async def init_db():
-    # Deferred import — avoids circular dependency at module load time.
-    # (calibration_loader imports AsyncSessionLocal from this module, so
-    #  importing signal_log_model at the top level would create a cycle.)
-    from ml.signal_log_model import SignalLogBase  # noqa: F401
 
+
+async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(SignalLogBase.metadata.create_all)  # new tables
+
+        # ── One-time migrations ──────────────────────────────
+        # Safe to run on every startup — IF NOT EXISTS means no-op after first run
+        await conn.execute(text(
+            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS google_user_id VARCHAR"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cred_google_user_id ON credentials(google_user_id)"
+        ))
