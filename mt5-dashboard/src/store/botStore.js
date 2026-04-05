@@ -37,39 +37,51 @@ const useBotStore = create(
       broker:          null,
       accountId:       null,
       authError:       null,
-      pendingAccounts: null,
+      derivAccounts:   null,   // full list from OAuth — persisted
+      pendingAccounts: null,   // drives the selector UI — not persisted
 
+      // Called on OAuth callback — saves full list and shows selector
+      setDerivAccounts: (accounts) => set({
+        derivAccounts:   accounts,
+        pendingAccounts: accounts,
+      }),
+
+      // Called to show/hide the selector without overwriting the saved list
       setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
       login: (broker, accountId, accountData) => {
-          set({
-            isLoggedIn:      true,
-            broker,
-            accountId,
-            authError:       null,
-            pendingAccounts: null,
-            account: { ...get().account, ...accountData },
-          })
-          get().connect()
-          get().startPolling()
-          // Sync bot status from backend
-          fetch(`${API}/api/bot/status`)
-            .then(r => r.json())
-            .then(d => set({ botRunning: d.running }))
-            .catch(() => {})
-        },
+        set({
+          isLoggedIn:      true,
+          broker,
+          accountId,
+          authError:       null,
+          pendingAccounts: null,  // close selector
+          account: { ...get().account, ...accountData },
+        })
+        get().connect()
+        get().startPolling()
+        fetch(`${API}/api/bot/status`)
+          .then(r => r.json())
+          .then(d => set({ botRunning: d.running }))
+          .catch(() => {})
+      },
 
       logout: () => {
         const ws = get().ws
         if (ws) ws.close(1000)
+        // Keep derivAccounts so selector reappears without re-doing OAuth
         set({
           isLoggedIn:      false,
           broker:          null,
           accountId:       null,
           connected:       false,
           ws:              null,
-          pendingAccounts: null,
-          account: { balance: 0, equity: 0, profit: 0, margin_free: 0, currency: 'USD', name: '—', leverage: 0, is_virtual: false },
+          pendingAccounts: get().derivAccounts,  // re-open selector on logout
+          account: {
+            balance: 0, equity: 0, profit: 0,
+            margin_free: 0, currency: 'USD',
+            name: '—', leverage: 0, is_virtual: false,
+          },
           positions:  [],
           signals:    [],
           tradeFeed:  [],
@@ -210,10 +222,12 @@ const useBotStore = create(
     {
       name: 'vestro-auth',
       partialize: (s) => ({
-        broker:    s.broker,
-        accountId: s.accountId,
-        account:   s.account,
-        botRunning: s.botRunning,
+        broker:        s.broker,
+        accountId:     s.accountId,
+        account:       s.account,
+        botRunning:    s.botRunning,
+        derivAccounts: s.derivAccounts,
+
       }),
     }
   )

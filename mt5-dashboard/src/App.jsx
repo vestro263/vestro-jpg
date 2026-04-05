@@ -31,27 +31,33 @@ const PAGES = {
 
 export default function App() {
   const {
-    accountId, activePage, login,
-    pendingAccounts, setPendingAccounts
+    accountId, activePage,
+    pendingAccounts, setPendingAccounts, setDerivAccounts,
   } = useBotStore()
-  const isLoggedIn = !!accountId
-  const isMobile = useIsMobile()
+  const isLoggedIn  = !!accountId
+  const isMobile    = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
+    const params        = new URLSearchParams(window.location.search)
     const accountsParam = params.get('accounts')
-    const error = params.get('error')
+    const error         = params.get('error')
 
     if (error) {
+      // OAuth failure
       useBotStore.getState().setAuthError('Deriv login failed. Please try again.')
       window.history.replaceState({}, '', '/')
     } else if (accountsParam) {
+      // Fresh OAuth callback — overwrite saved list and show selector
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
-        setPendingAccounts(accounts)
+        setDerivAccounts(accounts)
       } catch {}
       window.history.replaceState({}, '', '/')
+    } else if (!isLoggedIn) {
+      // No OAuth callback and not logged in — restore selector from persisted list
+      const saved = useBotStore.getState().derivAccounts
+      if (saved?.length) setPendingAccounts(saved)
     }
 
     setAuthChecked(true)
