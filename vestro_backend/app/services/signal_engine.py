@@ -9,7 +9,9 @@ import os
 import json
 import websockets
 import pathlib
+from ml.signal_log_model import SignalLog
 
+from datetime import datetime, timezone
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds
 from ml.outcome_labeler    import run_labeler
@@ -162,9 +164,9 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
             macd_bullish = macd_val > 0
             macd_bearish = macd_val < 0
 
-            if rsi < 45 and ma_fast > ma_slow and macd_bullish:
+            if rsi < 50 and macd_bullish:
                 signal = "BUY"
-            elif rsi > 55 and ma_fast < ma_slow and macd_bearish:
+            elif rsi > 50 and macd_bearish:
                 signal = "SELL"
             else:
                 signal = "HOLD"
@@ -191,6 +193,41 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
                     "atr_zone":   atr_zone,
                 }
             })
+
+            # Save signal to DB for ML labeling
+            try:
+
+
+                entry_price = closes[-1]
+                atr_val_now = atr_val
+                direction = 1 if signal == "BUY" else (-1 if signal == "SELL" else 0)
+
+                tp = entry_price + atr_val_now if direction == 1 else entry_price - atr_val_now
+                sl = entry_price - atr_val_now if direction == 1 else entry_price + atr_val_now
+
+                async with AsyncSessionLocal() as db:
+                    db.add(SignalLog(
+                        strategy="V75",
+                        symbol=symbol,
+                        signal=signal,
+                        direction=direction,
+                        entry_price=entry_price,
+                        tp_price=tp if signal != "HOLD" else None,
+                        sl_price=sl if signal != "HOLD" else None,
+                        rsi=round(rsi, 2),
+                        adx=round(adx_val, 2),
+                        atr=round(atr_val, 5),
+                        ema_50=round(ema50, 4),
+                        ema_200=round(ema200, 4),
+                        macd_hist=round(macd_val, 5),
+                        tss_score=tss,
+                        atr_zone=atr_zone,
+                        confidence=0.0,
+                        captured_at=datetime.now(timezone.utc),
+                    ))
+                    await db.commit()
+            except Exception as log_err:
+                print(f"[signal_engine] SignalLog insert error: {log_err}")
 
             if runner_is_live:
                 continue
