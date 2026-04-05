@@ -226,8 +226,8 @@ const useBotStore = create(
         accountId:     s.accountId,
         account:       s.account,
         botRunning:    s.botRunning,
-        derivAccounts: s.derivAccounts,
-
+        derivAccounts: s.derivAccounts,  // persisted — full OAuth account list
+        // pendingAccounts intentionally excluded — recomputed on load
       }),
     }
   )
