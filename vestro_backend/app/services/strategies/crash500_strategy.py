@@ -18,7 +18,7 @@ import os
 import time
 import websockets
 from collections import deque
-from ...ml.signal_logger import log_signal, mark_executed
+from ....ml.signal_logger import log_signal, mark_executed
 from .base_strategy import BaseStrategy
 
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
