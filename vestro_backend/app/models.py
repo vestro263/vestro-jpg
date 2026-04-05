@@ -5,7 +5,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from .database import Base
 import uuid
+from app.db import engine
+from app.models import Base
 
+Base.metadata.drop_all(bind=engine)
+Base.metadata.create_all(bind=engine)
 
 def gen_id():
     return str(uuid.uuid4())
