@@ -17,7 +17,7 @@ from .routes.stream import router as stream_router
 from .routes.auth import router as auth_router
 from .routes.trade import router as trade_router
 from .workers.scheduler import create_scheduler
-from .services.signal_engine import run_signal_loop
+from app.services.signal_engine import run_signal_loop
 
 # ------------------ LOGGING ------------------
 logging.basicConfig(
