@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
