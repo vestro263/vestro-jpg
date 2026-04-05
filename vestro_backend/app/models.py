@@ -36,18 +36,19 @@ class User(Base):
 class Credentials(Base):
     __tablename__ = "credentials"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)  # Deriv account ID
-    broker = Column(String)               # "deriv" | "welltrade"
-    login = Column(String)                # encrypted
-    password = Column(String)             # encrypted (API token for Deriv)
-    server = Column(String)               # encrypted
-    api_token = Column(String)            # encrypted (Deriv token, same as password)
-    meta_account_id = Column(String)      # MetaApi account ID
+    id              = Column(Integer, primary_key=True)
+    user_id         = Column(String, unique=True, index=True)  # Deriv loginid e.g. CR123456
+    google_user_id  = Column(String, nullable=True, index=True) # ← NEW: links to User.id
+    broker          = Column(String)
+    login           = Column(String)
+    password        = Column(String)
+    server          = Column(String)
+    api_token       = Column(String)
+    meta_account_id = Column(String)
 
-    # Relationship to User
-    user = relationship("User", back_populates="credentials", foreign_keys=[user_id])
-
+    user = relationship("User", back_populates="credentials",
+                        foreign_keys=[google_user_id],
+                        primaryjoin="Credentials.google_user_id == User.id")
 
 class Firm(Base):
     __tablename__ = "firms"
