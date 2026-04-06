@@ -118,7 +118,8 @@ class Crash500Strategy(BaseStrategy):
         hist = list(self._price_history)
 
         if len(hist) < 30:
-            return self._hold("warming up — not enough ticks", bid)
+            return self._hold("warming up — not enough ticks", bid,
+                              drop_spike=0.0, recovery=0.0)
 
         prices = [p for _, p in hist]
 
@@ -174,7 +175,8 @@ class Crash500Strategy(BaseStrategy):
         )
 
         if not passed:
-            return self._hold(reason, bid, score)
+            return self._hold(reason, bid, score,
+                              drop_spike=drop_spike, recovery=recovery)
 
         # Position sizing
         lot = self._calc_lot(self.balance)
@@ -292,7 +294,8 @@ class Crash500Strategy(BaseStrategy):
             self.logger.error(f"[{self.NAME}] pipeline error: {e}")
 
     # ── Helpers ───────────────────────────────────────────────
-    def _hold(self, reason: str, bid: float, score: int = 0) -> dict:
+    def _hold(self, reason: str, bid: float, score: int = 0,
+              drop_spike: float = 0.0, recovery: float = 0.0) -> dict:
         return {
             "signal": "HOLD",
             "symbol": self.SYMBOL,
@@ -302,9 +305,9 @@ class Crash500Strategy(BaseStrategy):
             "meta": {
                 "bid": bid,
                 "score": score,
-                "drop_spike": 0.0,
-                "recovery": 0.0,
-                "atr_zone": "low",  # HOLD = no spike = low volatility
+                "drop_spike": round(drop_spike, 2),
+                "recovery": round(recovery, 2),
+                "atr_zone": "low",
             }
         }
 
