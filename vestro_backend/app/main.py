@@ -207,6 +207,14 @@ async def debug_reload_calibration():
     except Exception as e:
         return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
 
+@app.get("/debug/symbols")
+async def debug_symbols(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(text(
+        "SELECT symbol, strategy, COUNT(*) as cnt FROM signal_logs GROUP BY symbol, strategy"
+    ))
+    return [{"symbol": r[0], "strategy": r[1], "count": r[2]} for r in result.fetchall()]
+
+
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
 
