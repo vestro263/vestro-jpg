@@ -187,6 +187,16 @@ async def ml_detail(db: AsyncSession = Depends(get_db)):
         "no_entry_price":    r3.scalar(),
     }
 
+@app.get("/debug/run-trainer")
+async def debug_run_trainer():
+    import traceback
+    try:
+        from ml.calibration_trainer import run_trainer
+        await run_trainer()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
+
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
 
