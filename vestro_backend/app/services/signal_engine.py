@@ -165,9 +165,9 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
             macd_bullish = macd_val > 0
             macd_bearish = macd_val < 0
 
-            if rsi < 50 and macd_bullish:
+            if macd_bullish and rsi < 60:
                 signal = "BUY"
-            elif rsi > 50 and macd_bearish:
+            elif macd_bearish and rsi > 40:
                 signal = "SELL"
             else:
                 signal = "HOLD"
@@ -203,15 +203,8 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
                 atr_val_now = atr_val
                 direction = 1 if signal == "BUY" else (-1 if signal == "SELL" else 0)
 
-                if direction == 1:
-                    tp = entry_price + (atr_val_now * 2.0)
-                    sl = entry_price - (atr_val_now * 1.0)
-                elif direction == -1:
-                    tp = entry_price - (atr_val_now * 2.0)
-                    sl = entry_price + (atr_val_now * 1.0)
-                else:
-                    tp = None
-                    sl = None
+                tp = entry_price + atr_val_now if direction == 1 else entry_price - atr_val_now
+                sl = entry_price - atr_val_now if direction == 1 else entry_price + atr_val_now
 
                 async with AsyncSessionLocal() as db:
                     db.add(SignalLog(

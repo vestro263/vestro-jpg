@@ -195,11 +195,11 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
             if tp is None or sl is None:
                 atr_val = row.atr or (entry_price * 0.005)
                 if direction == 1:
-                    tp = entry_price + (atr_val * 2.0)
-                    sl = entry_price - (atr_val * 1.0)
+                    tp = entry_price + atr_val
+                    sl = entry_price - atr_val
                 else:
-                    tp = entry_price - (atr_val * 2.0)
-                    sl = entry_price + (atr_val * 1.0)
+                    tp = entry_price - atr_val
+                    sl = entry_price + atr_val
 
             # Fetch ticks covering the longest window (4h)
             max_window = WINDOW_SECONDS["4h"]
