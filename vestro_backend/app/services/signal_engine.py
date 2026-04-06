@@ -203,8 +203,15 @@ async def process_deriv_account(cred, runner_is_live: bool = False):
                 atr_val_now = atr_val
                 direction = 1 if signal == "BUY" else (-1 if signal == "SELL" else 0)
 
-                tp = entry_price + atr_val_now if direction == 1 else entry_price - atr_val_now
-                sl = entry_price - atr_val_now if direction == 1 else entry_price + atr_val_now
+                if direction == 1:
+                    tp = entry_price + (atr_val_now * 2.0)
+                    sl = entry_price - (atr_val_now * 1.0)
+                elif direction == -1:
+                    tp = entry_price - (atr_val_now * 2.0)
+                    sl = entry_price + (atr_val_now * 1.0)
+                else:
+                    tp = None
+                    sl = None
 
                 async with AsyncSessionLocal() as db:
                     db.add(SignalLog(
