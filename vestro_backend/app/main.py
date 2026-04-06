@@ -214,6 +214,17 @@ async def debug_symbols(db: AsyncSession = Depends(get_db)):
     ))
     return [{"symbol": r[0], "strategy": r[1], "count": r[2]} for r in result.fetchall()]
 
+@app.get("/debug/crash500-labels")
+async def debug_crash500_labels(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(text("""
+        SELECT signal, label_15m, COUNT(*) as cnt 
+        FROM signal_logs 
+        WHERE symbol = 'CRASH500' 
+        GROUP BY signal, label_15m
+        ORDER BY signal, label_15m
+    """))
+    return [{"signal": r[0], "label": r[1], "count": r[2]} for r in result.fetchall()]
+
 
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
