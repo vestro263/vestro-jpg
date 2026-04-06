@@ -1,42 +1,18 @@
 """
 calibration_trainer.py
 ======================
-Trains one Gradient Boosted Classifier per symbol on labeled SignalLog rows,
-then writes the learned threshold calibration to CalibrationConfig in DB.
-
-Requirements before training:
-    - At least MIN_SAMPLES labeled rows per symbol (default 500)
-    - label_15m must be non-NULL (primary metric)
-
-Features used (mirrors what each strategy computes):
-    V75:       rsi, adx, atr, ema_50, ema_200, macd_hist, tss_score, checklist, confidence
-    Crash500:  drop_spike, recovery, spike_score, confidence
-
-Threshold extraction method:
-    After fitting the model, we sweep each feature's range and find the
-    cut-point that maximises F1 on the hold-out set, holding all other
-    features at their median.  This gives us interpretable per-feature
-    thresholds that can replace the hard-coded values in each strategy.
-
-Run modes:
-    1. Called from signal_engine.run_signal_loop() after enough rows accumulate
-    2. Standalone: python -m app.ml.calibration_trainer
-
-Output:
-    One CalibrationConfig row per symbol in the DB.
-    signal_engine / strategies reload this via calibration_loader.py.
+Precision-focused trainer — only WIN vs LOSS, no neutral noise.
 """
 
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 from sqlalchemy import select, delete
 
 from app.database import AsyncSessionLocal
@@ -45,13 +21,12 @@ from .signal_log_model import SignalLog, CalibrationConfig
 logger = logging.getLogger(__name__)
 
 MIN_SAMPLES = 200
-TEST_SIZE   = 0.20      # 20% hold-out
+TEST_SIZE   = 0.20
 RANDOM_SEED = 42
 
-# ── Feature sets per strategy ─────────────────────────────────
 FEATURES_V75 = [
     "rsi", "adx", "atr", "ema_50", "ema_200",
-    "macd_hist", "tss_score", "checklist", "confidence",
+    "macd_hist", "tss_score", "confidence",
 ]
 
 FEATURES_CRASH500 = [
@@ -63,7 +38,6 @@ STRATEGY_FEATURES = {
     "Crash500": FEATURES_CRASH500,
 }
 
-# ── Hard-coded defaults (used when calibration hasn't run yet) ─
 HARD_CODED_DEFAULTS = {
     "R_75": {
         "rsi_buy_max":    45.0,
@@ -87,20 +61,25 @@ HARD_CODED_DEFAULTS = {
     },
 }
 
+SYMBOL_STRATEGY_MAP = {
+    "R_75":     "V75",
+    "CRASH500": "Crash500",
+}
+
 
 # ============================================================
-# DATA LOADING
+# DATA LOADING — WIN vs LOSS only, no NEUTRAL, no HOLD
 # ============================================================
 
 async def _load_rows(symbol: str) -> list[dict]:
-    """Load all labeled rows for a given symbol."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(SignalLog)
             .where(
                 SignalLog.symbol    == symbol,
-                SignalLog.label_15m != None,    # noqa: E711
-                SignalLog.signal    != "HOLD",
+                SignalLog.label_15m != None,        # noqa: E711
+                SignalLog.label_15m != 0,           # ← drop NEUTRAL rows
+                SignalLog.signal    != "HOLD",      # ← drop HOLD rows
             )
             .order_by(SignalLog.captured_at)
         )
@@ -113,27 +92,20 @@ async def _load_rows(symbol: str) -> list[dict]:
 
 
 def _build_feature_matrix(rows: list[dict], feature_cols: list[str]):
-    """
-    Convert raw DB rows into numpy X matrix and y label vector.
-    Missing values are imputed with the column median.
-    """
-    import numpy as np
-    X_raw = []
-    y_raw = []
+    X_raw, y_raw = [], []
 
     for r in rows:
         x = [r.get(f) for f in feature_cols]
-        # Skip rows where more than half the features are missing
         n_missing = sum(1 for v in x if v is None)
         if n_missing > len(feature_cols) // 2:
             continue
         X_raw.append(x)
-        y_raw.append(r["label_15m"])   # primary metric
+        y_raw.append(r["label_15m"])
 
     X = np.array(X_raw, dtype=float)
     y = np.array(y_raw, dtype=int)
 
-    # Impute per-column medians
+    # Impute medians
     for col_idx in range(X.shape[1]):
         col    = X[:, col_idx]
         median = np.nanmedian(col)
@@ -152,17 +124,10 @@ def _find_optimal_threshold(
     y_test: np.ndarray,
     feature_idx: int,
     feature_values: np.ndarray,
-    direction: str = "above",    # "above" = feature > threshold is bullish
+    direction: str = "above",
     n_steps: int = 40,
 ) -> float | None:
-    """
-    Sweep the value range of one feature and find the cut-point that
-    maximises F1 on the actual test rows that satisfy the threshold condition.
-
-    direction="above"  → higher values = BUY signal (e.g. TSS score)
-    direction="below"  → lower values  = BUY signal (e.g. RSI for oversold)
-    """
-    best_thresh, best_f1 = None, -1
+    best_thresh, best_precision = None, -1
 
     thresholds = np.linspace(
         np.nanpercentile(feature_values, 5),
@@ -175,21 +140,20 @@ def _find_optimal_threshold(
         if mask.sum() < 10:
             continue
         preds = model.predict(X_test[mask])
-        score = f1_score(y_test[mask], preds, zero_division=0, average="weighted")
-        if score > best_f1:
-            best_f1, best_thresh = score, thresh
+        # Optimise for PRECISION not F1
+        score = precision_score(y_test[mask], preds, zero_division=0, average="weighted")
+        if score > best_precision:
+            best_precision, best_thresh = score, thresh
 
     return round(float(best_thresh), 4) if best_thresh is not None else None
+
+
 # ============================================================
 # TRAINER
 # ============================================================
 
 async def train_symbol(symbol: str, strategy_name: str) -> dict | None:
-    """
-    Train one model for a symbol.  Returns the calibration dict, or None
-    if there's not enough data yet.
-    """
-    logger.info(f"[calibration_trainer] loading rows for {symbol}...")
+    logger.info(f"[calibration_trainer] loading WIN/LOSS rows for {symbol}...")
     rows = await _load_rows(symbol)
 
     if len(rows) < MIN_SAMPLES:
@@ -206,43 +170,50 @@ async def train_symbol(symbol: str, strategy_name: str) -> dict | None:
         logger.info(f"[calibration_trainer] {symbol}: too few complete rows after imputation")
         return None
 
-    logger.info(f"[calibration_trainer] {symbol}: {len(X)} samples — training...")
+    # Check class balance
+    wins   = int(np.sum(y == 1))
+    losses = int(np.sum(y == -1))
+    logger.info(f"[calibration_trainer] {symbol}: WIN={wins} LOSS={losses} total={len(X)}")
 
-    # ── Train / test split ────────────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=TEST_SIZE, random_state=RANDOM_SEED, stratify=y
     )
 
-    # ── Model ─────────────────────────────────────────────────
+    # ── Precision-focused model ───────────────────────────────
     model = GradientBoostingClassifier(
-        n_estimators      = 200,
-        max_depth         = 4,
-        learning_rate     = 0.05,
-        subsample         = 0.8,
-        min_samples_leaf  = 20,
-        random_state      = RANDOM_SEED,
+        n_estimators     = 300,      # more trees = more precision
+        max_depth        = 3,        # shallower = less overfit
+        learning_rate    = 0.03,     # slower learning = more precise
+        subsample        = 0.7,
+        min_samples_leaf = 10,       # tighter patterns
+        max_features     = "sqrt",   # feature randomness reduces overfit
+        random_state     = RANDOM_SEED,
     )
     model.fit(X_train, y_train)
 
-    # ── Evaluate ──────────────────────────────────────────────
     y_pred    = model.predict(X_test)
     precision = round(float(precision_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
     recall    = round(float(recall_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
     f1        = round(float(f1_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
 
     logger.info(
-        f"[calibration_trainer] {symbol}: precision={precision} "
-        f"recall={recall} f1={f1}"
+        f"[calibration_trainer] {symbol}: precision={precision} recall={recall} f1={f1}"
     )
 
-    # ── Feature importance ────────────────────────────────────
+    # ── Precision gate — don't write garbage to DB ────────────
+    if precision < 0.55:
+        logger.warning(
+            f"[calibration_trainer] {symbol}: precision={precision} below 0.55 gate "
+            f"— keeping existing calibration"
+        )
+        return None
+
     importances = {
         feat: round(float(imp), 4)
         for feat, imp in zip(feature_cols, model.feature_importances_)
     }
-    logger.info(f"[calibration_trainer] {symbol}: feature importances = {importances}")
+    logger.info(f"[calibration_trainer] {symbol}: feature importances={importances}")
 
-    # ── Extract per-feature thresholds ────────────────────────
     feat_idx = {f: i for i, f in enumerate(feature_cols)}
 
     def thresh(feat, direction="above"):
@@ -256,43 +227,33 @@ async def train_symbol(symbol: str, strategy_name: str) -> dict | None:
         "symbol":   symbol,
         "strategy": strategy_name,
 
-        # V75 thresholds
-        "rsi_buy_max":    thresh("rsi",       direction="below"),   # low RSI = oversold = BUY
-        "rsi_sell_min":   thresh("rsi",       direction="above"),   # high RSI = overbought = SELL
+        "rsi_buy_max":    thresh("rsi",       direction="below"),
+        "rsi_sell_min":   thresh("rsi",       direction="above"),
         "adx_min":        thresh("adx",       direction="above"),
-        "tss_min":        int(thresh("tss_score",  direction="above") or 3),
-        "checklist_min":  int(thresh("checklist",  direction="above") or 4),
+        "tss_min":        int(thresh("tss_score", direction="above") or 3),
+        "checklist_min":  4,
         "confidence_min": thresh("confidence", direction="above"),
+        "spike_min":      thresh("drop_spike", direction="above"),
+        "recovery_min":   thresh("recovery",   direction="above"),
 
-        # Crash500 thresholds
-        "spike_min":    thresh("drop_spike",  direction="above"),
-        "recovery_min": thresh("recovery",    direction="above"),
-
-        # Metadata
-        "n_samples":   len(X),
-        "precision":   precision,
-        "recall":      recall,
-        "f1":          f1,
+        "n_samples":              len(X),
+        "precision":              precision,
+        "recall":                 recall,
+        "f1":                     f1,
         "feature_importance_json": json.dumps(importances),
     }
 
-    # Fall back hard-coded defaults for any threshold that came back None
     defaults = HARD_CODED_DEFAULTS.get(symbol, {})
     for key, default_val in defaults.items():
         if calibration.get(key) is None and default_val is not None:
             calibration[key] = default_val
-            logger.info(
-                f"[calibration_trainer] {symbol}: {key} → using hard-coded default {default_val}"
-            )
 
     return calibration
 
 
 async def write_calibration(calibration: dict) -> None:
-    """Upsert one CalibrationConfig row."""
     symbol = calibration["symbol"]
     async with AsyncSessionLocal() as db:
-        # Delete old row if present (simpler than upsert across DB engines)
         await db.execute(
             delete(CalibrationConfig).where(CalibrationConfig.symbol == symbol)
         )
@@ -302,26 +263,10 @@ async def write_calibration(calibration: dict) -> None:
         })
         db.add(row)
         await db.commit()
-
     logger.info(f"[calibration_trainer] wrote CalibrationConfig for {symbol}")
 
 
-# ============================================================
-# MAIN ENTRY POINT
-# ============================================================
-
-SYMBOL_STRATEGY_MAP = {
-    "R_75":     "V75",
-    "CRASH500": "Crash500",
-}
-
-
 async def run_trainer() -> None:
-    """
-    Train models for all known symbols.
-    Called from signal_engine.run_signal_loop() on a schedule,
-    or standalone via __main__.
-    """
     for symbol, strategy_name in SYMBOL_STRATEGY_MAP.items():
         try:
             calibration = await train_symbol(symbol, strategy_name)
