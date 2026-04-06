@@ -197,6 +197,16 @@ async def debug_run_trainer():
     except Exception as e:
         return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
 
+@app.get("/debug/reload-calibration")
+async def debug_reload_calibration():
+    import traceback
+    try:
+        from ml.calibration_loader import force_reload
+        await force_reload()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
+
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
 
