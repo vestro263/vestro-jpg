@@ -15,7 +15,8 @@ from datetime import datetime
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds
 from ml.outcome_labeler    import run_labeler
-from ml.calibration_trainer import run_trainer
+
+from ml.walk_forward_validator import run_validator
 
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
@@ -311,8 +312,9 @@ async def run_signal_loop():
             # Train every hour
             if _loop_count % 120 == 0:
                 asyncio.create_task(
-                    run_trainer(),
+                    run_validator(),  # ← change this
                     name=f"calibration-trainer-{_loop_count}"
                 )
+
 
         await asyncio.sleep(30)
