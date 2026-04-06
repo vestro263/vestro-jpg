@@ -186,6 +186,19 @@ async def ml_detail(db: AsyncSession = Depends(get_db)):
         "has_entry_price":   r2.scalar(),
         "no_entry_price":    r3.scalar(),
     }
+
+@app.get("/debug/label-dist")
+async def label_dist(db: AsyncSession = Depends(get_db)):
+
+    r = await db.execute(text("""
+        SELECT label_15m, COUNT(*) 
+        FROM signal_logs 
+        WHERE label_15m IS NOT NULL
+        GROUP BY label_15m
+        ORDER BY label_15m
+    """))
+    mapping = {-1: "LOSS", 0: "NEUTRAL", 1: "WIN"}
+    return {mapping.get(row[0], str(row[0])): row[1] for row in r.fetchall()}
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
