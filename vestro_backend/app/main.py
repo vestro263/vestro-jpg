@@ -225,6 +225,24 @@ async def debug_crash500_labels(db: AsyncSession = Depends(get_db)):
     """))
     return [{"signal": r[0], "label": r[1], "count": r[2]} for r in result.fetchall()]
 
+@app.get("/debug/crash500-spikes")
+async def debug_crash500_spikes(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(text("""
+        SELECT 
+            ROUND(AVG(drop_spike::numeric), 4) as avg_spike,
+            ROUND(MAX(drop_spike::numeric), 4) as max_spike,
+            ROUND(MIN(drop_spike::numeric), 4) as min_spike,
+            PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY drop_spike) as p90_spike,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY drop_spike) as p95_spike,
+            COUNT(*) as total
+        FROM signal_logs
+        WHERE symbol = 'CRASH500' AND drop_spike IS NOT NULL
+    """))
+    row = result.fetchone()
+    return {
+        "avg": row[0], "max": row[1], "min": row[2],
+        "p90": row[3], "p95": row[4], "total": row[5]
+    }
 
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
