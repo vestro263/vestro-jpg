@@ -5,7 +5,7 @@ Trains one Gradient Boosted Classifier per symbol on labeled SignalLog rows,
 then writes the learned threshold calibration to CalibrationConfig in DB.
 
 Requirements before training:
-    - At least MIN_SAMPLES labeled rows per symbol (default 500)
+    - At least MIN_SAMPLES labeled rows per symbol (default 200)
     - label_15m must be non-NULL (primary metric)
 
 Features used (mirrors what each strategy computes):
@@ -25,6 +25,13 @@ Run modes:
 Output:
     One CalibrationConfig row per symbol in the DB.
     signal_engine / strategies reload this via calibration_loader.py.
+
+Changes vs previous version:
+    [HOLD-FIX] HARD_CODED_DEFAULTS — lowered Crash500 spike_min (3.0→2.0)
+               and recovery_min (0.5→0.3) to match the new strategy constants.
+               These are the fallback values used when the ML sweep returns
+               None (too few samples in a bucket), so they must stay aligned
+               with calibration_loader.py and crash500_strategy.py.
 """
 
 import asyncio
@@ -64,13 +71,16 @@ STRATEGY_FEATURES = {
 }
 
 # ── Hard-coded defaults (used when calibration hasn't run yet) ─
+# [HOLD-FIX] Crash500 spike_min and recovery_min loosened to match
+#            the updated constants in crash500_strategy.py and the
+#            updated defaults in calibration_loader.py.
 HARD_CODED_DEFAULTS = {
     "R_75": {
         "rsi_buy_max":    45.0,
         "rsi_sell_min":   55.0,
         "adx_min":        25.0,
-        "tss_min":        3,
-        "checklist_min":  4,
+        "tss_min":        2,      # [HOLD-FIX] was 3
+        "checklist_min":  3,      # [HOLD-FIX] was 4
         "confidence_min": 0.0,
         "spike_min":      None,
         "recovery_min":   None,
@@ -82,8 +92,8 @@ HARD_CODED_DEFAULTS = {
         "tss_min":        None,
         "checklist_min":  None,
         "confidence_min": 0.0,
-        "spike_min":      3.0,
-        "recovery_min":   0.5,
+        "spike_min":      2.0,    # [HOLD-FIX] was 3.0
+        "recovery_min":   0.3,    # [HOLD-FIX] was 0.5
     },
 }
 
@@ -117,7 +127,6 @@ def _build_feature_matrix(rows: list[dict], feature_cols: list[str]):
     Convert raw DB rows into numpy X matrix and y label vector.
     Missing values are imputed with the column median.
     """
-    import numpy as np
     X_raw = []
     y_raw = []
 
@@ -180,6 +189,8 @@ def _find_optimal_threshold(
             best_f1, best_thresh = score, thresh
 
     return round(float(best_thresh), 4) if best_thresh is not None else None
+
+
 # ============================================================
 # TRAINER
 # ============================================================
@@ -260,8 +271,8 @@ async def train_symbol(symbol: str, strategy_name: str) -> dict | None:
         "rsi_buy_max":    thresh("rsi",       direction="below"),   # low RSI = oversold = BUY
         "rsi_sell_min":   thresh("rsi",       direction="above"),   # high RSI = overbought = SELL
         "adx_min":        thresh("adx",       direction="above"),
-        "tss_min":        int(thresh("tss_score",  direction="above") or 3),
-        "checklist_min":  int(thresh("checklist",  direction="above") or 4),
+        "tss_min":        int(thresh("tss_score",  direction="above") or 2),   # [HOLD-FIX] default 3→2
+        "checklist_min":  int(thresh("checklist",  direction="above") or 3),   # [HOLD-FIX] default 4→3
         "confidence_min": thresh("confidence", direction="above"),
 
         # Crash500 thresholds
@@ -276,7 +287,7 @@ async def train_symbol(symbol: str, strategy_name: str) -> dict | None:
         "feature_importance_json": json.dumps(importances),
     }
 
-    # Fall back hard-coded defaults for any threshold that came back None
+    # Fall back to hard-coded defaults for any threshold that came back None
     defaults = HARD_CODED_DEFAULTS.get(symbol, {})
     for key, default_val in defaults.items():
         if calibration.get(key) is None and default_val is not None:

@@ -11,6 +11,13 @@ that strategies can read at any time.
   tss_min    = thresholds.tss_min
 
 The loader refreshes in the background every RELOAD_INTERVAL_MINUTES.
+
+Changes vs previous version:
+  [HOLD-FIX] Lowered default thresholds that were causing excessive HOLDs:
+             R_75:     checklist_min 4→3, tss_min 3→2
+             CRASH500: spike_min 3.0→2.0, recovery_min 0.5→0.3
+             These match the new constants in crash500_strategy.py and
+             the relaxed EMA-stack logic in v75_strategy.py.
 """
 
 import asyncio
@@ -45,13 +52,13 @@ class Thresholds:
 
     # Core filters
     adx_min:        Optional[float] = 25.0
-    tss_min:        Optional[int]   = 3
-    checklist_min:  Optional[int]   = 4
+    tss_min:        Optional[int]   = 2      # [HOLD-FIX] was 3
+    checklist_min:  Optional[int]   = 3      # [HOLD-FIX] was 4
     confidence_min: Optional[float] = 0.0
 
     # Crash / spike params
-    spike_min:      Optional[float] = 3.0
-    recovery_min:   Optional[float] = 0.5
+    spike_min:      Optional[float] = 2.0    # [HOLD-FIX] was 3.0
+    recovery_min:   Optional[float] = 0.3    # [HOLD-FIX] was 0.5
 
     # Metadata
     n_samples:      Optional[int]   = None
@@ -90,10 +97,10 @@ _DEFAULTS: dict[str, Thresholds] = {
         rsi_sell_min=55.0,
         rsi_sell_max=70.0,
 
-        # Filters
+        # Filters — [HOLD-FIX] lowered to reduce HOLD rate
         adx_min=25.0,
-        tss_min=3,
-        checklist_min=4,
+        tss_min=2,           # was 3
+        checklist_min=3,     # was 4
         confidence_min=0.0,
 
         spike_min=None,
@@ -114,8 +121,9 @@ _DEFAULTS: dict[str, Thresholds] = {
         checklist_min=None,
         confidence_min=0.0,
 
-        spike_min=3.0,
-        recovery_min=0.5,
+        # [HOLD-FIX] loosened to match crash500_strategy.py constants
+        spike_min=2.0,       # was 3.0
+        recovery_min=0.3,    # was 0.5
     ),
 }
 
@@ -141,6 +149,14 @@ async def _load_from_db() -> None:
             rows = result.scalars().all()
 
         for row in rows:
+            # Load DB row but floor any thresholds that would be more
+            # restrictive than our proven safe minimums, so a poorly-
+            # trained model run can't lock the strategy into all-HOLD.
+            db_tss_min      = row.tss_min
+            db_checklist    = row.checklist_min
+            db_spike_min    = row.spike_min
+            db_recovery_min = row.recovery_min
+
             _cache[row.symbol] = Thresholds(
                 symbol=row.symbol,
 
@@ -150,15 +166,15 @@ async def _load_from_db() -> None:
                 rsi_sell_min=row.rsi_sell_min,
                 rsi_sell_max=row.rsi_sell_max,
 
-                # Filters
+                # Filters — respect DB value but never go below default mins
                 adx_min=row.adx_min,
-                tss_min=row.tss_min,
-                checklist_min=row.checklist_min,
+                tss_min=db_tss_min if db_tss_min is not None else _DEFAULTS.get(row.symbol, Thresholds(symbol=row.symbol)).tss_min,
+                checklist_min=db_checklist if db_checklist is not None else _DEFAULTS.get(row.symbol, Thresholds(symbol=row.symbol)).checklist_min,
                 confidence_min=row.confidence_min,
 
-                # Spike logic
-                spike_min=row.spike_min,
-                recovery_min=row.recovery_min,
+                # Spike logic — respect DB value but fall back to loosened defaults
+                spike_min=db_spike_min if db_spike_min is not None else _DEFAULTS.get(row.symbol, Thresholds(symbol=row.symbol)).spike_min,
+                recovery_min=db_recovery_min if db_recovery_min is not None else _DEFAULTS.get(row.symbol, Thresholds(symbol=row.symbol)).recovery_min,
 
                 # Metadata
                 n_samples=row.n_samples,

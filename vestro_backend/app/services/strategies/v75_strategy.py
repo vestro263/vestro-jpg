@@ -4,14 +4,14 @@ v75_strategy.py
 VESTRO V75 Strategy — Volatility 75 Index
 5-phase pipeline: Data → Features → Patterns → Predict → Risk
 
-Fixes in this revision vs pasted version:
-  [1] _PatternExtractor.__init__ — removed self-referential type hint,
-      added thresholds param properly
-  [2] _PredictionEngine.__init__ — added thresholds to signature
-  [3] compute_signal() — fixed attribute names: min_confidence →
-      confidence_min, min_tss → tss_min (match Thresholds dataclass)
-  [4] _PatternExtractor() and _PredictionEngine() instantiation in
-      compute_signal() — now passes thresholds correctly
+Changes vs previous version:
+  [HOLD-FIX-1] _PredictionEngine.predict() — replaced strict 3-EMA stack
+               requirement with 2-of-3 majority vote. The old check
+               (ema21 > ema50 > ema200 ALL at once) is almost never true
+               on a synthetic volatility index, causing ~60% of signals
+               to HOLD with reason "EMA stack indeterminate".
+  [HOLD-FIX-2] calibration_loader defaults referenced here via comments —
+               checklist_min lowered to 3, tss_min lowered to 2.
 """
 
 import httpx
@@ -136,7 +136,6 @@ class _FeatureEngine:
 # ============================================================
 
 class _PatternExtractor:
-    # FIX [1]: removed self-referential type hint, added thresholds param
     def __init__(self, candles: list, features: dict, thresholds):
         self.candles    = candles
         self.features   = features
@@ -198,7 +197,6 @@ class _PatternExtractor:
 # ============================================================
 
 class _PredictionEngine:
-    # FIX [2]: added thresholds to signature
     def __init__(self, patterns: _PatternExtractor, features: dict, candles: list, thresholds):
         self.patterns   = patterns
         self.features   = features
@@ -273,21 +271,40 @@ class _PredictionEngine:
                 "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0,
             }
 
-        bull_stack = ema21[-1] > ema50[-1] > ema200[-1]
-        bear_stack = ema21[-1] < ema50[-1] < ema200[-1]
-        direction  = "buy" if bull_stack else ("sell" if bear_stack else None)
+        # ── [HOLD-FIX-1] 2-of-3 EMA majority instead of strict full stack ──
+        # Old code required ema21 > ema50 > ema200 ALL simultaneously — almost
+        # never true on V75 (synthetic index), causing ~60% of signals to HOLD.
+        # New code: count how many pairwise comparisons point bull vs bear.
+        ema21_v  = ema21[-1]
+        ema50_v  = ema50[-1]
+        ema200_v = ema200[-1]
 
-        if not direction:
+        bull_points = sum([
+            ema21_v > ema50_v,
+            ema50_v > ema200_v,
+            ema21_v > ema200_v,
+        ])
+        bear_points = sum([
+            ema21_v < ema50_v,
+            ema50_v < ema200_v,
+            ema21_v < ema200_v,
+        ])
+
+        if bull_points >= 2:
+            direction = "buy"
+        elif bear_points >= 2:
+            direction = "sell"
+        else:
             return {
-                "signal": "HOLD", "reason": "EMA stack indeterminate",
+                "signal": "HOLD", "reason": "EMA stack indeterminate (tied 1-1-1)",
                 "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0,
             }
 
         checklist = self._entry_checklist(direction)
 
-        # FIX [3]: correct attribute names — tss_min not min_tss,
-        #          checklist_min not min_checklist
-        min_checklist = getattr(self.thresholds, "checklist_min", 4)
+        # Defaults lowered vs original: checklist_min 4→3, tss_min 3→2
+        # (also updated in calibration_loader.py _DEFAULTS)
+        min_checklist = getattr(self.thresholds, "checklist_min", 3)
         min_tss       = getattr(self.thresholds, "tss_min",       2)
 
         if checklist < min_checklist or tss < min_tss:
@@ -297,11 +314,10 @@ class _PredictionEngine:
                 "tss": tss, "checklist": checklist, "atr_zone": atr_zone, "confidence": 0.0,
             }
 
-        w_tss = getattr(self.thresholds, "w_tss",      0.5)
+        w_tss = getattr(self.thresholds, "w_tss",       0.5)
         w_chk = getattr(self.thresholds, "w_checklist", 0.5)
         confidence = min(1.0, (tss / 5) * w_tss + (checklist / 7) * w_chk)
 
-        # FIX [3]: correct attribute name — confidence_min not min_confidence
         min_conf = getattr(self.thresholds, "confidence_min", 0.0)
         if confidence < min_conf:
             return {
@@ -432,7 +448,6 @@ class V75Strategy(BaseStrategy):
 
         features = _FeatureEngine(candles).build_all()
 
-        # FIX [4]: pass thresholds into both engines
         patterns  = _PatternExtractor(candles, features, t)
         predictor = _PredictionEngine(patterns, features, candles, t)
         result    = predictor.predict()
@@ -486,7 +501,6 @@ class V75Strategy(BaseStrategy):
             "confidence": confidence,
             "reason":     result.get("reason", ""),
             "amount":     lot if result["signal"] != "HOLD" else 0.0,
-            # indicators key is read by signal_logger._extract_features()
             "indicators": indicators,
             "meta": {
                 "tss":        tss,
@@ -500,6 +514,7 @@ class V75Strategy(BaseStrategy):
                 "thresholds": {
                     "confidence_min": t.confidence_min,
                     "tss_min":        t.tss_min,
+                    "checklist_min":  t.checklist_min,
                     "sl_atr_mult":    getattr(t, "sl_atr_mult", 1.5),
                 },
             },

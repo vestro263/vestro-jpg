@@ -6,10 +6,24 @@ Wraps the Crash500 logic into BaseStrategy so strategy_runner
 can call it the same way as V75.
 
 Entry checklist (ALL must pass):
-  [1] SPIKE DEPTH     >= 3.0pts drop within last 8s
-  [2] SPIKE RECOVERY  price bounced >= 0.5pts off spike low
+  [1] SPIKE DEPTH     >= 2.0pts drop within last 12s  (was 3.0 / 8s)
+  [2] SPIKE RECOVERY  price bounced >= 0.3pts off spike low  (was 0.5)
   [3] TREND ALIGNED   price now > price 30s ago
   [4] MOMENTUM OK     last 5 ticks net positive
+
+Changes vs previous version:
+  [HOLD-FIX-1] Fixed spike_low/recovery temporal misalignment.
+               Old code: self._spike_low was set to current bid at the
+               moment spike was detected, making recovery = bid - bid = 0.0
+               on that same cycle. Recovery only accumulated on subsequent
+               cycles, but the spike check often failed by then (window passed).
+               New code: spike_low tracks the running minimum seen at any
+               point after the spike was first detected, measured separately
+               from the spike detection window.
+  [HOLD-FIX-2] Loosened entry thresholds:
+               MIN_SPIKE_PTS  3.0 → 2.0
+               RECOVERY_PTS   0.5 → 0.3
+               SPIKE_WINDOW_S 8.0 → 12.0
 """
 
 import httpx
@@ -30,11 +44,14 @@ TP_POINTS   = 90.0
 RISK_PCT    = 0.01
 
 # ── Entry quality filters ─────────────────────────────────────
-MIN_SPIKE_PTS   = 3.0    # minimum drop to qualify as a spike
-RECOVERY_PTS    = 0.5    # bounce required off spike low
-SPIKE_WINDOW_S  = 8.0    # seconds to look back for spike
+MIN_SPIKE_PTS   = 2.0    # [HOLD-FIX-2] was 3.0 — minimum drop to qualify as a spike
+RECOVERY_PTS    = 0.3    # [HOLD-FIX-2] was 0.5 — bounce required off spike low
+SPIKE_WINDOW_S  = 12.0   # [HOLD-FIX-2] was 8.0 — seconds to look back for spike
 TREND_WINDOW_S  = 30.0   # seconds for broad trend check
 MICRO_TICKS     = 5      # last N ticks must be net positive
+
+# ── Spike low tracking ────────────────────────────────────────
+SPIKE_LOW_EXPIRY_S = 45.0   # seconds before a tracked spike low expires
 
 # ── Session discipline ────────────────────────────────────────
 MAX_TRADES    = 3
@@ -50,8 +67,15 @@ class Crash500Strategy(BaseStrategy):
         super().__init__(api_token, broadcast_fn, execute_trade_fn)
         self.balance         = balance
         self._price_history  = deque(maxlen=3000)   # ~10 min at 5Hz
-        self._spike_low      = None
-        self._spike_low_ts   = 0.0
+
+        # [HOLD-FIX-1] Separate spike detection state from spike_low tracking:
+        #   _spike_detected_ts: when we first saw a qualifying spike
+        #   _spike_low:         running minimum price seen after spike onset
+        #   _spike_low_ts:      last time _spike_low was updated (for expiry)
+        self._spike_detected_ts = 0.0
+        self._spike_low         = None
+        self._spike_low_ts      = 0.0
+
         self._trade_count    = 0
         self._last_trade_ts  = 0.0
 
@@ -123,47 +147,68 @@ class Crash500Strategy(BaseStrategy):
 
         prices = [p for _, p in hist]
 
-        # ── 🔥 CALIBRATED THRESHOLDS ──
-        spike_threshold = getattr(t, "spike_min", None) or MIN_SPIKE_PTS
+        # ── Calibrated thresholds with hard-coded fallbacks ──
+        spike_threshold    = getattr(t, "spike_min",    None) or MIN_SPIKE_PTS
         recovery_threshold = getattr(t, "recovery_min", None) or RECOVERY_PTS
 
-        # [1] Spike depth
-        cutoff_spike = now - SPIKE_WINDOW_S
+        # ── [1] Spike depth ───────────────────────────────────
+        # Find the highest price seen within the spike detection window.
+        # A spike means price has fallen sharply from that recent high.
+        cutoff_spike  = now - SPIKE_WINDOW_S
         recent_prices = [p for t_, p in hist if t_ >= cutoff_spike]
-        high_spike = max(recent_prices) if recent_prices else bid
-        drop_spike = high_spike - bid
+        window_high   = max(recent_prices) if recent_prices else bid
+        drop_spike    = window_high - bid
+        spike_ok      = drop_spike >= spike_threshold
 
-        spike_ok = drop_spike >= spike_threshold
+        # ── [HOLD-FIX-1] Spike low tracking ──────────────────
+        # Track the running minimum independently from spike detection.
+        # When a spike is first seen, record the onset timestamp.
+        # Then on every subsequent cycle (spike still active or recently was),
+        # update spike_low to the minimum price seen so far.
+        # This means recovery = current_bid - lowest_point_after_spike,
+        # which correctly grows as price bounces — even when the spike
+        # is no longer visible in the current window.
 
-        # Track spike low
         if spike_ok:
-            if self._spike_low is None or bid < self._spike_low:
-                self._spike_low = bid
+            if self._spike_detected_ts == 0.0:
+                # First detection of this spike event
+                self._spike_detected_ts = now
+                self._spike_low         = bid
+                self._spike_low_ts      = now
+            elif bid < self._spike_low:
+                # Price continued falling — update the low
+                self._spike_low    = bid
                 self._spike_low_ts = now
 
-        # Expire stale spike low (45s)
-        if self._spike_low is not None and (now - self._spike_low_ts) > 45.0:
-            self._spike_low = None
-            self._spike_low_ts = 0.0
+        # Expire stale spike state after SPIKE_LOW_EXPIRY_S seconds
+        # measured from the last time spike_low was updated (i.e. from
+        # the bottom of the move, not from when it was first detected).
+        if (self._spike_low is not None and
+                (now - self._spike_low_ts) > SPIKE_LOW_EXPIRY_S):
+            self._spike_low         = None
+            self._spike_low_ts      = 0.0
+            self._spike_detected_ts = 0.0
 
-        # [2] Recovery off spike low
-        recovery = bid - self._spike_low if self._spike_low is not None else 0.0
-        recovery_ok = recovery >= recovery_threshold
+        # ── [2] Recovery off spike low ────────────────────────
+        # Only valid when we have a tracked spike low from this event
+        spike_active = self._spike_low is not None
+        recovery     = (bid - self._spike_low) if spike_active else 0.0
+        recovery_ok  = recovery >= recovery_threshold
 
-        # [3] Broad trend: bid > price 30s ago
+        # ── [3] Broad trend: bid > price 30s ago ─────────────
         cutoff_30s = now - TREND_WINDOW_S
         old_prices = [p for t_, p in hist if t_ <= cutoff_30s]
-        trend_ok = len(old_prices) > 0 and bid > old_prices[-1]
-        trend_ref = old_prices[-1] if old_prices else bid
+        trend_ok   = len(old_prices) > 0 and bid > old_prices[-1]
+        trend_ref  = old_prices[-1] if old_prices else bid
 
-        # [4] Micro momentum
+        # ── [4] Micro momentum ────────────────────────────────
         micro_delta = 0.0
-        micro_ok = False
+        micro_ok    = False
         if len(prices) >= MICRO_TICKS + 1:
             micro_delta = bid - prices[-(MICRO_TICKS + 1)]
-            micro_ok = micro_delta > 0
+            micro_ok    = micro_delta > 0
 
-        score = sum([spike_ok, recovery_ok, trend_ok, micro_ok])
+        score  = sum([spike_ok, recovery_ok, trend_ok, micro_ok])
         passed = spike_ok and recovery_ok and trend_ok and micro_ok
 
         reason = (
@@ -196,9 +241,9 @@ class Crash500Strategy(BaseStrategy):
                 "tp": round(bid + TP_POINTS, 3),
                 "atr_zone": "elevated" if score >= 3 else "normal",
 
-                # 🔥 calibration snapshot (important for ML/debugging)
+                # Calibration snapshot (important for ML/debugging)
                 "thresholds": {
-                    "spike_min": spike_threshold,
+                    "spike_min":    spike_threshold,
                     "recovery_min": recovery_threshold,
                 }
             }
@@ -234,7 +279,6 @@ class Crash500Strategy(BaseStrategy):
     # ── Override run() to update trade tracking after execution ──
     async def run(self):
         """Extends base run() to track trade count and cooldown."""
-        # Call parent pipeline (fetch → signal → broadcast → gate → execute)
         signal = None
         try:
             market_data = await self.fetch_market_data()
@@ -254,11 +298,11 @@ class Crash500Strategy(BaseStrategy):
                 "action": signal["signal"],
                 "signal": {
                     "direction": 1 if signal["signal"] == "BUY" else 0,
-                    "rsi": 0,  # not computed — spike strategy doesn't use RSI
-                    "adx": 0,  # not computed — spike strategy doesn't use ADX
+                    "rsi": 0,
+                    "adx": 0,
                     "atr": round(signal["meta"].get("drop_spike", 0), 5),
-                    "ema50": 0,  # not computed
-                    "ema200": 0,  # not computed
+                    "ema50": 0,
+                    "ema200": 0,
                     "macd_hist": round(signal["meta"].get("recovery", 0), 5),
                     "tss_score": signal["meta"].get("score", 0),
                     "atr_zone": signal["meta"].get("atr_zone", "normal"),
@@ -286,9 +330,13 @@ class Crash500Strategy(BaseStrategy):
             self.logger.info(f"[{self.NAME}] trade result: {result}")
 
             # Update tracking
-            self._trade_count   += 1
-            self._last_trade_ts  = time.time()
-            self._spike_low      = None   # reset after trade fires
+            self._trade_count    += 1
+            self._last_trade_ts   = time.time()
+            # Reset spike state after a trade fires so we don't
+            # immediately re-enter on the same spike event
+            self._spike_low          = None
+            self._spike_low_ts       = 0.0
+            self._spike_detected_ts  = 0.0
 
         except Exception as e:
             self.logger.error(f"[{self.NAME}] pipeline error: {e}")
@@ -317,7 +365,8 @@ class Crash500Strategy(BaseStrategy):
         return round(max(0.2, min(snapped, 290.0)), 2)
 
     def reset_session(self):
-        self._trade_count  = 0
-        self._spike_low    = None
-        self._spike_low_ts = 0.0
+        self._trade_count       = 0
+        self._spike_low         = None
+        self._spike_low_ts      = 0.0
+        self._spike_detected_ts = 0.0
         self.logger.info(f"[{self.NAME}] session reset")
