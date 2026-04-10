@@ -162,16 +162,6 @@ async def check_ml_data(db: AsyncSession = Depends(get_db)):
 
     return results
 
-@app.post("/debug/purge-old-holds")
-async def purge_old_holds(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text("""
-        DELETE FROM signal_logs
-        WHERE signal = 'HOLD'
-        AND label_15m IS NULL
-        AND captured_at < NOW() - INTERVAL '2 hours'
-    """))
-    await db.commit()
-    return {"deleted": result.rowcount}
 
 @app.get("/debug/tables")
 async def list_tables(db: AsyncSession = Depends(get_db)):

@@ -15,7 +15,6 @@ from datetime import datetime
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds
 from ml.outcome_labeler    import run_labeler
-
 from ml.walk_forward_validator import run_validator
 
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
@@ -125,121 +124,159 @@ async def fetch_deriv_balance(api_token: str) -> float:
 
 
 # ============================================================
-# MAIN SIGNAL LOOP
+# MARKET SIGNAL COMPUTATION (once per cycle, not per credential)
 # ============================================================
 
-async def process_deriv_account(cred, runner_is_live: bool = False):
-    for symbol in ["R_75"]:
-        try:
-            api_token = decrypt(cred.password)
-            closes    = list(await fetch_deriv_ticks(api_token, symbol))
+async def compute_r75_signal(api_token: str) -> dict | None:
+    """
+    Fetch R_75 ticks and compute signal indicators once per loop cycle.
+    Returns a signal dict, or None on error.
+    This is called once and the result is shared across all credentials.
+    """
+    try:
+        closes  = list(await fetch_deriv_ticks(api_token, "R_75"))
 
-            rsi      = compute_rsi(closes)
-            ma_fast  = compute_ma(closes, 5)
-            ma_slow  = compute_ma(closes, 20)
-            atr_val  = compute_atr(closes)
-            adx_val  = compute_adx(closes)
-            macd_val = compute_macd(closes)
-            ema50    = compute_ema(closes, 50)
-            ema200   = compute_ema(closes, 200)
-            ema21    = compute_ema(closes, 21)
+        rsi      = compute_rsi(closes)
+        ma_fast  = compute_ma(closes, 5)
+        ma_slow  = compute_ma(closes, 20)
+        atr_val  = compute_atr(closes)
+        adx_val  = compute_adx(closes)
+        macd_val = compute_macd(closes)
+        ema50    = compute_ema(closes, 50)
+        ema200   = compute_ema(closes, 200)
+        ema21    = compute_ema(closes, 21)
 
-            tss = 0
-            if ema21 > ema50 > ema200 or ema21 < ema50 < ema200: tss += 1
-            if adx_val > 25:                                      tss += 1
-            if closes[-1] > ema200:                               tss += 1
-            if macd_val > 0:                                      tss += 1
-            tss += 1  # base point
+        tss = 0
+        if ema21 > ema50 > ema200 or ema21 < ema50 < ema200: tss += 1
+        if adx_val > 25:                                      tss += 1
+        if closes[-1] > ema200:                               tss += 1
+        if macd_val > 0:                                      tss += 1
+        tss += 1  # base point
 
-            if len(closes) >= 21:
-                atrs    = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
-                avg_atr = float(np.mean(atrs[-21:-1]))
-                ratio   = atr_val / (avg_atr + 1e-10)
-                if ratio < 0.5:   atr_zone = "low"
-                elif ratio < 1.5: atr_zone = "normal"
-                elif ratio < 2.5: atr_zone = "elevated"
-                else:             atr_zone = "extreme"
-            else:
-                atr_zone = "normal"
+        if len(closes) >= 21:
+            atrs    = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+            avg_atr = float(np.mean(atrs[-21:-1]))
+            ratio   = atr_val / (avg_atr + 1e-10)
+            if ratio < 0.5:   atr_zone = "low"
+            elif ratio < 1.5: atr_zone = "normal"
+            elif ratio < 2.5: atr_zone = "elevated"
+            else:             atr_zone = "extreme"
+        else:
+            atr_zone = "normal"
 
-            macd_bullish = macd_val > 0
-            macd_bearish = macd_val < 0
+        macd_bullish = macd_val > 0
+        macd_bearish = macd_val < 0
 
-            if macd_bullish and rsi < 60:
-                signal = "BUY"
-            elif macd_bearish and rsi > 40:
-                signal = "SELL"
-            else:
-                signal = "HOLD"
+        if macd_bullish and rsi < 60:
+            signal = "BUY"
+        elif macd_bearish and rsi > 40:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
 
-            bot_running = _is_bot_running()
-
-            print(f"[deriv:{cred.user_id}:{symbol}] RSI={rsi:.1f} TSS={tss}/5 "
-                  f"ATR={atr_zone} MACD={'bull' if macd_bullish else 'bear'} "
-                  f"signal={signal} bot={bot_running} "
-                  f"runner={'live' if runner_is_live else 'off'}")
-
-            await broadcast_to_frontend({
-                "symbol": symbol,
-                "action": signal,
-                "signal": {
-                    "direction":  1 if signal == "BUY" else (-1 if signal == "SELL" else 0),
-                    "rsi":        round(rsi, 2),
-                    "adx":        round(adx_val, 2),
-                    "atr":        round(atr_val, 5),
-                    "ema50":      round(ema50, 4),
-                    "ema200":     round(ema200, 4),
-                    "macd_hist":  round(macd_val, 5),
-                    "tss_score":  tss,
-                    "atr_zone":   atr_zone,
-                }
-            })
-
-            # Save signal to DB for ML labeling
-            try:
+        return {
+            "signal":       signal,
+            "closes":       closes,
+            "rsi":          rsi,
+            "adx":          adx_val,
+            "atr":          atr_val,
+            "ema50":        ema50,
+            "ema200":       ema200,
+            "macd_val":     macd_val,
+            "macd_bullish": macd_bullish,
+            "tss":          tss,
+            "atr_zone":     atr_zone,
+        }
+    except Exception as e:
+        print(f"[signal_engine] compute_r75_signal error: {e}")
+        return None
 
 
-                entry_price = closes[-1]
-                atr_val_now = atr_val
-                direction = 1 if signal == "BUY" else (-1 if signal == "SELL" else 0)
+async def log_r75_signal(sig: dict) -> None:
+    """
+    Write one SignalLog row per market cycle — not per credential.
+    Only BUY/SELL signals are logged; HOLD rows are skipped to avoid
+    flooding the DB with unlabeled noise.
+    """
+    if sig["signal"] == "HOLD":
+        return
 
-                tp = entry_price + atr_val_now if direction == 1 else entry_price - atr_val_now
-                sl = entry_price - atr_val_now if direction == 1 else entry_price + atr_val_now
+    try:
+        entry_price = sig["closes"][-1]
+        atr_val     = sig["atr"]
+        direction   = 1 if sig["signal"] == "BUY" else -1
+        tp = entry_price + atr_val if direction == 1 else entry_price - atr_val
+        sl = entry_price - atr_val if direction == 1 else entry_price + atr_val
 
-                async with AsyncSessionLocal() as db:
-                    db.add(SignalLog(
-                        strategy="V75",
-                        symbol=symbol,
-                        signal=signal,
-                        direction=direction,
-                        entry_price=entry_price,
-                        tp_price=tp if signal != "HOLD" else None,
-                        sl_price=sl if signal != "HOLD" else None,
-                        rsi=round(rsi, 2),
-                        adx=round(adx_val, 2),
-                        atr=round(atr_val, 5),
-                        ema_50=round(ema50, 4),
-                        ema_200=round(ema200, 4),
-                        macd_hist=round(macd_val, 5),
-                        tss_score=tss,
-                        atr_zone=atr_zone,
-                        confidence=0.0,
-                        captured_at=datetime.utcnow(),
-                    ))
-                    await db.commit()
-            except Exception as log_err:
-                print(f"[signal_engine] SignalLog insert error: {log_err}")
+        async with AsyncSessionLocal() as db:
+            db.add(SignalLog(
+                strategy    = "V75",
+                symbol      = "R_75",
+                signal      = sig["signal"],
+                direction   = direction,
+                entry_price = entry_price,
+                tp_price    = tp,
+                sl_price    = sl,
+                rsi         = round(sig["rsi"], 2),
+                adx         = round(sig["adx"], 2),
+                atr         = round(sig["atr"], 5),
+                ema_50      = round(sig["ema50"], 4),
+                ema_200     = round(sig["ema200"], 4),
+                macd_hist   = round(sig["macd_val"], 5),
+                tss_score   = sig["tss"],
+                atr_zone    = sig["atr_zone"],
+                confidence  = 0.0,
+                captured_at = datetime.utcnow(),
+            ))
+            await db.commit()
+    except Exception as log_err:
+        print(f"[signal_engine] SignalLog insert error: {log_err}")
 
-            if runner_is_live:
-                continue
 
-            if signal != "HOLD" and bot_running and atr_zone != "extreme" and tss >= 3:
-                print(f"[deriv:{cred.user_id}:{symbol}] EXECUTING {signal}")
-                result = await execute_trade(symbol, signal, 1.0)
-                print(f"[deriv:{cred.user_id}:{symbol}] trade result: {result}")
+# ============================================================
+# PER-CREDENTIAL BROADCAST + EXECUTION
+# ============================================================
 
-        except Exception as e:
-            print(f"[signal_engine] deriv error [{cred.user_id}:{symbol}]: {e}")
+async def process_deriv_account(cred, sig: dict, runner_is_live: bool = False):
+    """
+    Broadcast the pre-computed signal and optionally execute a trade
+    for this credential. Signal computation and DB logging happen once
+    upstream — this function only handles per-account concerns.
+    """
+    symbol      = "R_75"
+    signal      = sig["signal"]
+    atr_zone    = sig["atr_zone"]
+    tss         = sig["tss"]
+    bot_running = _is_bot_running()
+
+    print(f"[deriv:{cred.user_id}:{symbol}] RSI={sig['rsi']:.1f} TSS={tss}/5 "
+          f"ATR={atr_zone} MACD={'bull' if sig['macd_bullish'] else 'bear'} "
+          f"signal={signal} bot={bot_running} "
+          f"runner={'live' if runner_is_live else 'off'}")
+
+    await broadcast_to_frontend({
+        "symbol": symbol,
+        "action": signal,
+        "signal": {
+            "direction":  1 if signal == "BUY" else (-1 if signal == "SELL" else 0),
+            "rsi":        round(sig["rsi"], 2),
+            "adx":        round(sig["adx"], 2),
+            "atr":        round(sig["atr"], 5),
+            "ema50":      round(sig["ema50"], 4),
+            "ema200":     round(sig["ema200"], 4),
+            "macd_hist":  round(sig["macd_val"], 5),
+            "tss_score":  tss,
+            "atr_zone":   atr_zone,
+        }
+    })
+
+    if runner_is_live:
+        return
+
+    if signal != "HOLD" and bot_running and atr_zone != "extreme" and tss >= 3:
+        print(f"[deriv:{cred.user_id}:{symbol}] EXECUTING {signal}")
+        result = await execute_trade(symbol, signal, 1.0)
+        print(f"[deriv:{cred.user_id}:{symbol}] trade result: {result}")
 
 
 # ============================================================
@@ -266,12 +303,17 @@ async def _boot_strategy_runner(api_token: str) -> None:
     _strategy_runner_task = asyncio.create_task(runner.start(), name="strategy-runner")
     print(f"[signal_engine] StrategyRunner booted — balance={balance} ✓")
 
+
+# ============================================================
+# MAIN SIGNAL LOOP
+# ============================================================
+
 async def run_signal_loop():
     print("[signal_engine] starting...")
     await asyncio.sleep(5)
 
     _loop_count = 0
-    deriv_cred = None  # ← initialize here so it's always defined
+    deriv_cred  = None
 
     while True:
         try:
@@ -290,9 +332,19 @@ async def run_signal_loop():
 
             runner_live = _runner_is_alive()
 
-            for cred in creds:
-                if cred.broker == "deriv":
-                    await process_deriv_account(cred, runner_is_live=runner_live)
+            # ── Compute R_75 signal ONCE per cycle ──────────────
+            sig = None
+            if deriv_cred:
+                sig = await compute_r75_signal(decrypt(deriv_cred.password))
+
+            if sig:
+                # Log to DB once (BUY/SELL only, not HOLD)
+                await log_r75_signal(sig)
+
+                # Broadcast + execute per credential
+                deriv_creds = [c for c in creds if c.broker == "deriv"]
+                for cred in deriv_creds:
+                    await process_deriv_account(cred, sig, runner_is_live=runner_live)
 
         except Exception as e:
             print(f"[signal_engine] loop error: {e}")
@@ -312,9 +364,8 @@ async def run_signal_loop():
             # Train every hour
             if _loop_count % 120 == 0:
                 asyncio.create_task(
-                    run_validator(),  # ← change this
+                    run_validator(),
                     name=f"calibration-trainer-{_loop_count}"
                 )
-
 
         await asyncio.sleep(30)

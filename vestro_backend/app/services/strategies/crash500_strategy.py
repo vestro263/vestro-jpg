@@ -284,7 +284,9 @@ class Crash500Strategy(BaseStrategy):
             market_data = await self.fetch_market_data()
             signal      = await self.compute_signal(market_data)
 
-            log_id = await log_signal(signal, strategy_name=self.NAME)
+            log_id = None
+            if signal["signal"] != "HOLD":
+                log_id = await log_signal(signal, strategy_name=self.NAME)
 
             self.logger.info(
                 f"[{self.NAME}] signal={signal['signal']} "
