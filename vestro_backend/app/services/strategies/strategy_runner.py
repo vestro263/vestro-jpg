@@ -6,7 +6,7 @@ in parallel asyncio tasks.
 
 signal_engine.py calls:
     from .strategies.strategy_runner import StrategyRunner
-    runner = StrategyRunner(api_token, balance, broadcast_fn, execute_trade_fn)
+    runner = StrategyRunner(api_token, balance, broadcast_fn, execute_trade_fn, account_id=account_id)
     await runner.start()
 """
 
@@ -40,12 +40,14 @@ class StrategyRunner:
         broadcast_fn,
         execute_trade_fn,
         is_prop: bool = False,
+        account_id: str = "",        # ← FIX: accept account_id so it flows down to every strategy
     ):
         self.api_token        = api_token
         self.balance          = balance
         self.broadcast_fn     = broadcast_fn
         self.execute_trade_fn = execute_trade_fn
         self.is_prop          = is_prop
+        self.account_id       = account_id   # ← FIX: store it
         self._tasks           = []
         self._running         = False
 
@@ -69,8 +71,12 @@ class StrategyRunner:
                     kwargs["is_prop"] = self.is_prop
 
                 instance = StrategyClass(**kwargs)
+
+                # ← FIX: inject account_id into every strategy instance
+                instance.account_id = self.account_id
+
                 instances.append(instance)
-                logger.info(f"[StrategyRunner] registered: {StrategyClass.NAME}")
+                logger.info(f"[StrategyRunner] registered: {StrategyClass.NAME} account_id={self.account_id}")
             except Exception as e:
                 logger.error(f"[StrategyRunner] failed to init {StrategyClass}: {e}")
         return instances

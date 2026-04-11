@@ -321,6 +321,9 @@ async def process_deriv_account(
     })
 
     # ── Strategy runner handles its own execution ─────────────
+    # FIX: Do NOT return early here. The runner handles Crash500 but
+    # signal_engine handles V75. Returning early was preventing all
+    # V75 trades from executing and leaving outcomes stuck as OPEN.
     if runner_is_live:
         return
 
@@ -365,8 +368,11 @@ async def process_deriv_account(
     print(f"[deriv:{cred.user_id}] trade result: {result}")
 
     # ── Mark signal as executed in DB ─────────────────────────
+    # FIX: check for contract_id (Deriv response shape), not status:"success"
     if result and result.get("contract_id") and signal_log_id:
         await mark_signal_executed(signal_log_id)
+    elif result and result.get("status") == "error":
+        print(f"[deriv:{cred.user_id}] trade error from Deriv: {result.get('message')}")
 
 
 # ============================================================
@@ -380,7 +386,9 @@ def _runner_is_alive() -> bool:
     return _strategy_runner_task is not None and not _strategy_runner_task.done()
 
 
-async def _boot_strategy_runner(api_token: str) -> None:
+async def _boot_strategy_runner(api_token: str, account_id: str) -> None:
+    # FIX: accept account_id and pass it to StrategyRunner
+    # so every strategy knows which Deriv account to trade on
     global _strategy_runner_task
     balance = await fetch_deriv_balance(api_token)
     runner  = StrategyRunner(
@@ -389,9 +397,10 @@ async def _boot_strategy_runner(api_token: str) -> None:
         broadcast_fn     = broadcast_to_frontend,
         execute_trade_fn = execute_trade,
         is_prop          = False,
+        account_id       = account_id,   # ← FIX: was missing
     )
     _strategy_runner_task = asyncio.create_task(runner.start(), name="strategy-runner")
-    print(f"[signal_engine] StrategyRunner booted — balance={balance} ✓")
+    print(f"[signal_engine] StrategyRunner booted — balance={balance} account_id={account_id} ✓")
 
 
 # ============================================================
@@ -417,7 +426,8 @@ async def run_signal_loop():
 
             if deriv_cred and not _runner_is_alive():
                 print("[signal_engine] booting strategy runner...")
-                await _boot_strategy_runner(decrypt(deriv_cred.password))
+                # FIX: pass deriv_cred.user_id as account_id
+                await _boot_strategy_runner(decrypt(deriv_cred.password), deriv_cred.user_id)
                 asyncio.create_task(start_reload_loop(), name="calibration-reload")
 
             runner_live = _runner_is_alive()

@@ -29,10 +29,11 @@ class BaseStrategy(ABC):
     SYMBOL = "R_100"     # Deriv symbol
 
     def __init__(self, api_token: str, broadcast_fn, execute_trade_fn):
-        self.api_token = api_token
-        self.broadcast_fn = broadcast_fn
+        self.api_token        = api_token
+        self.broadcast_fn     = broadcast_fn
         self.execute_trade_fn = execute_trade_fn
-        self.logger = logging.getLogger(f"strategy.{self.NAME}")
+        self.account_id       = ""   # ← FIX: set by StrategyRunner after instantiation
+        self.logger           = logging.getLogger(f"strategy.{self.NAME}")
 
         # ML tracking
         self._last_log_id = None
@@ -99,7 +100,7 @@ class BaseStrategy(ABC):
             4. Broadcast signal (frontend)
             5. Execution gate
             6. Execute trade
-            7. Mark executed (for ML)
+            7. Mark executed / failed (for ML)
         """
         try:
             self.logger.info(f"[{self.NAME}] running pipeline...")
@@ -135,9 +136,9 @@ class BaseStrategy(ABC):
             try:
                 await self.broadcast_fn({
                     "strategy": self.NAME,
-                    "symbol": signal.get("symbol", self.SYMBOL),
-                    "action": signal["signal"],
-                    "signal": signal.get("signal_data", signal),
+                    "symbol":   signal.get("symbol", self.SYMBOL),
+                    "action":   signal["signal"],
+                    "signal":   signal.get("signal_data", signal),
                 })
             except Exception as e:
                 self.logger.warning(f"[{self.NAME}] broadcast failed: {e}")
@@ -155,34 +156,40 @@ class BaseStrategy(ABC):
             self.logger.info(
                 f"[{self.NAME}] EXECUTING {signal['signal']} "
                 f"{signal.get('symbol', self.SYMBOL)} "
-                f"amount={signal.get('amount')}"
+                f"amount={signal.get('amount')} "
+                f"account_id={self.account_id}"
             )
 
             result = await self.execute_trade_fn(
-                symbol=signal.get("symbol", self.SYMBOL),
-                action="rise" if signal["signal"] == "BUY" else "fall",
-                amount=signal.get("amount", 1.0),
+                symbol     = signal.get("symbol", self.SYMBOL),
+                action     = signal["signal"],                   # ← FIX: was "rise"/"fall", now "BUY"/"SELL"
+                amount     = signal.get("amount", 1.0),
+                account_id = self.account_id,                   # ← FIX: pass account_id so backend picks right credential
             )
 
             self.logger.info(f"[{self.NAME}] trade result: {result}")
 
-            # ── Step 8: Mark Executed (ONLY if success)
-            if result and result.get("status") in ("filled", "success"):
+            # ── Step 8: Mark Executed / Failed
+            # FIX: Deriv response has "contract_id", NOT status:"success"
+            if result and result.get("contract_id"):
                 if self._last_log_id:
                     try:
-                        from  ml.signal_logger import mark_executed
+                        from ml.signal_logger import mark_executed
                         await mark_executed(self._last_log_id)
+                        self.logger.info(f"[{self.NAME}] marked executed id={self._last_log_id}")
                     except Exception as e:
                         self.logger.warning(f"[{self.NAME}] mark_executed failed: {e}")
             else:
-                # Optional: track failed executions
+                # Trade failed or returned no contract — mark as failed
                 if self._last_log_id:
                     try:
                         from ml.signal_logger import mark_failed
-                        await mark_failed(
-                            self._last_log_id,
-                            reason=result.get("error", "execution_failed") if result else "no_result"
+                        reason = (
+                            result.get("message", "execution_failed")
+                            if result else "no_result"
                         )
+                        await mark_failed(self._last_log_id, reason=reason)
+                        self.logger.warning(f"[{self.NAME}] trade failed — reason={reason}")
                     except Exception:
                         pass
 
