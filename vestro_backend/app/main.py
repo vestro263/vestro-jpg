@@ -4,6 +4,7 @@ import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
