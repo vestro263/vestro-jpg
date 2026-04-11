@@ -328,6 +328,26 @@ async def execution_window(
         "signals":       data,
     }
 
+
+@app.post("/api/signal/mark-executed")
+async def mark_signal_executed(
+        payload: dict,
+        db: AsyncSession = Depends(get_db),
+):
+    signal_id = payload.get("signal_id")
+    if not signal_id:
+        raise HTTPException(status_code=400, detail="signal_id required")
+
+    await db.execute(text("""
+        UPDATE signal_logs
+        SET executed = true, executed_at = NOW()
+        WHERE id = :id
+    """), {"id": signal_id})
+    await db.commit()
+    return {"status": "ok", "id": signal_id}
+
+
+
 class OutcomeUpdate(BaseModel):
     signal_id:  str
     exit_price: float

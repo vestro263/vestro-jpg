@@ -442,8 +442,7 @@ class V75Strategy(BaseStrategy):
                 "signal": "HOLD", "symbol": self.SYMBOL,
                 "confidence": 0.0,
                 "reason": f"insufficient candles ({len(candles)}/220 needed)",
-                "amount": 0.0, "meta": {},
-                "indicators": {},
+                "amount": 0.0, "meta": {}, "indicators": {},
             }
 
         features = _FeatureEngine(candles).build_all()
@@ -452,9 +451,9 @@ class V75Strategy(BaseStrategy):
         predictor = _PredictionEngine(patterns, features, candles, t)
         result    = predictor.predict()
 
-        atr_val  = features["atr_14"][-1] if features.get("atr_14") else 1000
-        atr_zone = result.get("atr_zone", "normal")
-        tss      = result.get("tss", 0)
+        atr_val    = features["atr_14"][-1] if features.get("atr_14") else 1000
+        atr_zone   = result.get("atr_zone", "normal")
+        tss        = result.get("tss", 0)
         confidence = result.get("confidence", 0.0)
 
         risk     = _RiskManager(self.balance, self.is_prop)
@@ -467,13 +466,13 @@ class V75Strategy(BaseStrategy):
             atr_val   = atr_val,
         )
 
-        # Indicator snapshot — stored on signal dict so signal_logger can read it
+        # Indicator snapshot
         indicators = {
-            "rsi":       round(features["rsi_14"][-1], 2)        if features.get("rsi_14")        else None,
-            "adx":       round(features["adx_14"][-1], 2)        if features.get("adx_14")        else None,
+            "rsi":       round(features["rsi_14"][-1], 2)         if features.get("rsi_14")         else None,
+            "adx":       round(features["adx_14"][-1], 2)         if features.get("adx_14")         else None,
             "atr":       round(atr_val, 5),
-            "ema_50":    round(features["ema_50"][-1], 4)        if features.get("ema_50")        else None,
-            "ema_200":   round(features["ema_200"][-1], 4)       if features.get("ema_200")       else None,
+            "ema_50":    round(features["ema_50"][-1], 4)         if features.get("ema_50")         else None,
+            "ema_200":   round(features["ema_200"][-1], 4)        if features.get("ema_200")        else None,
             "macd_hist": round(features["macd_histogram"][-1], 5) if features.get("macd_histogram") else None,
         }
 
@@ -482,11 +481,11 @@ class V75Strategy(BaseStrategy):
             "action": result["signal"],
             "signal": {
                 "direction":  1 if result["signal"] == "BUY" else (-1 if result["signal"] == "SELL" else 0),
-                "rsi":        indicators["rsi"] or 0,
-                "adx":        indicators["adx"] or 0,
+                "rsi":        indicators["rsi"]      or 0,
+                "adx":        indicators["adx"]      or 0,
                 "atr":        indicators["atr"],
-                "ema50":      indicators["ema_50"]    or 0,
-                "ema200":     indicators["ema_200"]   or 0,
+                "ema50":      indicators["ema_50"]   or 0,
+                "ema200":     indicators["ema_200"]  or 0,
                 "macd_hist":  indicators["macd_hist"] or 0,
                 "tss_score":  tss,
                 "atr_zone":   atr_zone,
@@ -494,6 +493,44 @@ class V75Strategy(BaseStrategy):
                 "reason":     result.get("reason", ""),
             }
         })
+
+        # ── Write SignalLog row, capture id for execute() ─────────
+        signal_log_id = None
+        if result["signal"] != "HOLD":
+            from app.database import AsyncSessionLocal
+            from ml.signal_log_model import SignalLog
+            from datetime import datetime
+            try:
+                dirval = 1 if result["signal"] == "BUY" else -1
+                entry  = candles[-1]["close"]
+                row = SignalLog(
+                    strategy    = self.NAME,
+                    symbol      = self.SYMBOL,
+                    signal      = result["signal"],
+                    direction   = dirval,
+                    entry_price = entry,
+                    tp_price    = levels["tp"],
+                    sl_price    = levels["sl"],
+                    rsi         = indicators.get("rsi"),
+                    adx         = indicators.get("adx"),
+                    atr         = indicators.get("atr"),
+                    ema_50      = indicators.get("ema_50"),
+                    ema_200     = indicators.get("ema_200"),
+                    macd_hist   = indicators.get("macd_hist"),
+                    tss_score   = tss,
+                    checklist   = result.get("checklist"),
+                    atr_zone    = atr_zone,
+                    confidence  = confidence,
+                    captured_at = datetime.utcnow(),
+                )
+                async with AsyncSessionLocal() as db:
+                    db.add(row)
+                    await db.commit()
+                    await db.refresh(row)
+                    signal_log_id = row.id
+                    self.logger.info(f"[{self.NAME}] SignalLog written: {signal_log_id}")
+            except Exception as log_err:
+                self.logger.warning(f"[{self.NAME}] SignalLog insert failed: {log_err}")
 
         return {
             "signal":     result["signal"],
@@ -503,14 +540,15 @@ class V75Strategy(BaseStrategy):
             "amount":     lot if result["signal"] != "HOLD" else 0.0,
             "indicators": indicators,
             "meta": {
-                "tss":        tss,
-                "checklist":  result.get("checklist"),
-                "atr_zone":   atr_zone,
-                "atr_val":    round(atr_val, 4),
-                "sl":         levels["sl"],
-                "tp":         levels["tp"],
-                "entry":      candles[-1]["close"],
-                "balance":    self.balance,
+                "signal_log_id": signal_log_id,
+                "tss":           tss,
+                "checklist":     result.get("checklist"),
+                "atr_zone":      atr_zone,
+                "atr_val":       round(atr_val, 4),
+                "sl":            levels["sl"],
+                "tp":            levels["tp"],
+                "entry":         candles[-1]["close"],
+                "balance":       self.balance,
                 "thresholds": {
                     "confidence_min": t.confidence_min,
                     "tss_min":        t.tss_min,
@@ -525,16 +563,32 @@ class V75Strategy(BaseStrategy):
             async with httpx.AsyncClient() as client:
                 status      = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
                 bot_running = status.json().get("running", False)
+
             if not bot_running:
                 self.logger.info(f"[{self.NAME}] bot not running — skipping")
                 return False
+
             if signal.get("meta", {}).get("atr_zone") == "extreme":
                 self.logger.info(f"[{self.NAME}] ATR extreme — skipping")
                 return False
+
             if signal.get("amount", 0) <= 0:
                 self.logger.info(f"[{self.NAME}] lot size 0 — skipping")
                 return False
+
+            # ── Confidence gate ───────────────────────────────────
+            confidence  = signal.get("confidence", 0.0)
+            min_conf    = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
+            exec_thresh = max(min_conf, 0.60)   # never go below 0.60
+
+            if confidence < exec_thresh:
+                self.logger.info(
+                    f"[{self.NAME}] confidence {confidence:.3f} < {exec_thresh:.2f} — skipping"
+                )
+                return False
+
             return True
+
         except Exception as e:
             self.logger.error(f"[{self.NAME}] should_execute error: {e}")
             return False
@@ -545,34 +599,63 @@ class V75Strategy(BaseStrategy):
 
         action = "rise" if signal["signal"] == "BUY" else "fall"
 
+        # ── Size stake from live balance (1% scaled by confidence) ──
+        confidence = signal.get("confidence", 0.60)
+        balance = signal.get("meta", {}).get("balance", self.balance)
+        scale = 1.0 + (confidence - 0.60) * 2.5  # 0.60→1.0x, 0.80→1.5x
+        stake = round(balance * 0.01 * scale, 2)
+        stake = max(0.35, min(10.0, stake))  # Deriv min/max
+
+        self.logger.info(
+            f"[{self.NAME}] EXECUTING {action.upper()} | "
+            f"conf={confidence:.3f} bal={balance:.2f} stake={stake}"
+        )
+
         try:
             result = await self.execute_trade_fn(
-                symbol = self.SYMBOL,
-                action = action,
-                amount = signal["amount"],
+                symbol=self.SYMBOL,
+                action=action,
+                amount=stake,
             )
+
             self.logger.info(
                 f"[{self.NAME}] trade placed | action={action} "
-                f"amount={signal['amount']} | result={result}"
+                f"stake={stake} | result={result}"
             )
+
+            # ── Mark signal_log as executed in DB ─────────────────
+            signal_log_id = signal.get("meta", {}).get("signal_log_id")
+            if signal_log_id and result and result.get("contract_id"):
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            f"{BACKEND_URL}/api/signal/mark-executed",
+                            json={"signal_id": signal_log_id},
+                            timeout=5,
+                        )
+                except Exception as mark_err:
+                    self.logger.warning(f"[{self.NAME}] mark-executed failed: {mark_err}")
+
             await self.broadcast_fn({
-                "type":        "trade_executed",
-                "strategy":    self.NAME,
-                "action":      action,
-                "amount":      signal["amount"],
-                "symbol":      self.SYMBOL,
-                "confidence":  signal["confidence"],
-                "contract_id": result.get("contract_id"),
-                "buy_price":   result.get("buy_price"),
-                "payout":      result.get("payout"),
-                "meta":        signal.get("meta", {}),
+                "type": "trade_executed",
+                "strategy": self.NAME,
+                "action": action,
+                "amount": stake,
+                "symbol": self.SYMBOL,
+                "confidence": confidence,
+                "contract_id": result.get("contract_id") if result else None,
+                "buy_price": result.get("buy_price") if result else None,
+                "payout": result.get("payout") if result else None,
+                "meta": signal.get("meta", {}),
             })
+
             return result
+
         except Exception as e:
             self.logger.error(f"[{self.NAME}] execute_trade_fn failed: {e}")
             await self.broadcast_fn({
-                "type":     "trade_error",
+                "type": "trade_error",
                 "strategy": self.NAME,
-                "error":    str(e),
+                "error": str(e),
             })
             return None
