@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import select, text
 from ..database import AsyncSessionLocal
 from ..models import Credentials
 from ..services.credential_store import decrypt
@@ -20,6 +20,12 @@ from ml.walk_forward_validator import run_validator
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 _BOT_STATE_FILE = pathlib.Path("/tmp/vestro_bot_running.txt")
+
+# ── Execution config ─────────────────────────────────────────
+MIN_CONFIDENCE  = 0.60   # only fire trades above this
+STAKE_PCT       = 0.01   # 1% of balance per trade
+MIN_STAKE       = 0.35   # Deriv minimum
+MAX_STAKE       = 10.0   # safety cap
 
 
 def _is_bot_running() -> bool:
@@ -94,14 +100,25 @@ async def broadcast_to_frontend(data: dict):
             print(f"[signal_engine] broadcast error: {e}")
 
 
-async def execute_trade(symbol: str, action: str, amount: float, broker: str = "deriv"):
+async def execute_trade(
+    symbol: str,
+    action: str,
+    amount: float,
+    broker: str = "deriv",
+    account_id: str = "",
+) -> dict | None:
+    """
+    Fire a trade via /api/trade and return the result.
+    Passes account_id so the backend picks the right credential.
+    """
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{BACKEND_URL}/api/trade", json={
-                "broker": broker,
-                "symbol": symbol,
-                "action": action,
-                "amount": amount,
+                "broker":     broker,
+                "symbol":     symbol,
+                "action":     action,
+                "amount":     amount,
+                "account_id": account_id,
             }, timeout=10)
             return res.json()
         except Exception as e:
@@ -123,16 +140,21 @@ async def fetch_deriv_balance(api_token: str) -> float:
         return 0.0
 
 
+def _calc_stake(balance: float, confidence: float) -> float:
+    """
+    Size the stake as 1% of balance, scaled by confidence above threshold.
+    confidence=0.60 → 1x, confidence=0.80 → 1.5x, capped at MAX_STAKE.
+    """
+    scale  = 1.0 + (confidence - MIN_CONFIDENCE) * 2.5   # 0.60→1.0, 0.80→1.5
+    stake  = round(balance * STAKE_PCT * scale, 2)
+    return max(MIN_STAKE, min(MAX_STAKE, stake))
+
+
 # ============================================================
-# MARKET SIGNAL COMPUTATION (once per cycle, not per credential)
+# MARKET SIGNAL COMPUTATION
 # ============================================================
 
 async def compute_r75_signal(api_token: str) -> dict | None:
-    """
-    Fetch R_75 ticks and compute signal indicators once per loop cycle.
-    Returns a signal dict, or None on error.
-    This is called once and the result is shared across all credentials.
-    """
     try:
         closes  = list(await fetch_deriv_ticks(api_token, "R_75"))
 
@@ -174,6 +196,10 @@ async def compute_r75_signal(api_token: str) -> dict | None:
         else:
             signal = "HOLD"
 
+        # ── Pull calibrated confidence from ML model ──────────
+        thresholds = get_thresholds("R_75")
+        confidence = float(thresholds.get("confidence_min", 0.0)) if thresholds else 0.0
+
         return {
             "signal":       signal,
             "closes":       closes,
@@ -186,20 +212,20 @@ async def compute_r75_signal(api_token: str) -> dict | None:
             "macd_bullish": macd_bullish,
             "tss":          tss,
             "atr_zone":     atr_zone,
+            "confidence":   confidence,
         }
     except Exception as e:
         print(f"[signal_engine] compute_r75_signal error: {e}")
         return None
 
 
-async def log_r75_signal(sig: dict) -> None:
+async def log_r75_signal(sig: dict) -> str | None:
     """
-    Write one SignalLog row per market cycle — not per credential.
-    Only BUY/SELL signals are logged; HOLD rows are skipped to avoid
-    flooding the DB with unlabeled noise.
+    Write one SignalLog row. Returns the inserted row id so we can
+    mark it executed=true after the trade fires.
     """
     if sig["signal"] == "HOLD":
-        return
+        return None
 
     try:
         entry_price = sig["closes"][-1]
@@ -208,51 +234,74 @@ async def log_r75_signal(sig: dict) -> None:
         tp = entry_price + atr_val if direction == 1 else entry_price - atr_val
         sl = entry_price - atr_val if direction == 1 else entry_price + atr_val
 
+        row = SignalLog(
+            strategy    = "V75",
+            symbol      = "R_75",
+            signal      = sig["signal"],
+            direction   = direction,
+            entry_price = entry_price,
+            tp_price    = tp,
+            sl_price    = sl,
+            rsi         = round(sig["rsi"], 2),
+            adx         = round(sig["adx"], 2),
+            atr         = round(sig["atr"], 5),
+            ema_50      = round(sig["ema50"], 4),
+            ema_200     = round(sig["ema200"], 4),
+            macd_hist   = round(sig["macd_val"], 5),
+            tss_score   = sig["tss"],
+            atr_zone    = sig["atr_zone"],
+            confidence  = round(sig["confidence"], 4),
+            captured_at = datetime.utcnow(),
+        )
+
         async with AsyncSessionLocal() as db:
-            db.add(SignalLog(
-                strategy    = "V75",
-                symbol      = "R_75",
-                signal      = sig["signal"],
-                direction   = direction,
-                entry_price = entry_price,
-                tp_price    = tp,
-                sl_price    = sl,
-                rsi         = round(sig["rsi"], 2),
-                adx         = round(sig["adx"], 2),
-                atr         = round(sig["atr"], 5),
-                ema_50      = round(sig["ema50"], 4),
-                ema_200     = round(sig["ema200"], 4),
-                macd_hist   = round(sig["macd_val"], 5),
-                tss_score   = sig["tss"],
-                atr_zone    = sig["atr_zone"],
-                confidence  = 0.0,
-                captured_at = datetime.utcnow(),
-            ))
+            db.add(row)
             await db.commit()
+            await db.refresh(row)
+            return row.id
+
     except Exception as log_err:
         print(f"[signal_engine] SignalLog insert error: {log_err}")
+        return None
+
+
+async def mark_signal_executed(signal_log_id: str) -> None:
+    """Mark a signal_log row as executed=true after a trade fires."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("""
+                UPDATE signal_logs
+                SET executed = true, executed_at = NOW()
+                WHERE id = :id
+            """), {"id": signal_log_id})
+            await db.commit()
+    except Exception as e:
+        print(f"[signal_engine] mark_executed error: {e}")
 
 
 # ============================================================
 # PER-CREDENTIAL BROADCAST + EXECUTION
 # ============================================================
 
-async def process_deriv_account(cred, sig: dict, runner_is_live: bool = False):
-    """
-    Broadcast the pre-computed signal and optionally execute a trade
-    for this credential. Signal computation and DB logging happen once
-    upstream — this function only handles per-account concerns.
-    """
+async def process_deriv_account(
+    cred,
+    sig: dict,
+    signal_log_id: str | None,
+    runner_is_live: bool = False,
+):
     symbol      = "R_75"
     signal      = sig["signal"]
     atr_zone    = sig["atr_zone"]
     tss         = sig["tss"]
+    confidence  = sig["confidence"]
     bot_running = _is_bot_running()
 
-    print(f"[deriv:{cred.user_id}:{symbol}] RSI={sig['rsi']:.1f} TSS={tss}/5 "
-          f"ATR={atr_zone} MACD={'bull' if sig['macd_bullish'] else 'bear'} "
-          f"signal={signal} bot={bot_running} "
-          f"runner={'live' if runner_is_live else 'off'}")
+    print(
+        f"[deriv:{cred.user_id}:{symbol}] "
+        f"RSI={sig['rsi']:.1f} TSS={tss}/5 ATR={atr_zone} "
+        f"conf={confidence:.3f} signal={signal} "
+        f"bot={bot_running} runner={'live' if runner_is_live else 'off'}"
+    )
 
     await broadcast_to_frontend({
         "symbol": symbol,
@@ -267,16 +316,57 @@ async def process_deriv_account(cred, sig: dict, runner_is_live: bool = False):
             "macd_hist":  round(sig["macd_val"], 5),
             "tss_score":  tss,
             "atr_zone":   atr_zone,
+            "confidence": round(confidence, 3),
         }
     })
 
+    # ── Strategy runner handles its own execution ─────────────
     if runner_is_live:
         return
 
-    if signal != "HOLD" and bot_running and atr_zone != "extreme" and tss >= 3:
-        print(f"[deriv:{cred.user_id}:{symbol}] EXECUTING {signal}")
-        result = await execute_trade(symbol, signal, 1.0)
-        print(f"[deriv:{cred.user_id}:{symbol}] trade result: {result}")
+    # ── Confidence + safety gates ─────────────────────────────
+    if signal == "HOLD":
+        return
+    if not bot_running:
+        print(f"[deriv:{cred.user_id}] bot stopped — skipping trade")
+        return
+    if atr_zone == "extreme":
+        print(f"[deriv:{cred.user_id}] ATR extreme — skipping trade")
+        return
+    if tss < 3:
+        print(f"[deriv:{cred.user_id}] TSS {tss}/5 too low — skipping trade")
+        return
+    if confidence < MIN_CONFIDENCE:
+        print(f"[deriv:{cred.user_id}] confidence {confidence:.3f} < {MIN_CONFIDENCE} — skipping trade")
+        return
+
+    # ── Size stake from live balance ──────────────────────────
+    api_token = decrypt(cred.password)
+    balance   = await fetch_deriv_balance(api_token)
+
+    if balance <= 0:
+        print(f"[deriv:{cred.user_id}] balance fetch failed — skipping trade")
+        return
+
+    stake = _calc_stake(balance, confidence)
+
+    print(
+        f"[deriv:{cred.user_id}] EXECUTING {signal} "
+        f"stake=${stake} (bal=${balance:.2f} conf={confidence:.3f})"
+    )
+
+    result = await execute_trade(
+        symbol     = symbol,
+        action     = signal,
+        amount     = stake,
+        account_id = cred.user_id,
+    )
+
+    print(f"[deriv:{cred.user_id}] trade result: {result}")
+
+    # ── Mark signal as executed in DB ─────────────────────────
+    if result and result.get("contract_id") and signal_log_id:
+        await mark_signal_executed(signal_log_id)
 
 
 # ============================================================
@@ -338,13 +428,18 @@ async def run_signal_loop():
                 sig = await compute_r75_signal(decrypt(deriv_cred.password))
 
             if sig:
-                # Log to DB once (BUY/SELL only, not HOLD)
-                await log_r75_signal(sig)
+                # Log to DB once — get back the row id
+                signal_log_id = await log_r75_signal(sig)
 
-                # Broadcast + execute per credential
+                # Broadcast + conditionally execute per credential
                 deriv_creds = [c for c in creds if c.broker == "deriv"]
                 for cred in deriv_creds:
-                    await process_deriv_account(cred, sig, runner_is_live=runner_live)
+                    await process_deriv_account(
+                        cred,
+                        sig,
+                        signal_log_id  = signal_log_id,
+                        runner_is_live = runner_live,
+                    )
 
         except Exception as e:
             print(f"[signal_engine] loop error: {e}")
