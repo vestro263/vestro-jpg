@@ -266,6 +266,7 @@ async def execution_window(
     min_confidence: float = 0.60,
     strategy: str | None = None,
     signal: str | None = None,
+    executed_only: bool = False,      # ← add this
     limit: int = 200,
 ):
     filters = [
@@ -280,6 +281,8 @@ async def execution_window(
     if signal:
         filters.append("signal = :signal")
         params["signal"] = signal
+    if executed_only:
+        filters.append("executed = true")   # ← only real fired trades
 
     where = " AND ".join(filters)
 
@@ -302,7 +305,7 @@ async def execution_window(
             "confidence":   r[4],
             "entry_price":  r[5],
             "exit_price":   r[6],
-            "outcome":      r[7],       # WIN / LOSS / NEUTRAL / None
+            "outcome":      r[7],
             "executed":     r[8],
             "executed_at":  str(r[9]) if r[9] else None,
             "captured_at":  str(r[10]),
@@ -310,18 +313,19 @@ async def execution_window(
         for r in rows.fetchall()
     ]
 
-    closed  = [d for d in data if d["outcome"] in ("WIN", "LOSS")]
-    wins    = sum(1 for d in closed if d["outcome"] == "WIN")
-    losses  = len(closed) - wins
+    closed = [d for d in data if d["outcome"] in ("WIN", "LOSS")]
+    wins   = sum(1 for d in closed if d["outcome"] == "WIN")
+    losses = len(closed) - wins
 
     return {
-        "threshold":  min_confidence,
-        "total":      len(data),
-        "wins":       wins,
-        "losses":     losses,
-        "open":       sum(1 for d in data if not d["outcome"]),
-        "win_rate":   round(wins / len(closed), 4) if closed else None,
-        "signals":    data,
+        "threshold":     min_confidence,
+        "total":         len(data),
+        "wins":          wins,
+        "losses":        losses,
+        "open":          sum(1 for d in data if not d["outcome"]),
+        "win_rate":      round(wins / len(closed), 4) if closed else None,
+        "executed_only": executed_only,
+        "signals":       data,
     }
 
 class OutcomeUpdate(BaseModel):
