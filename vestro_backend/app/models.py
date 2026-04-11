@@ -14,25 +14,29 @@ def gen_id():
 class User(Base):
     __tablename__ = "users"
 
-    id         = Column(String, primary_key=True, default=gen_id)
-    email      = Column(String, unique=True, nullable=False, index=True)
-    name       = Column(String, nullable=True)
-    avatar_url = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    last_login = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    id             = Column(String, primary_key=True, default=gen_id)
+    email          = Column(String, unique=True, nullable=False, index=True)
+    name           = Column(String, nullable=True)
+    avatar_url     = Column(String, nullable=True)
+    active_account = Column(String, nullable=True)   # persisted active Deriv loginid
+    created_at     = Column(DateTime, server_default=func.now())
+    last_login     = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     credentials = relationship(
         "Credentials",
+        foreign_keys="Credentials.google_user_id",
+        primaryjoin="User.id == Credentials.google_user_id",
         back_populates="user",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
+
 
 class Credentials(Base):
     __tablename__ = "credentials"
 
     id              = Column(Integer, primary_key=True)
-    user_id         = Column(String, ForeignKey("users.id"), index=True)  # ✅ single FK
-    google_user_id = Column(String, index=True, nullable=True)
+    user_id         = Column(String, nullable=True)              # Deriv loginid e.g. CR123456
+    google_user_id  = Column(String, ForeignKey("users.id"), index=True, nullable=True)
 
     broker          = Column(String)
     login           = Column(String)
@@ -43,8 +47,10 @@ class Credentials(Base):
 
     user = relationship(
         "User",
-        back_populates="credentials"
+        foreign_keys=[google_user_id],
+        back_populates="credentials",
     )
+
 
 class Firm(Base):
     __tablename__ = "firms"

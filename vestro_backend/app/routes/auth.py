@@ -4,6 +4,7 @@ routes/auth.py
 Uses ONLY existing DB columns + one new nullable column:
   Credentials.google_user_id VARCHAR (added via init_db migration)
   Credentials.user_id        = Deriv loginid e.g. CR123456 (unchanged)
+  User.active_account        = last selected Deriv loginid (persisted)
 """
 
 import json
@@ -30,8 +31,6 @@ BACKEND_URL          = os.environ.get("BACKEND_URL",          "https://vestro-jp
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT      = f"{BACKEND_URL}/auth/google/callback"
-
-_active_accounts: dict[str, str] = {}   # google user.id → Deriv loginid
 
 
 # ── STEP 1 — Start Google login ───────────────────────────────
@@ -104,7 +103,6 @@ async def google_callback(
     await db.refresh(user)
 
     # Find Credentials linked to this Google user
-    # FIX: query by google_user_id, not user_id (which holds Deriv loginid)
     result = await db.execute(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
@@ -123,7 +121,7 @@ async def google_callback(
         try:
             info = await get_account_info(DERIV_APP_ID, decrypt(cred.password))
             accounts.append({
-                "account_id": cred.user_id,   # FIX: user_id = Deriv loginid
+                "account_id": cred.user_id,
                 "balance":    info.get("balance", 0),
                 "currency":   info.get("currency", "USD"),
                 "name":       info.get("name", ""),
@@ -144,7 +142,11 @@ async def google_callback(
         return RedirectResponse(deriv_url)
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-    return RedirectResponse(f"{FRONTEND_URL}?accounts={accounts_json}&user_id={user.id}")
+    # Pass active_account so frontend can auto-select the last used account
+    active = user.active_account or ""
+    return RedirectResponse(
+        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={user.id}&active_account={active}"
+    )
 
 
 # ── STEP 3 — Deriv OAuth callback ────────────────────────────
@@ -152,7 +154,7 @@ async def google_callback(
 @router.get("/auth/deriv/callback")
 async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     params  = dict(request.query_params)
-    user_id = params.get("state", "")   # Google User.id
+    user_id = params.get("state", "")
 
     user = None
     if user_id:
@@ -162,7 +164,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     accounts = []
     i = 1
     while f"acct{i}" in params:
-        acct  = params[f"acct{i}"]    # Deriv loginid e.g. CR123456
+        acct  = params[f"acct{i}"]
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
@@ -173,7 +175,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             i += 1
             continue
 
-        # FIX: upsert by user_id (Deriv loginid), set google_user_id as the link
         result = await db.execute(
             select(Credentials).where(Credentials.user_id == acct)
         )
@@ -189,7 +190,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         cred.server          = encrypt("")
         cred.meta_account_id = ""
         if user:
-            cred.google_user_id = user.id   # FIX: link via google_user_id
+            cred.google_user_id = user.id
         await db.flush()
 
         accounts.append({
@@ -210,11 +211,14 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts")
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-    uid = user.id if user else ""
-    return RedirectResponse(f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}")
+    uid    = user.id             if user else ""
+    active = user.active_account if user else ""
+    return RedirectResponse(
+        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+    )
 
 
-# ── STEP 4 — Set active account ──────────────────────────────
+# ── STEP 4 — Set active account (DB-persisted) ───────────────
 
 class SetActiveAccount(BaseModel):
     deriv_account: str   # Deriv loginid e.g. CR123456
@@ -222,26 +226,34 @@ class SetActiveAccount(BaseModel):
 
 
 @router.post("/auth/set-active-account")
-async def set_active_account(body: SetActiveAccount):
-    _active_accounts[body.user_id] = body.deriv_account
+async def set_active_account(body: SetActiveAccount, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == body.user_id))
+    user   = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.active_account = body.deriv_account
+    await db.commit()
     return {"status": "ok", "active": body.deriv_account}
 
 
 @router.get("/auth/active-account/{user_id}")
 async def get_active_account(user_id: str, db: AsyncSession = Depends(get_db)):
-    deriv_loginid = _active_accounts.get(user_id)
-    if not deriv_loginid:
+    result = await db.execute(select(User).where(User.id == user_id))
+    user   = result.scalar_one_or_none()
+    if not user or not user.active_account:
         raise HTTPException(status_code=404, detail="No active account set")
 
-    # FIX: look up by user_id (Deriv loginid), not deriv_account
     result = await db.execute(
-        select(Credentials).where(Credentials.user_id == deriv_loginid)
+        select(Credentials).where(Credentials.user_id == user.active_account)
     )
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    return {"deriv_account": deriv_loginid, "api_token": decrypt(cred.password)}
+    return {
+        "deriv_account": user.active_account,
+        "api_token":     decrypt(cred.password),
+    }
 
 
 # ── STEP 5 — Auth check on app load ──────────────────────────
@@ -253,20 +265,20 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     if not user:
         return {"found": False}
 
-    # FIX: query by google_user_id
     result = await db.execute(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
     creds = result.scalars().all()
 
     return {
-        "found":    True,
-        "user_id":  user.id,
-        "email":    user.email,
-        "name":     user.name,
+        "found":          True,
+        "user_id":        user.id,
+        "email":          user.email,
+        "name":           user.name,
+        "active_account": user.active_account or "",
         "accounts": [
             {
-                "account_id": c.user_id,   # FIX: user_id = Deriv loginid
+                "account_id": c.user_id,
                 "type":       "demo" if (c.user_id or "").startswith("VRT") else "real",
                 "broker":     c.broker,
             }

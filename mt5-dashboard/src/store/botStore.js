@@ -32,51 +32,55 @@ const useBotStore = create(
       botRunning:     false,
       setActivePage:  (page) => set({ activePage: page }),
 
-      // auth
+      // ── auth ──────────────────────────────────────────────
       isLoggedIn:      false,
       broker:          null,
       accountId:       null,
       authError:       null,
-      derivAccounts:   null,   // full list from OAuth — persisted
-      pendingAccounts: null,   // drives the selector UI — not persisted
+      derivAccounts:   null,
+      pendingAccounts: null,
 
-      // Called on OAuth callback — saves full list and shows selector
       setDerivAccounts: (accounts) => set({
         derivAccounts:   accounts,
         pendingAccounts: accounts,
       }),
 
-      // Called to show/hide the selector without overwriting the saved list
       setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
+      // ── login ─────────────────────────────────────────────
       login: (broker, accountId, accountData) => {
         set({
           isLoggedIn:      true,
           broker,
           accountId,
           authError:       null,
-          pendingAccounts: null,  // close selector
-          account: { ...get().account, ...accountData },
+          pendingAccounts: null,
+          account: {
+            ...accountData,
+            is_virtual: accountId?.startsWith('VRT') ?? false,
+          },
         })
         get().connect()
         get().startPolling()
+
+        // fetch bot status scoped to this account
         fetch(`${API}/api/bot/status`)
           .then(r => r.json())
           .then(d => set({ botRunning: d.running }))
           .catch(() => {})
       },
 
+      // ── logout ────────────────────────────────────────────
       logout: () => {
         const ws = get().ws
         if (ws) ws.close(1000)
-        // Keep derivAccounts so selector reappears without re-doing OAuth
         set({
           isLoggedIn:      false,
           broker:          null,
           accountId:       null,
           connected:       false,
           ws:              null,
-          pendingAccounts: get().derivAccounts,  // re-open selector on logout
+          pendingAccounts: get().derivAccounts,
           account: {
             balance: 0, equity: 0, profit: 0,
             margin_free: 0, currency: 'USD',
@@ -92,23 +96,40 @@ const useBotStore = create(
 
       setAuthError: (err) => set({ authError: err }),
 
+      // ── bot controls ──────────────────────────────────────
       startBot: async () => {
         try {
-          await axios.post(`${API}/api/bot/start`)
-          set({ botRunning: true })
-        } catch (err) { console.warn('Failed to start bot:', err) }
+          const res = await axios.post(`${API}/api/bot/start`)
+          if (res.data.status === 'started') set({ botRunning: true })
+        } catch (err) {
+          console.warn('Failed to start bot:', err)
+        }
       },
 
       stopBot: async () => {
         try {
-          await axios.post(`${API}/api/bot/stop`)
-          set({ botRunning: false })
-        } catch (err) { console.warn('Failed to stop bot:', err) }
+          const res = await axios.post(`${API}/api/bot/stop`)
+          if (res.data.status === 'stopped') set({ botRunning: false })
+        } catch (err) {
+          console.warn('Failed to stop bot:', err)
+        }
       },
 
+      syncBotStatus: async () => {
+        try {
+          const { data } = await axios.get(`${API}/api/bot/status`)
+          set({ botRunning: data.running })
+        } catch {}
+      },
+
+      // ── websocket ─────────────────────────────────────────
       connect: () => {
         const existing = get().ws
-        if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return
+        if (
+          existing &&
+          (existing.readyState === WebSocket.OPEN ||
+           existing.readyState === WebSocket.CONNECTING)
+        ) return
         if (existing) existing.close()
 
         const ws = new WebSocket(WS_URL)
@@ -142,19 +163,32 @@ const useBotStore = create(
 
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
-            if (data.account)                          set({ account: data.account })
-            if (typeof data.bot_running === 'boolean') set({ botRunning: data.bot_running })
+            if (data.account) {
+              set({
+                account: {
+                  ...data.account,
+                  is_virtual: state.accountId?.startsWith('VRT') ?? false,
+                }
+              })
+            }
+            if (typeof data.bot_running === 'boolean') {
+              set({ botRunning: data.bot_running })
+            }
             return
           }
 
           if (data.type === 'signal') {
-            const entry = { ...data, id: Date.now() + Math.random(), receivedAt: new Date().toLocaleTimeString() }
+            const entry = {
+              ...data,
+              id:         Date.now() + Math.random(),
+              receivedAt: new Date().toLocaleTimeString(),
+            }
             set({ signals: [entry, ...state.signals].slice(0, 100) })
             return
           }
 
           if (data.type === 'contract_update') {
-            const update = { ...data, id: data.contract_id, time: new Date().toLocaleTimeString() }
+            const update   = { ...data, id: data.contract_id, time: new Date().toLocaleTimeString() }
             const existing = state.tradeFeed.findIndex(t => t.contract_id === data.contract_id)
             if (existing >= 0) {
               const updated = [...state.tradeFeed]
@@ -170,7 +204,11 @@ const useBotStore = create(
           }
 
           if (data.type === 'tp1_hit' || data.trade) {
-            const item = { ...data, id: Date.now() + Math.random(), time: new Date().toLocaleTimeString() }
+            const item = {
+              ...data,
+              id:   Date.now() + Math.random(),
+              time: new Date().toLocaleTimeString(),
+            }
             set({ tradeFeed: [item, ...state.tradeFeed].slice(0, 200) })
             get().fetchPositions()
             return
@@ -180,45 +218,71 @@ const useBotStore = create(
         set({ ws })
       },
 
+      // ── data fetchers ─────────────────────────────────────
       fetchAccount: async () => {
+        const { accountId } = get()
+        if (!accountId) return
         try {
-          const { accountId } = get()
-          if (!accountId) return
           const { data } = await axios.get(`${API}/api/account/${accountId}`)
-          set({ account: data })
+          set({
+            account: {
+              ...data,
+              is_virtual: accountId.startsWith('VRT'),
+            }
+          })
         } catch {}
       },
 
       fetchPositions: async () => {
+        const { accountId } = get()
+        if (!accountId) return
         try {
-          const { data } = await axios.get(`${API}/api/positions`)
+          const { data } = await axios.get(`${API}/api/positions?account_id=${accountId}`)
           set({ positions: Array.isArray(data) ? data : [] })
         } catch {}
       },
 
       fetchJournal: async (limit = 50) => {
+        const { accountId } = get()
+        if (!accountId) return
         set({ journalLoading: true })
         try {
-          const { data } = await axios.get(`${API}/api/journal?limit=${limit}`)
+          const { data } = await axios.get(
+            `${API}/api/journal?account_id=${accountId}&limit=${limit}`
+          )
           set({ journal: Array.isArray(data) ? data : [] })
-        } finally { set({ journalLoading: false }) }
+        } finally {
+          set({ journalLoading: false })
+        }
       },
 
       fetchStats: async (days = 30) => {
+        const { accountId } = get()
+        if (!accountId) return
         set({ statsLoading: true })
         try {
-          const { data } = await axios.get(`${API}/api/stats?days=${days}`)
+          const { data } = await axios.get(
+            `${API}/api/stats?account_id=${accountId}&days=${days}`
+          )
           set({ stats: data })
-        } finally { set({ statsLoading: false }) }
+        } finally {
+          set({ statsLoading: false })
+        }
       },
 
+      // ── polling ───────────────────────────────────────────
       startPolling: () => {
-        setInterval(() => {
+        // clear any existing interval to avoid duplicates on re-login
+        if (get()._pollInterval) clearInterval(get()._pollInterval)
+        const id = setInterval(() => {
           get().fetchPositions()
           get().fetchAccount()
+          get().syncBotStatus()   // keep bot status in sync with file state
         }, 5000)
+        set({ _pollInterval: id })
       },
     }),
+
     {
       name: 'vestro-auth',
       partialize: (s) => ({
@@ -226,8 +290,7 @@ const useBotStore = create(
         accountId:     s.accountId,
         account:       s.account,
         botRunning:    s.botRunning,
-        derivAccounts: s.derivAccounts,  // persisted — full OAuth account list
-        // pendingAccounts intentionally excluded — recomputed on load
+        derivAccounts: s.derivAccounts,
       }),
     }
   )

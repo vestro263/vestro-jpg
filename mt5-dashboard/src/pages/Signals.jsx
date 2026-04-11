@@ -1,17 +1,22 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import useBotStore from '../store/botStore'
 import { S, StatCard, DirectionBadge, ATRZoneBadge, TSSBar, Empty } from '../components/ui'
 
 function useIsMobile(bp = 640) {
   const [m, setM] = useState(() => window.innerWidth < bp)
-  // effect omitted — Signals doesn't need resize reactivity at component level
+  useEffect(() => {
+    const h = () => setM(window.innerWidth < bp)
+    window.addEventListener('resize', h)
+    return () => window.removeEventListener('resize', h)
+  }, [bp])
   return m
 }
 
 export default function Signals() {
-  const { signals } = useBotStore()
+  const { signals, accountId } = useBotStore()
   const [filter, setFilter] = useState('all')
   const isMobile = useIsMobile()
+  const isDemo   = accountId?.startsWith('VRT') ?? false
 
   const filtered = signals.filter(s => {
     if (filter === 'all')  return true
@@ -21,9 +26,9 @@ export default function Signals() {
     return true
   })
 
-  const buys  = signals.filter(s => s.signal?.direction ===  1).length
-  const sells = signals.filter(s => s.signal?.direction === -1).length
-  const flats = signals.filter(s => s.signal?.direction ===  0).length
+  const buys   = signals.filter(s => s.signal?.direction ===  1).length
+  const sells  = signals.filter(s => s.signal?.direction === -1).length
+  const flats  = signals.filter(s => s.signal?.direction ===  0).length
   const avgTSS = signals.length
     ? (signals.reduce((a, s) => a + (s.signal?.tss_score || 0), 0) / signals.length).toFixed(3)
     : '—'
@@ -53,27 +58,41 @@ export default function Signals() {
   return (
     <div style={S.page}>
 
+      {/* Account context pill */}
+      {accountId && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: '#4b5563' }}>Signals for</span>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+            background: isDemo ? '#1e3a5f' : '#14532d',
+            color:      isDemo ? '#60a5fa' : '#4ade80',
+          }}>
+            {isDemo ? 'DEMO' : 'REAL'}
+          </span>
+          <span style={{ color: '#f1f5f9', fontSize: 12, fontWeight: 500 }}>{accountId}</span>
+        </div>
+      )}
+
       {/* Stats */}
       <div style={grid4}>
-        <StatCard label="Total Signals" value={signals.length}  color="#93c5fd" />
-        <StatCard label="Buy Signals"   value={buys}            color="#4ade80"
-          sub={`${signals.length ? ((buys/signals.length)*100).toFixed(0) : 0}% of total`} />
-        <StatCard label="Sell Signals"  value={sells}           color="#f87171"
-          sub={`${signals.length ? ((sells/signals.length)*100).toFixed(0) : 0}% of total`} />
-        <StatCard label="Avg TSS Score" value={avgTSS}          color="#fbbf24" />
+        <StatCard label="Total Signals" value={signals.length} color="#93c5fd" />
+        <StatCard label="Buy Signals"   value={buys}           color="#4ade80"
+          sub={`${signals.length ? ((buys / signals.length) * 100).toFixed(0) : 0}% of total`} />
+        <StatCard label="Sell Signals"  value={sells}          color="#f87171"
+          sub={`${signals.length ? ((sells / signals.length) * 100).toFixed(0) : 0}% of total`} />
+        <StatCard label="Avg TSS Score" value={avgTSS}         color="#fbbf24" />
       </div>
 
       {/* Table card */}
       <div style={S.card}>
 
-        {/* Header + filter — stacks on mobile */}
+        {/* Header + filter */}
         <div style={{
           display: 'flex', flexWrap: 'wrap', alignItems: 'center',
           gap: 8, marginBottom: 14,
         }}>
           <span style={S.h3}>Signal History</span>
 
-          {/* Filter pills — scrollable on tiny screens */}
           <div style={{
             marginLeft: isMobile ? 0 : 'auto',
             width: isMobile ? '100%' : 'auto',

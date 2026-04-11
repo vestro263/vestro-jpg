@@ -47,6 +47,49 @@ const S = {
   th:   { padding: '7px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #374151', textAlign: 'left' },
 }
 
+// ── Active Account Banner ──────────────────────────────────────────────────────
+function ActiveAccountBanner() {
+  const accountId = useBotStore(s => s.accountId)
+  const account   = useBotStore(s => s.account)
+  const isDemo    = accountId?.startsWith('VRT') ?? false
+
+  if (!accountId) return null
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      background: '#0b1120', border: '1px solid #1e2d45',
+      borderRadius: 10, padding: '8px 14px',
+    }}>
+      <span style={{ fontSize: 11, color: '#4b5563' }}>Trading on</span>
+      <span style={{
+        fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+        background: isDemo ? '#1e3a5f' : '#14532d',
+        color:      isDemo ? '#60a5fa' : '#4ade80',
+      }}>
+        {isDemo ? 'DEMO' : 'REAL'}
+      </span>
+      <span style={{ color: '#f1f5f9', fontSize: 13, fontWeight: 600 }}>
+        {accountId}
+      </span>
+      <span style={{ color: '#94a3b8', fontSize: 12, fontFamily: 'monospace' }}>
+        {Number(account.balance || 0).toLocaleString(undefined, {
+          minimumFractionDigits: 2, maximumFractionDigits: 2,
+        })} {account.currency || 'USD'}
+      </span>
+      {isDemo && (
+        <span style={{
+          marginLeft: 'auto', fontSize: 10, color: '#ca8a04',
+          background: '#1c1a08', border: '1px solid #713f12',
+          padding: '2px 8px', borderRadius: 4,
+        }}>
+          Demo — P&L not real
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ── Quick Trade ────────────────────────────────────────────────────────────────
 function QuickTrade({ isMobile }) {
   const { signals, accountId } = useBotStore()
@@ -61,6 +104,10 @@ function QuickTrade({ isMobile }) {
   useEffect(() => { if (latestSymbol) setSymbol(latestSymbol) }, [latestSymbol])
 
   async function executeTrade(action) {
+    if (!accountId) {
+      setError('No account selected')
+      return
+    }
     setLoading(action)
     setResult(null)
     setError(null)
@@ -73,7 +120,7 @@ function QuickTrade({ isMobile }) {
           symbol,
           action,
           amount:        parseFloat(stake) || 1,
-          account_id: accountId,
+          account_id:    accountId,
           contract_type: contractType,
         }),
       })
@@ -158,15 +205,21 @@ function QuickTrade({ isMobile }) {
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const {
-    account, signals, positions, tradeFeed,
-    fetchPositions, botRunning, startBot, stopBot,
+    account, accountId, signals, positions, tradeFeed,
+    fetchPositions, fetchAccount, botRunning, startBot, stopBot,
   } = useBotStore()
 
   const isMobile = useIsMobile()
   const latest   = signals[0]
   const sig      = latest?.signal || {}
 
-  useEffect(() => { fetchPositions() }, [])
+  // Refresh account + positions whenever accountId changes
+  useEffect(() => {
+    if (accountId) {
+      fetchAccount()
+      fetchPositions()
+    }
+  }, [accountId])
 
   const totalOpenProfit = positions.reduce((s, p) => s + (p.profit || 0), 0)
 
@@ -208,6 +261,9 @@ export default function Dashboard() {
     <div style={S.page}>
 
       <NewsBar />
+
+      {/* 🏦 ACTIVE ACCOUNT BANNER */}
+      <ActiveAccountBanner />
 
       {/* 🤖 BOT CONTROLS */}
       <div style={{
@@ -261,7 +317,7 @@ export default function Dashboard() {
           label="Equity"
           value={`$${(account.equity || account.balance || 0).toLocaleString('en', { minimumFractionDigits: 2 })}`}
           color="#4ade80"
-          sub={account.is_virtual ? 'Demo account' : 'Real account'}
+          sub={accountId?.startsWith('VRT') ? 'Demo account' : 'Real account'}
         />
         <StatCard
           label="Open P&L"

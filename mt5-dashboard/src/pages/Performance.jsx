@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, ReferenceLine, Cell,
+  ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts'
 import { S, StatCard, Empty } from '../components/ui'
+import useBotStore from '../store/botStore'
 
 const API = 'https://vestro-jpg.onrender.com'
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function OutcomeBadge({ outcome }) {
   const map = {
@@ -54,10 +55,12 @@ function ConfBar({ value }) {
   )
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function Performance() {
-  // ── Execution window state ────────────────────────────────────────────────
+  const accountId = useBotStore(s => s.accountId)
+  const isDemo    = accountId?.startsWith('VRT') ?? false
+
   const [execData,    setExecData]    = useState(null)
   const [execLoading, setExecLoading] = useState(true)
   const [execError,   setExecError]   = useState(null)
@@ -67,10 +70,14 @@ export default function Performance() {
   const [lastFetched, setLastFetched] = useState(null)
 
   const fetchExec = useCallback(async () => {
+    if (!accountId) return
     setExecLoading(true)
     setExecError(null)
     try {
-      const params = new URLSearchParams({ min_confidence: minConf })
+      const params = new URLSearchParams({
+        min_confidence: minConf,
+        account_id:     accountId,       // ← scope to active account
+      })
       if (strategy  !== 'ALL') params.set('strategy', strategy)
       if (signalFlt !== 'ALL') params.set('signal',   signalFlt)
 
@@ -84,33 +91,32 @@ export default function Performance() {
     } finally {
       setExecLoading(false)
     }
-  }, [minConf, strategy, signalFlt])
+  }, [minConf, strategy, signalFlt, accountId])
 
+  // Re-fetch whenever accountId or filters change
   useEffect(() => { fetchExec() }, [fetchExec])
 
-  // auto-refresh every 30s
+  // Auto-refresh every 30s
   useEffect(() => {
     const id = setInterval(fetchExec, 30_000)
     return () => clearInterval(id)
   }, [fetchExec])
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const signals    = execData?.signals   ?? []
-  const wins       = execData?.wins      ?? 0
-  const losses     = execData?.losses    ?? 0
-  const open       = execData?.open      ?? 0
-  const winRate    = execData?.win_rate  ?? null
-  const total      = execData?.total     ?? 0
+  const signals  = execData?.signals  ?? []
+  const wins     = execData?.wins     ?? 0
+  const losses   = execData?.losses   ?? 0
+  const open     = execData?.open     ?? 0
+  const winRate  = execData?.win_rate ?? null
+  const total    = execData?.total    ?? 0
 
-  // Confidence distribution buckets
-  const buckets    = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
-  const confDist   = buckets.map((b, i) => {
+  const buckets  = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+  const confDist = buckets.map((b, i) => {
     const next  = buckets[i + 1] ?? 1.01
     const count = signals.filter(s => s.confidence >= b && s.confidence < next).length
     return { label: `${Math.round(b * 100)}`, count }
   })
 
-  // Win rate by strategy
   const byStrategy = ['V75', 'Crash500'].map(strat => {
     const rows   = signals.filter(s => s.strategy === strat)
     const w      = rows.filter(s => s.outcome === 'WIN').length
@@ -119,11 +125,21 @@ export default function Performance() {
     return { strat, wins: w, losses: l, wr: closed ? Math.round((w / closed) * 100) : null }
   })
 
-  // ── Render ────────────────────────────────────────────────────────────────
   const selStyle = {
     background: '#1f2937', border: '1px solid #374151',
     borderRadius: 7, color: '#e5e7eb', fontSize: 12,
     padding: '6px 10px', outline: 'none',
+  }
+
+  // No account selected guard
+  if (!accountId) {
+    return (
+      <div style={S.page}>
+        <div style={{ padding: '48px 0', textAlign: 'center', color: '#4b5563', fontSize: 13 }}>
+          Select an account to view performance data
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -132,7 +148,17 @@ export default function Performance() {
       {/* ── Section header ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>Execution Tracker</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>
+            Execution Tracker
+            <span style={{
+              marginLeft: 10, fontSize: 10, fontWeight: 700,
+              padding: '2px 7px', borderRadius: 4,
+              background: isDemo ? '#1e3a5f' : '#14532d',
+              color:      isDemo ? '#60a5fa' : '#4ade80',
+            }}>
+              {isDemo ? 'DEMO' : 'REAL'} · {accountId}
+            </span>
+          </div>
           <div style={{ fontSize: 11, color: '#4b5563', marginTop: 2 }}>
             Signals above confidence threshold — actual WIN / LOSS outcomes
             {lastFetched && <span style={{ marginLeft: 8 }}>· refreshed {lastFetched}</span>}
@@ -179,9 +205,9 @@ export default function Performance() {
 
       {/* ── KPI cards ── */}
       <div style={S.grid4}>
-        <StatCard label="Executed"   value={total}                                              color="#93c5fd" />
-        <StatCard label="Wins"       value={wins}                                               color="#4ade80" />
-        <StatCard label="Losses"     value={losses}                                             color="#f87171" />
+        <StatCard label="Executed"   value={total}  color="#93c5fd" />
+        <StatCard label="Wins"       value={wins}   color="#4ade80" />
+        <StatCard label="Losses"     value={losses} color="#f87171" />
         <StatCard
           label="Win Rate"
           value={winRate !== null ? `${Math.round(winRate * 100)}%` : '—'}
@@ -289,7 +315,7 @@ export default function Performance() {
 
         {signals.length === 0 && !execLoading ? (
           <div style={{ padding: '32px 0', textAlign: 'center', color: '#4b5563', fontSize: 12 }}>
-            No signals above {Math.round(minConf * 100)}% confidence yet
+            No signals above {Math.round(minConf * 100)}% confidence for {accountId}
           </div>
         ) : (
           <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
