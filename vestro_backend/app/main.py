@@ -257,6 +257,113 @@ async def label_dist(db: AsyncSession = Depends(get_db)):
     """))
     mapping = {-1: "LOSS", 0: "NEUTRAL", 1: "WIN"}
     return {mapping.get(row[0], str(row[0])): row[1] for row in r.fetchall()}
+
+
+@app.get("/debug/execution-window")
+async def execution_window(
+    db: AsyncSession = Depends(get_db),
+    min_confidence: float = 0.60,
+    strategy: str | None = None,
+    signal: str | None = None,
+    limit: int = 200,
+):
+    filters = [
+        "confidence >= :conf",
+        "signal IN ('BUY', 'SELL')",
+    ]
+    params: dict = {"conf": min_confidence, "limit": limit}
+
+    if strategy:
+        filters.append("strategy = :strategy")
+        params["strategy"] = strategy
+    if signal:
+        filters.append("signal = :signal")
+        params["signal"] = signal
+
+    where = " AND ".join(filters)
+
+    rows = await db.execute(text(f"""
+        SELECT id, strategy, symbol, signal, confidence,
+               entry_price, exit_price, outcome, executed,
+               executed_at, captured_at
+        FROM signal_logs
+        WHERE {where}
+        ORDER BY captured_at DESC
+        LIMIT :limit
+    """), params)
+
+    data = [
+        {
+            "id":           r[0],
+            "strategy":     r[1],
+            "symbol":       r[2],
+            "signal":       r[3],
+            "confidence":   r[4],
+            "entry_price":  r[5],
+            "exit_price":   r[6],
+            "outcome":      r[7],       # WIN / LOSS / NEUTRAL / None
+            "executed":     r[8],
+            "executed_at":  str(r[9]) if r[9] else None,
+            "captured_at":  str(r[10]),
+        }
+        for r in rows.fetchall()
+    ]
+
+    closed  = [d for d in data if d["outcome"] in ("WIN", "LOSS")]
+    wins    = sum(1 for d in closed if d["outcome"] == "WIN")
+    losses  = len(closed) - wins
+
+    return {
+        "threshold":  min_confidence,
+        "total":      len(data),
+        "wins":       wins,
+        "losses":     losses,
+        "open":       sum(1 for d in data if not d["outcome"]),
+        "win_rate":   round(wins / len(closed), 4) if closed else None,
+        "signals":    data,
+    }
+
+class OutcomeUpdate(BaseModel):
+    signal_id:  str
+    exit_price: float
+    outcome:    str   # "WIN" | "LOSS" | "NEUTRAL"
+
+@app.post("/signal/outcome")
+async def record_outcome(payload: OutcomeUpdate, db: AsyncSession = Depends(get_db)):
+    if payload.outcome not in ("WIN", "LOSS", "NEUTRAL"):
+        raise HTTPException(status_code=400, detail="outcome must be WIN, LOSS, or NEUTRAL")
+
+    result = await db.execute(text("""
+        UPDATE signal_logs
+        SET outcome    = :outcome,
+            exit_price = :exit_price,
+            label_15m  = :label_int
+        WHERE id = :id
+        RETURNING id, strategy, signal, confidence, entry_price, outcome
+    """), {
+        "outcome":    payload.outcome,
+        "exit_price": payload.exit_price,
+        "label_int":  1 if payload.outcome == "WIN" else (-1 if payload.outcome == "LOSS" else 0),
+        "id":         payload.signal_id,
+    })
+
+    row = result.fetchone()
+    await db.commit()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Signal {payload.signal_id} not found")
+
+    return {
+        "status":     "updated",
+        "id":         row[0],
+        "strategy":   row[1],
+        "signal":     row[2],
+        "confidence": row[3],
+        "entry":      row[4],
+        "outcome":    row[5],
+    }
+
+
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
