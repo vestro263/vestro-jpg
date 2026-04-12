@@ -395,8 +395,7 @@ async def run_signal_loop():
                 sig = await compute_r75_signal(decrypt(deriv_cred.password))
 
             if sig:
-                # Log to DB once — get back the row id
-                signal_log_id = await log_r75_signal(sig)
+                signal_log_id = None
 
                 # Broadcast + conditionally execute per credential
                 deriv_creds = [c for c in creds if c.broker == "deriv"]
