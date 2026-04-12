@@ -723,6 +723,66 @@ def bot_status():
     return {"running": _bot_running}
 
 # ─────────────────────────────────────────────────────────────
+# JOURNAL
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/journal")
+async def get_journal(
+    account_id: str = Query(...),
+    limit:      int = Query(50, le=500),
+    db:         AsyncSession = Depends(get_db),
+):
+    """
+    Returns closed signal_log rows for the given account (Deriv login ID).
+    A row is considered closed when outcome IS NOT NULL.
+    """
+    from sqlalchemy import text
+
+    rows = await db.execute(text("""
+        SELECT
+            id,
+            strategy,
+            symbol,
+            signal,
+            confidence,
+            entry_price,
+            exit_price,
+            outcome,
+            executed,
+            executed_at,
+            captured_at,
+            label_15m
+        FROM signal_logs
+        WHERE outcome IS NOT NULL
+        ORDER BY captured_at DESC
+        LIMIT :limit
+    """), {"limit": limit})
+
+    results = []
+    for r in rows.fetchall():
+        profit = None
+        if r[5] is not None and r[6] is not None:   # entry_price, exit_price
+            direction = 1 if str(r[3]).upper() in ("BUY", "CALL", "RISE") else -1
+            profit    = round((r[6] - r[5]) * direction, 5)
+
+        results.append({
+            "ticket":      str(r[0]),
+            "symbol":      r[1] or r[2],             # strategy name or symbol
+            "type":        r[3],                      # BUY / SELL
+            "volume":      0.0,                       # not stored in signal_logs
+            "open_price":  r[5],
+            "close_price": r[6],
+            "open_time":   str(r[10]) if r[10] else "—",   # captured_at
+            "close_time":  str(r[9])  if r[9]  else "—",   # executed_at
+            "swap":        0.0,
+            "commission":  0.0,
+            "profit":      profit,
+            "outcome":     r[7],
+            "confidence":  r[4],
+        })
+
+    return results
+# ─────────────────────────────────────────────────────────────
 # AUTH
 # ─────────────────────────────────────────────────────────────
 
