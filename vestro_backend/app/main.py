@@ -46,8 +46,10 @@ async def lifespan(app: FastAPI):
 
     # Restore bot state
     import vestro_backend.app.routes.api as api_module
-    api_module._bot_running = api_module._read_bot_state()
-    log.info(f"Bot state restored: running={api_module._bot_running}")
+    api_module._bot_running = True  # always start running
+    _write_bot_state(True)
+    log.info("Bot state: auto-started on deploy")
+
 
     asyncio.create_task(run_signal_loop())
     log.info("Signal engine running")

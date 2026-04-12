@@ -281,8 +281,7 @@ async def process_deriv_account(
     # FIX: Do NOT return early here. The runner handles Crash500 but
     # signal_engine handles V75. Returning early was preventing all
     # V75 trades from executing and leaving outcomes stuck as OPEN.
-    if runner_is_live:
-        return
+
 
     # ── Confidence + safety gates ─────────────────────────────
     if signal == "HOLD":
