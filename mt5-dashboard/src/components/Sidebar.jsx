@@ -2,14 +2,65 @@ import { useState, useEffect } from 'react'
 import useBotStore from '../store/botStore'
 
 const NAV = [
-  { key: 'dashboard', icon: '📊', label: 'Dashboard'   },
-  { key: 'valuations',icon: '🎯', label: 'Valuations'  },
-  { key: 'signals',   icon: '📡', label: 'Signals'     },
-  { key: 'positions', icon: '📉', label: 'Positions'   },
-  { key: 'journal',   icon: '📓', label: 'Journal'     },
-  { key: 'stats',     icon: '📈', label: 'Performance' },
+  {
+    key: 'dashboard',
+    label: 'Dashboard',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="2" width="8" height="8" rx="1.5"/>
+      <rect x="12" y="2" width="8" height="8" rx="1.5"/>
+      <rect x="2" y="12" width="8" height="8" rx="1.5"/>
+      <rect x="12" y="12" width="8" height="8" rx="1.5"/>
+    </svg>`,
+  },
+  {
+    key: 'valuations',
+    label: 'Valuations',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="11" cy="11" r="8.5"/>
+      <circle cx="11" cy="11" r="3.5"/>
+      <line x1="11" y1="2.5" x2="11" y2="6"/>
+      <line x1="11" y1="16" x2="11" y2="19.5"/>
+      <line x1="2.5" y1="11" x2="6" y2="11"/>
+      <line x1="16" y1="11" x2="19.5" y2="11"/>
+    </svg>`,
+  },
+  {
+    key: 'signals',
+    label: 'Signals',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+      <path d="M11 3.5C11 3.5 5 8 5 13a6 6 0 0012 0c0-5-6-9.5-6-9.5z"/>
+      <line x1="11" y1="13" x2="11" y2="9" stroke-linecap="round"/>
+      <circle cx="11" cy="14.5" r="1" fill="currentColor" stroke="none"/>
+    </svg>`,
+  },
+  {
+    key: 'positions',
+    label: 'Positions',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="2,16 7,10 11,13 16,7 20,9"/>
+      <line x1="2" y1="19" x2="20" y2="19"/>
+    </svg>`,
+  },
+  {
+    key: 'journal',
+    label: 'Journal',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <rect x="3.5" y="2.5" width="15" height="17" rx="2"/>
+      <line x1="7" y1="8" x2="15" y2="8"/>
+      <line x1="7" y1="12" x2="15" y2="12"/>
+      <line x1="7" y1="16" x2="11" y2="16"/>
+    </svg>`,
+  },
+  {
+    key: 'stats',
+    label: 'Performance',
+    icon: `<svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="2,15 7,9 11,12 16,5 20,7"/>
+      <polyline points="16,5 20,5 20,9"/>
+      <line x1="2" y1="19" x2="20" y2="19"/>
+    </svg>`,
+  },
 ]
-
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
   useEffect(() => {
