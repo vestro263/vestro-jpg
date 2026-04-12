@@ -272,16 +272,14 @@ const useBotStore = create(
 
       // ── polling ───────────────────────────────────────────
       startPolling: () => {
-        // clear any existing interval to avoid duplicates on re-login
         if (get()._pollInterval) clearInterval(get()._pollInterval)
         const id = setInterval(() => {
-          get().fetchPositions()
-          get().fetchAccount()
-          get().syncBotStatus()   // keep bot status in sync with file state
-        }, 5000)
+            get().fetchPositions()
+            get().fetchAccount()      // ← already polls every 5s
+            get().syncBotStatus()
+        }, 3000)                      // ← reduce from 5000 to 3000ms
         set({ _pollInterval: id })
-      },
-    }),
+    },
 
     {
       name: 'vestro-auth',

@@ -221,7 +221,9 @@ export default function Dashboard() {
     }
   }, [accountId])
 
-  const totalOpenProfit = positions.reduce((s, p) => s + (p.profit || 0), 0)
+  const totalOpenProfit = tradeFeed
+    .filter(t => !t.is_expired && !t.is_sold && t.contract_id)
+    .reduce((s, t) => s + (t.profit ?? 0), 0)
 
   // Equity curve from closed trades
   const equityCurve = tradeFeed
