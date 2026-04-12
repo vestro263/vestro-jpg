@@ -21,11 +21,8 @@ DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 _BOT_STATE_FILE = pathlib.Path("/tmp/vestro_bot_running.txt")
 
-# ── Execution config ─────────────────────────────────────────
-MIN_CONFIDENCE  = 0.60   # only fire trades above this
-STAKE_PCT       = 0.01   # 1% of balance per trade
-MIN_STAKE       = 0.35   # Deriv minimum
-MAX_STAKE       = 10.0   # safety cap
+MIN_STAKE = 0.35
+MAX_STAKE = 10.0
 
 
 def _is_bot_running() -> bool:
@@ -33,63 +30,6 @@ def _is_bot_running() -> bool:
         return _BOT_STATE_FILE.read_text().strip() == "1"
     except:
         return False
-
-
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-
-def compute_rsi(closes, period=14):
-    deltas = np.diff(closes)
-    gains  = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_g  = np.mean(gains[-period:])
-    avg_l  = np.mean(losses[-period:])
-    if avg_l == 0:
-        return 100
-    return 100 - (100 / (1 + avg_g / avg_l))
-
-def compute_ema(closes, period):
-    closes = list(closes)
-    k   = 2 / (period + 1)
-    ema = closes[-1]
-    for price in reversed(closes[:-1]):
-        ema = price * k + ema * (1 - k)
-    return round(ema, 4)
-
-def compute_adx(closes, period=14):
-    if len(closes) < period + 1:
-        return 0.0
-    highs = [max(closes[i], closes[i-1]) for i in range(1, len(closes))]
-    lows  = [min(closes[i], closes[i-1]) for i in range(1, len(closes))]
-    trs   = [h - l for h, l in zip(highs, lows)]
-    return round(float(np.mean(trs[-period:]) / np.mean(closes[-period:]) * 100), 2)
-
-def compute_atr(closes, period=14):
-    if len(closes) < period + 1:
-        return 0.0
-    trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
-    return round(float(np.mean(trs[-period:])), 5)
-
-def compute_macd(closes, fast=12, slow=26, signal=9):
-    if len(closes) < slow:
-        return 0.0
-    ema_fast = compute_ema(closes[-fast*2:], fast)
-    ema_slow = compute_ema(closes[-slow*2:], slow)
-    return round(ema_fast - ema_slow, 5)
-
-def compute_ma(closes, period):
-    return float(np.mean(closes[-period:]))
-
-
-async def fetch_deriv_ticks(api_token: str, symbol: str = "R_100", count: int = 300):
-    url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({"authorize": api_token}))
-        await ws.recv()
-        await ws.send(json.dumps({"ticks_history": symbol, "count": count, "end": "latest"}))
-        data = json.loads(await ws.recv())
-        return data["history"]["prices"]
 
 
 async def broadcast_to_frontend(data: dict):
@@ -107,10 +47,6 @@ async def execute_trade(
     broker: str = "deriv",
     account_id: str = "",
 ) -> dict | None:
-    """
-    Fire a trade via /api/trade and return the result.
-    Passes account_id so the backend picks the right credential.
-    """
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{BACKEND_URL}/api/trade", json={
@@ -140,90 +76,7 @@ async def fetch_deriv_balance(api_token: str) -> float:
         return 0.0
 
 
-def _calc_stake(balance: float, confidence: float) -> float:
-    """
-    Size the stake as 1% of balance, scaled by confidence above threshold.
-    confidence=0.60 → 1x, confidence=0.80 → 1.5x, capped at MAX_STAKE.
-    """
-    scale  = 1.0 + (confidence - MIN_CONFIDENCE) * 2.5   # 0.60→1.0, 0.80→1.5
-    stake  = round(balance * STAKE_PCT * scale, 2)
-    return max(MIN_STAKE, min(MAX_STAKE, stake))
-
-
-# ============================================================
-# MARKET SIGNAL COMPUTATION
-# ============================================================
-
-async def compute_r75_signal(api_token: str) -> dict | None:
-    try:
-        closes  = list(await fetch_deriv_ticks(api_token, "R_75"))
-
-        rsi      = compute_rsi(closes)
-        ma_fast  = compute_ma(closes, 5)
-        ma_slow  = compute_ma(closes, 20)
-        atr_val  = compute_atr(closes)
-        adx_val  = compute_adx(closes)
-        macd_val = compute_macd(closes)
-        ema50    = compute_ema(closes, 50)
-        ema200   = compute_ema(closes, 200)
-        ema21    = compute_ema(closes, 21)
-
-        tss = 0
-        if ema21 > ema50 > ema200 or ema21 < ema50 < ema200: tss += 1
-        if adx_val > 25:                                      tss += 1
-        if closes[-1] > ema200:                               tss += 1
-        if macd_val > 0:                                      tss += 1
-        tss += 1  # base point
-
-        if len(closes) >= 21:
-            atrs    = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
-            avg_atr = float(np.mean(atrs[-21:-1]))
-            ratio   = atr_val / (avg_atr + 1e-10)
-            if ratio < 0.5:   atr_zone = "low"
-            elif ratio < 1.5: atr_zone = "normal"
-            elif ratio < 2.5: atr_zone = "elevated"
-            else:             atr_zone = "extreme"
-        else:
-            atr_zone = "normal"
-
-        macd_bullish = macd_val > 0
-        macd_bearish = macd_val < 0
-
-        if macd_bullish and rsi < 60:
-            signal = "BUY"
-        elif macd_bearish and rsi > 40:
-            signal = "SELL"
-        else:
-            signal = "HOLD"
-
-        # ── Pull calibrated confidence from ML model ──────────
-        thresholds = get_thresholds("R_75")
-        confidence = float(thresholds.confidence_min or 0.0) if thresholds else 0.0
-
-
-        return {
-            "signal":       signal,
-            "closes":       closes,
-            "rsi":          rsi,
-            "adx":          adx_val,
-            "atr":          atr_val,
-            "ema50":        ema50,
-            "ema200":       ema200,
-            "macd_val":     macd_val,
-            "macd_bullish": macd_bullish,
-            "tss":          tss,
-            "atr_zone":     atr_zone,
-            "confidence":   confidence,
-        }
-    except Exception as e:
-        print(f"[signal_engine] compute_r75_signal error: {e}")
-        return None
-
-
-
-
 async def mark_signal_executed(signal_log_id: str) -> None:
-    """Mark a signal_log row as executed=true after a trade fires."""
     try:
         async with AsyncSessionLocal() as db:
             await db.execute(text("""
@@ -236,105 +89,6 @@ async def mark_signal_executed(signal_log_id: str) -> None:
         print(f"[signal_engine] mark_executed error: {e}")
 
 
-# ============================================================
-# PER-CREDENTIAL BROADCAST + EXECUTION
-# ============================================================
-
-async def process_deriv_account(
-    cred,
-    sig: dict,
-    signal_log_id: str | None,
-    runner_is_live: bool = False,
-):
-    symbol      = "R_75"
-    signal      = sig["signal"]
-    atr_zone    = sig["atr_zone"]
-    tss         = sig["tss"]
-    confidence  = sig["confidence"]
-    bot_running = _is_bot_running()
-
-    print(
-        f"[deriv:{cred.user_id}:{symbol}] "
-        f"RSI={sig['rsi']:.1f} TSS={tss}/5 ATR={atr_zone} "
-        f"conf={confidence:.3f} signal={signal} "
-        f"bot={bot_running} runner={'live' if runner_is_live else 'off'}"
-    )
-
-    await broadcast_to_frontend({
-        "symbol": symbol,
-        "action": signal,
-        "signal": {
-            "direction":  1 if signal == "BUY" else (-1 if signal == "SELL" else 0),
-            "rsi":        round(sig["rsi"], 2),
-            "adx":        round(sig["adx"], 2),
-            "atr":        round(sig["atr"], 5),
-            "ema50":      round(sig["ema50"], 4),
-            "ema200":     round(sig["ema200"], 4),
-            "macd_hist":  round(sig["macd_val"], 5),
-            "tss_score":  tss,
-            "atr_zone":   atr_zone,
-            "confidence": round(confidence, 3),
-        }
-    })
-
-    # ── Strategy runner handles its own execution ─────────────
-    # FIX: Do NOT return early here. The runner handles Crash500 but
-    # signal_engine handles V75. Returning early was preventing all
-    # V75 trades from executing and leaving outcomes stuck as OPEN.
-
-
-    # ── Confidence + safety gates ─────────────────────────────
-    if signal == "HOLD":
-        return
-    if not bot_running:
-        print(f"[deriv:{cred.user_id}] bot stopped — skipping trade")
-        return
-    if atr_zone == "extreme":
-        print(f"[deriv:{cred.user_id}] ATR extreme — skipping trade")
-        return
-    if tss < 3:
-        print(f"[deriv:{cred.user_id}] TSS {tss}/5 too low — skipping trade")
-        return
-    if confidence < MIN_CONFIDENCE:
-        print(f"[deriv:{cred.user_id}] confidence {confidence:.3f} < {MIN_CONFIDENCE} — skipping trade")
-        return
-
-    # ── Size stake from live balance ──────────────────────────
-    api_token = decrypt(cred.password)
-    balance   = await fetch_deriv_balance(api_token)
-
-    if balance <= 0:
-        print(f"[deriv:{cred.user_id}] balance fetch failed — skipping trade")
-        return
-
-    stake = _calc_stake(balance, confidence)
-
-    print(
-        f"[deriv:{cred.user_id}] EXECUTING {signal} "
-        f"stake=${stake} (bal=${balance:.2f} conf={confidence:.3f})"
-    )
-
-    result = await execute_trade(
-        symbol     = symbol,
-        action     = signal,
-        amount     = stake,
-        account_id = cred.user_id,
-    )
-
-    print(f"[deriv:{cred.user_id}] trade result: {result}")
-
-    # ── Mark signal as executed in DB ─────────────────────────
-    # FIX: check for contract_id (Deriv response shape), not status:"success"
-    if result and result.get("contract_id") and signal_log_id:
-        await mark_signal_executed(signal_log_id)
-    elif result and result.get("status") == "error":
-        print(f"[deriv:{cred.user_id}] trade error from Deriv: {result.get('message')}")
-
-
-# ============================================================
-# STRATEGY RUNNER BOOT + WATCHDOG
-# ============================================================
-
 _strategy_runner_task: asyncio.Task | None = None
 
 
@@ -343,8 +97,6 @@ def _runner_is_alive() -> bool:
 
 
 async def _boot_strategy_runner(api_token: str, account_id: str) -> None:
-    # FIX: accept account_id and pass it to StrategyRunner
-    # so every strategy knows which Deriv account to trade on
     global _strategy_runner_task
     balance = await fetch_deriv_balance(api_token)
     runner  = StrategyRunner(
@@ -353,15 +105,11 @@ async def _boot_strategy_runner(api_token: str, account_id: str) -> None:
         broadcast_fn     = broadcast_to_frontend,
         execute_trade_fn = execute_trade,
         is_prop          = False,
-        account_id       = account_id,   # ← FIX: was missing
+        account_id       = account_id,
     )
     _strategy_runner_task = asyncio.create_task(runner.start(), name="strategy-runner")
     print(f"[signal_engine] StrategyRunner booted — balance={balance} account_id={account_id} ✓")
 
-
-# ============================================================
-# MAIN SIGNAL LOOP
-# ============================================================
 
 async def run_signal_loop():
     print("[signal_engine] starting...")
@@ -382,29 +130,11 @@ async def run_signal_loop():
 
             if deriv_cred and not _runner_is_alive():
                 print("[signal_engine] booting strategy runner...")
-                # FIX: pass deriv_cred.user_id as account_id
                 await _boot_strategy_runner(decrypt(deriv_cred.password), deriv_cred.user_id)
                 asyncio.create_task(start_reload_loop(), name="calibration-reload")
 
-            runner_live = _runner_is_alive()
-
-            # ── Compute R_75 signal ONCE per cycle ──────────────
-            sig = None
-            if deriv_cred:
-                sig = await compute_r75_signal(decrypt(deriv_cred.password))
-
-            if sig:
-                signal_log_id = None
-
-                # Broadcast + conditionally execute per credential
-                deriv_creds = [c for c in creds if c.broker == "deriv"]
-                for cred in deriv_creds:
-                    await process_deriv_account(
-                        cred,
-                        sig,
-                        signal_log_id  = signal_log_id,
-                        runner_is_live = runner_live,
-                    )
+            if _runner_is_alive():
+                print(f"[signal_engine] runner alive — execution delegated to strategies")
 
         except Exception as e:
             print(f"[signal_engine] loop error: {e}")
@@ -414,14 +144,12 @@ async def run_signal_loop():
         finally:
             _loop_count += 1
 
-            # Label outcomes every 5 min
             if _loop_count % 10 == 0 and deriv_cred:
                 asyncio.create_task(
                     run_labeler(decrypt(deriv_cred.password)),
                     name=f"outcome-labeler-{_loop_count}"
                 )
 
-            # Train every hour
             if _loop_count % 120 == 0:
                 asyncio.create_task(
                     run_validator(),

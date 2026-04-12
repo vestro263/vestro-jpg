@@ -1,14 +1,10 @@
 """
-migrate_outcome.py
-==================
-Run once to:
-  1. Add outcome, exit_price, executed_at columns to signal_logs
-  2. Backfill outcome from label_15m
+migrate_calibration.py
+======================
+Run once to add missing RSI columns to calibration_config table.
 
 Usage:
-    python migrate_outcome.py
-
-Reads DATABASE_URL from your .env automatically.
+    py migrate_calibration.py
 """
 
 import os
@@ -19,11 +15,8 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Render gives postgres:// — psycopg2 needs postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-# Strip asyncpg driver if someone has it set
 if "postgresql+asyncpg://" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
@@ -32,56 +25,34 @@ def run():
     engine = create_engine(DATABASE_URL, echo=False)
 
     with engine.begin() as conn:
+        print("\n── Adding missing columns to calibration_config ──")
 
-        print("\n── Step 1: Adding columns (safe, skips if already exist) ──")
+        cols = [
+            ("rsi_buy_min",  "FLOAT"),
+            ("rsi_buy_max",  "FLOAT"),
+            ("rsi_sell_min", "FLOAT"),
+            ("rsi_sell_max", "FLOAT"),
+        ]
 
-        conn.execute(text("""
-            ALTER TABLE signal_logs
-            ADD COLUMN IF NOT EXISTS outcome     VARCHAR(10) DEFAULT NULL
-        """))
+        for col, dtype in cols:
+            conn.execute(text(f"""
+                ALTER TABLE calibration_config
+                ADD COLUMN IF NOT EXISTS {col} {dtype} DEFAULT NULL
+            """))
+            print(f"  ✓ {col}")
 
-        conn.execute(text("""
-            ALTER TABLE signal_logs
-            ADD COLUMN IF NOT EXISTS exit_price  FLOAT DEFAULT NULL
-        """))
-
-        conn.execute(text("""
-            ALTER TABLE signal_logs
-            ADD COLUMN IF NOT EXISTS executed_at TIMESTAMP DEFAULT NULL
-        """))
-
-        print("✓ Columns added\n")
-
-        print("── Step 2: Backfilling outcome from label_15m ──")
-
+        print("\n── Verification ──")
         result = conn.execute(text("""
-            UPDATE signal_logs
-            SET outcome = CASE
-                WHEN label_15m =  1 THEN 'WIN'
-                WHEN label_15m = -1 THEN 'LOSS'
-                WHEN label_15m =  0 THEN 'NEUTRAL'
-            END
-            WHERE label_15m IS NOT NULL
-              AND outcome IS NULL
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'calibration_config'
+            ORDER BY ordinal_position
         """))
-
-        print(f"✓ Backfilled {result.rowcount} rows\n")
-
-        print("── Step 3: Verification ──")
-
-        counts = conn.execute(text("""
-            SELECT outcome, COUNT(*) as cnt
-            FROM signal_logs
-            GROUP BY outcome
-            ORDER BY outcome
-        """))
-
-        for row in counts.fetchall():
-            label = row[0] if row[0] is not None else "NULL (unlabeled)"
-            print(f"  {label:12s}: {row[1]:>7,}")
+        for row in result.fetchall():
+            print(f"  {row[0]:30s} {row[1]}")
 
     engine.dispose()
-    print("\n✓ Migration complete")
+    print("\n✓ Done")
 
 
 if __name__ == "__main__":
