@@ -561,8 +561,16 @@ class V75Strategy(BaseStrategy):
     async def should_execute(self, signal: dict) -> bool:
         try:
             async with httpx.AsyncClient() as client:
-                status      = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
+                status = await client.get(f"{BACKEND_URL}/api/bot/status", timeout=5)
                 bot_running = status.json().get("running", False)
+
+            self.logger.info(
+                f"[{self.NAME}] gate check | "
+                f"bot={bot_running} "
+                f"conf={signal.get('confidence', 0):.3f} "
+                f"amount={signal.get('amount', 0):.4f} "
+                f"atr={signal.get('meta', {}).get('atr_zone', '?')}"
+            )
 
             if not bot_running:
                 self.logger.info(f"[{self.NAME}] bot not running — skipping")
@@ -576,10 +584,9 @@ class V75Strategy(BaseStrategy):
                 self.logger.info(f"[{self.NAME}] lot size 0 — skipping")
                 return False
 
-            # ── Confidence gate ───────────────────────────────────
-            confidence  = signal.get("confidence", 0.0)
-            min_conf    = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
-            exec_thresh = max(min_conf, 0.60)   # never go below 0.60
+            confidence = signal.get("confidence", 0.0)
+            min_conf = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
+            exec_thresh = max(min_conf, 0.60)
 
             if confidence < exec_thresh:
                 self.logger.info(
