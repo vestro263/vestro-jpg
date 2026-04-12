@@ -238,7 +238,7 @@ function DesktopSidebar() {
 
       <div style={css.logoWrap}>
         <div style={css.logoText}>Vestro Capital</div>
-        <div style={css.logoSub}>MT5 Dashboard</div>
+
       </div>
 
       <div style={css.pill}>
