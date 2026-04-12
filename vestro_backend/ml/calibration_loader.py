@@ -99,8 +99,8 @@ _DEFAULTS: dict[str, Thresholds] = {
 
         # Filters — [HOLD-FIX] lowered to reduce HOLD rate
         adx_min=25.0,
-        tss_min=2,           # was 3
-        checklist_min=3,     # was 4
+        tss_min=1,           # was 3
+        checklist_min=2,     # was 4
         confidence_min=0.0,
 
         spike_min=None,

@@ -198,7 +198,8 @@ async def compute_r75_signal(api_token: str) -> dict | None:
 
         # ── Pull calibrated confidence from ML model ──────────
         thresholds = get_thresholds("R_75")
-        confidence = float(thresholds.get("confidence_min", 0.0)) if thresholds else 0.0
+        confidence = float(thresholds.confidence_min or 0.0) if thresholds else 0.0
+
 
         return {
             "signal":       signal,
@@ -219,50 +220,6 @@ async def compute_r75_signal(api_token: str) -> dict | None:
         return None
 
 
-async def log_r75_signal(sig: dict) -> str | None:
-    """
-    Write one SignalLog row. Returns the inserted row id so we can
-    mark it executed=true after the trade fires.
-    """
-    if sig["signal"] == "HOLD":
-        return None
-
-    try:
-        entry_price = sig["closes"][-1]
-        atr_val     = sig["atr"]
-        direction   = 1 if sig["signal"] == "BUY" else -1
-        tp = entry_price + atr_val if direction == 1 else entry_price - atr_val
-        sl = entry_price - atr_val if direction == 1 else entry_price + atr_val
-
-        row = SignalLog(
-            strategy    = "V75",
-            symbol      = "R_75",
-            signal      = sig["signal"],
-            direction   = direction,
-            entry_price = entry_price,
-            tp_price    = tp,
-            sl_price    = sl,
-            rsi         = round(sig["rsi"], 2),
-            adx         = round(sig["adx"], 2),
-            atr         = round(sig["atr"], 5),
-            ema_50      = round(sig["ema50"], 4),
-            ema_200     = round(sig["ema200"], 4),
-            macd_hist   = round(sig["macd_val"], 5),
-            tss_score   = sig["tss"],
-            atr_zone    = sig["atr_zone"],
-            confidence  = round(sig["confidence"], 4),
-            captured_at = datetime.utcnow(),
-        )
-
-        async with AsyncSessionLocal() as db:
-            db.add(row)
-            await db.commit()
-            await db.refresh(row)
-            return row.id
-
-    except Exception as log_err:
-        print(f"[signal_engine] SignalLog insert error: {log_err}")
-        return None
 
 
 async def mark_signal_executed(signal_log_id: str) -> None:
