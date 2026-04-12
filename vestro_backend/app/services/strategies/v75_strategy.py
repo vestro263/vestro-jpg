@@ -386,6 +386,8 @@ class _RiskManager:
 class V75Strategy(BaseStrategy):
     NAME   = "V75"
     SYMBOL = "R_75"
+    _last_executed:    float = 0
+    _cooldown_seconds: int   = 120  # 2 minutes between trades
 
     def __init__(self, api_token, broadcast_fn, execute_trade_fn,
                  balance: float = 1000.0, is_prop: bool = False):
@@ -604,14 +606,22 @@ class V75Strategy(BaseStrategy):
         if signal["signal"] == "HOLD":
             return None
 
+        # ── Cooldown gate ─────────────────────────────────────────
+        now = time.time()
+        if now - V75Strategy._last_executed < V75Strategy._cooldown_seconds:
+            remaining = int(V75Strategy._cooldown_seconds - (now - V75Strategy._last_executed))
+            self.logger.info(f"[{self.NAME}] cooldown — {remaining}s remaining, skipping")
+            return None
+        V75Strategy._last_executed = now
+
         action = "rise" if signal["signal"] == "BUY" else "fall"
 
         # ── Size stake from live balance (1% scaled by confidence) ──
         confidence = signal.get("confidence", 0.60)
-        balance = signal.get("meta", {}).get("balance", self.balance)
-        scale = 1.0 + (confidence - 0.60) * 2.5  # 0.60→1.0x, 0.80→1.5x
+        balance = signal.get("meta", {}).get("balance", self.balance) or self.balance
+        scale = 1.0 + (confidence - 0.30) * 2.5
         stake = round(balance * 0.01 * scale, 2)
-        stake = max(0.35, min(10.0, stake))  # Deriv min/max
+        stake = max(0.35, min(10.0, stake))
 
         self.logger.info(
             f"[{self.NAME}] EXECUTING {action.upper()} | "
