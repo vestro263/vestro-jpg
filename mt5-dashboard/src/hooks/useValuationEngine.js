@@ -1,15 +1,3 @@
-/**
- * useValuationEngine.js
- * Drop into mt5-dashboard/src/hooks/
- *
- * Connects the Vestro frontend to the Python valuation engine backend.
- * - REST: fetches firms + signals on mount
- * - WebSocket: receives live score updates, patches firms state in real-time
- *
- * Usage:
- *   import { useValuationEngine } from '../hooks/useValuationEngine'
- *   const { firms, signals, loading, error, wsStatus, fetchFirmDetail } = useValuationEngine()
- */
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://vestro-jpg.onrender.com'
@@ -20,7 +8,7 @@ export function useValuationEngine() {
   const [signals,  setSignals]  = useState([])
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState(null)
-  const [wsStatus, setWsStatus] = useState('connecting') // connecting | connected | reconnecting | error
+  const [wsStatus, setWsStatus] = useState('connecting')
 
   const wsRef   = useRef(null)
   const pingRef = useRef(null)
@@ -30,11 +18,12 @@ export function useValuationEngine() {
   const fetchFirms = useCallback(async (params = {}) => {
     const qs  = new URLSearchParams(params).toString()
     const res = await fetch(`${API_BASE}/api/firms${qs ? '?' + qs : ''}`, {
-        signal: AbortSignal.timeout(25000)  // 25s timeout
+      signal: AbortSignal.timeout(25000),
     })
     if (!res.ok) throw new Error(`firms ${res.status}`)
-    return res.json()
-}, [])
+    const data = await res.json()
+    return data.map(normaliseFirm)
+  }, [])
 
   const fetchSignals = useCallback(async (firmId = null, limit = 50) => {
     const params = firmId ? `?firm_id=${firmId}&limit=${limit}` : `?limit=${limit}`
@@ -46,7 +35,7 @@ export function useValuationEngine() {
   const fetchFirmDetail = useCallback(async (firmId) => {
     const res = await fetch(`${API_BASE}/api/firms/${firmId}`)
     if (!res.ok) throw new Error(`firm ${res.status}`)
-    return res.json()
+    return normaliseFirm(await res.json())
   }, [])
 
   // ── Initial load ──────────────────────────────────────────────────────
@@ -87,14 +76,10 @@ export function useValuationEngine() {
         try {
           const msg = JSON.parse(data)
           if (msg === 'pong' || msg?.type === 'ping') return
-
-          // Snapshot on connect — array of top scores
           if (Array.isArray(msg)) {
             setFirms(prev => _applyUpdates(prev, msg))
             return
           }
-
-          // Live score update
           if (msg.type === 'score_update') {
             setFirms(prev => _applyUpdates(prev, [msg]))
           }
@@ -133,20 +118,37 @@ export function useValuationEngine() {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// ── Normalise a firm from the REST response ───────────────────────────────
+// Guarantees score is always a complete object — never null/undefined fields
+
+function normaliseFirm(f) {
+  const s = f.score ?? {}
+  return {
+    ...f,
+    score: {
+      rise_prob:  s.rise_prob  ?? 0.5,
+      fall_prob:  s.fall_prob  ?? 0.5,
+      conviction: s.conviction ?? 50,
+      top_driver: s.top_driver ?? 'unknown',
+    },
+  }
+}
+
+// ── Patch firms in place from WebSocket updates ───────────────────────────
 
 function _applyUpdates(firms, updates) {
   const map = new Map(firms.map(f => [f.id, f]))
   updates.forEach(u => {
     const existing = map.get(u.firm_id)
     if (existing) {
+      const prev = existing.score ?? {}
       map.set(u.firm_id, {
         ...existing,
         score: {
-          rise_prob:  u.rise_prob,
-          fall_prob:  u.fall_prob,
-          conviction: u.conviction,
-          top_driver: u.top_driver,
+          rise_prob:  u.rise_prob  ?? prev.rise_prob  ?? 0.5,
+          fall_prob:  u.fall_prob  ?? prev.fall_prob  ?? 0.5,
+          conviction: u.conviction ?? prev.conviction ?? 50,
+          top_driver: u.top_driver ?? prev.top_driver ?? 'unknown',
         },
       })
     }
