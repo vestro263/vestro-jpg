@@ -606,13 +606,7 @@ class V75Strategy(BaseStrategy):
         if signal["signal"] == "HOLD":
             return None
 
-        # ── Cooldown gate ─────────────────────────────────────────
-        now = time.time()
-        if now - V75Strategy._last_executed < V75Strategy._cooldown_seconds:
-            remaining = int(V75Strategy._cooldown_seconds - (now - V75Strategy._last_executed))
-            self.logger.info(f"[{self.NAME}] cooldown — {remaining}s remaining, skipping")
-            return None
-        V75Strategy._last_executed = now
+
 
         action = "rise" if signal["signal"] == "BUY" else "fall"
 
