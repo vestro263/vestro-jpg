@@ -22,6 +22,7 @@ const useBotStore = create(
         is_virtual: false,
       },
       signals:        [],
+      signalMap:      {},   // ← per-symbol latest signal: { R_75: {...}, R_25: {...} }
       positions:      [],
       tradeFeed:      [],
       journal:        [],
@@ -87,6 +88,7 @@ const useBotStore = create(
           },
           positions:  [],
           signals:    [],
+          signalMap:  {},
           tradeFeed:  [],
           botRunning: false,
           activePage: 'dashboard',
@@ -182,7 +184,14 @@ const useBotStore = create(
               id:         Date.now() + Math.random(),
               receivedAt: new Date().toLocaleTimeString(),
             }
-            set({ signals: [entry, ...state.signals].slice(0, 100) })
+            // ── update flat list AND per-symbol map ──
+            const sym = data.symbol || data.signal?.symbol
+            set(s => ({
+              signals:   [entry, ...s.signals].slice(0, 100),
+              signalMap: sym
+                ? { ...s.signalMap, [sym]: entry }
+                : s.signalMap,
+            }))
             return
           }
 
@@ -289,6 +298,7 @@ const useBotStore = create(
         account:       s.account,
         botRunning:    s.botRunning,
         derivAccounts: s.derivAccounts,
+        // intentionally NOT persisting signalMap — always fresh on load
       }),
     }
   )

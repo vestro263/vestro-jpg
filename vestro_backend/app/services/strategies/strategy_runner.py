@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 
 # How often each strategy's pipeline runs (seconds)
 STRATEGY_INTERVALS = {
-    "V75":      30,   # V75 scans every 30s (indicator-based, slower)
-    "Crash500":  2,   # Crash500 scans every 2s (spike-based, faster)
+    "V75":      30,
+    "V25":      30,   # same cadence as V75 — indicator-based
+    "Crash500":  2,
 }
 
 DEFAULT_INTERVAL = 30

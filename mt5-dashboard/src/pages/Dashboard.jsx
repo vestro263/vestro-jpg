@@ -29,6 +29,12 @@ const CONTRACT_TYPES = [
   { label: 'Touch / No Touch', value: 'touch' },
 ]
 
+// Active strategies — add new ones here and they appear automatically
+const STRATEGY_SYMBOLS = [
+  { key: 'R_75', label: 'V75', color: '#f59e0b' },
+  { key: 'R_25', label: 'V25', color: '#38bdf8' },
+]
+
 function useIsMobile(breakpoint = 640) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint)
   useEffect(() => {
@@ -83,9 +89,148 @@ function ActiveAccountBanner() {
           background: '#1c1a08', border: '1px solid #713f12',
           padding: '2px 8px', borderRadius: 4,
         }}>
-          Demo — P&L not real
+          Demo — P&amp;L not real
         </span>
       )}
+    </div>
+  )
+}
+
+// ── Strategy Signal Cards ──────────────────────────────────────────────────────
+function StrategySignalCards({ signalMap, isMobile }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: isMobile
+        ? '1fr'
+        : `repeat(${STRATEGY_SYMBOLS.length}, minmax(0,1fr))`,
+      gap: 12,
+    }}>
+      {STRATEGY_SYMBOLS.map(({ key, label, color }) => {
+        const entry = signalMap?.[key]
+        const sig   = entry?.signal || {}
+
+        const confPct   = ((sig.confidence || 0) * 100)
+        const confColor = confPct >= 70 ? '#4ade80' : confPct >= 50 ? '#fbbf24' : '#f87171'
+
+        return (
+          <div key={key} style={{
+            ...S.card,
+            borderTop: `2px solid ${color}`,
+            position: 'relative',
+            overflow: 'hidden',
+          }}>
+            {/* subtle color glow in top-right corner */}
+            <div style={{
+              position: 'absolute', top: -30, right: -30,
+              width: 80, height: 80, borderRadius: '50%',
+              background: color, opacity: 0.05, pointerEvents: 'none',
+            }} />
+
+            <div style={{
+              ...S.h3,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: entry ? color : '#374151',
+                  boxShadow: entry ? `0 0 6px ${color}` : 'none',
+                  display: 'inline-block', flexShrink: 0,
+                  transition: 'all 0.3s',
+                }} />
+                {label} Signal
+              </span>
+              <span style={{
+                fontSize: 10, color: '#4b5563',
+                background: '#1f2937', padding: '2px 6px', borderRadius: 4,
+                fontFamily: 'monospace',
+              }}>
+                {key}
+              </span>
+            </div>
+
+            {entry ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+                {/* Direction + ATR zone + time */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <DirectionBadge direction={sig.direction} />
+                  <ATRZoneBadge zone={sig.atr_zone} />
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                    {entry.receivedAt}
+                  </span>
+                </div>
+
+                {/* TSS */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>TSS</div>
+                  <TSSBar score={sig.tss_score || 0} />
+                </div>
+
+                {/* Confidence bar */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>Confidence</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: confColor }}>
+                      {confPct.toFixed(0)}%
+                    </span>
+                  </div>
+                  <div style={{ height: 4, background: '#1f2937', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%',
+                      width:  `${confPct}%`,
+                      background: confColor,
+                      borderRadius: 2,
+                      transition: 'width 0.5s ease, background 0.3s',
+                    }} />
+                  </div>
+                </div>
+
+                {/* Reason */}
+                {sig.reason && (
+                  <div style={{
+                    fontSize: 10, color: '#6b7280',
+                    background: '#1f2937', borderRadius: 6,
+                    padding: '5px 8px', lineHeight: 1.5,
+                  }}>
+                    {sig.reason}
+                  </div>
+                )}
+
+                {/* Indicators 2-col grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 6 }}>
+                  {[
+                    ['RSI',    sig.rsi],
+                    ['ADX',    sig.adx],
+                    ['EMA50',  sig.ema50],
+                    ['EMA200', sig.ema200],
+                    ['MACD',   sig.macd_hist],
+                    ['ATR',    sig.atr],
+                  ].map(([k, v]) => (
+                    <div key={k} style={{
+                      background: '#1a2235', padding: '6px 8px', borderRadius: 6,
+                    }}>
+                      <div style={{ fontSize: 10, color: '#6b7280' }}>{k}</div>
+                      <div style={{ fontSize: 12, fontWeight: 500, color: '#e5e7eb', marginTop: 1 }}>
+                        {v != null ? Number(v).toFixed(4) : '—'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+              </div>
+            ) : (
+              <div style={{
+                padding: '28px 0', textAlign: 'center',
+                color: '#4b5563', fontSize: 12,
+              }}>
+                Waiting for {label} signal…
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -104,13 +249,8 @@ function QuickTrade({ isMobile }) {
   useEffect(() => { if (latestSymbol) setSymbol(latestSymbol) }, [latestSymbol])
 
   async function executeTrade(action) {
-    if (!accountId) {
-      setError('No account selected')
-      return
-    }
-    setLoading(action)
-    setResult(null)
-    setError(null)
+    if (!accountId) { setError('No account selected'); return }
+    setLoading(action); setResult(null); setError(null)
     try {
       const res = await fetch(`${API}/api/trade`, {
         method:  'POST',
@@ -166,7 +306,6 @@ function QuickTrade({ isMobile }) {
           />
         </div>
       </div>
-
       <div style={{ display: 'flex', gap: 10 }}>
         <button onClick={() => executeTrade('BUY')} disabled={!!loading} style={{
           flex: 1, padding: '13px 0', borderRadius: 8, border: 'none',
@@ -187,7 +326,6 @@ function QuickTrade({ isMobile }) {
           {loading === 'SELL' ? 'Placing…' : '▼ SELL / FALL'}
         </button>
       </div>
-
       {result && (
         <div style={{ marginTop: 12, background: '#052e16', border: '1px solid #166534', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#4ade80' }}>
           ✓ {result.action} placed — {result.symbol} · ${result.stake} · {result.time}
@@ -205,13 +343,11 @@ function QuickTrade({ isMobile }) {
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const {
-    account, accountId, signals, positions, tradeFeed,
+    account, accountId, signals, signalMap, positions, tradeFeed,
     fetchPositions, fetchAccount, botRunning, startBot, stopBot,
   } = useBotStore()
 
   const isMobile = useIsMobile()
-  const latest   = signals[0]
-  const sig      = latest?.signal || {}
 
   // Refresh account + positions whenever accountId changes
   useEffect(() => {
@@ -225,7 +361,6 @@ export default function Dashboard() {
     .filter(t => !t.is_expired && !t.is_sold && t.contract_id)
     .reduce((s, t) => s + (t.profit ?? 0), 0)
 
-  // Equity curve from closed trades
   const equityCurve = tradeFeed
     .filter(t => t.is_expired || t.is_sold)
     .slice(0, 30)
@@ -245,11 +380,6 @@ export default function Dashboard() {
     display: 'grid',
     gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0,1fr))',
     gap: 14,
-  }
-  const indicatorGrid = {
-    display: 'grid',
-    gridTemplateColumns: isMobile ? 'repeat(2,1fr)' : 'repeat(3,1fr)',
-    gap: 8,
   }
   const btnBase = {
     display: 'inline-flex', alignItems: 'center', gap: 7,
@@ -338,84 +468,41 @@ export default function Dashboard() {
       {/* ⚡ QUICK TRADE */}
       <QuickTrade isMobile={isMobile} />
 
-      {/* 🔲 MAIN GRID */}
-      <div style={grid2}>
+      {/* 📡 STRATEGY SIGNAL CARDS — V75 + V25 side by side */}
+      <StrategySignalCards signalMap={signalMap} isMobile={isMobile} />
 
-        {/* Signal */}
-        <div style={S.card}>
-          <div style={S.h3}>
-            Latest signal
-            {latest?.symbol && <span style={{ color: '#6b7280', marginLeft: 6 }}>{latest.symbol}</span>}
+      {/* 🔲 POSITIONS */}
+      <div style={S.card}>
+        <div style={S.h3}>Open positions ({positions.length})</div>
+        {positions.length === 0 ? (
+          <div style={{ padding: '24px 0', textAlign: 'center', color: '#4b5563', fontSize: 12 }}>
+            No open positions
           </div>
-          {latest ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <DirectionBadge direction={sig.direction} />
-                <ATRZoneBadge zone={sig.atr_zone} />
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
-                  {latest.receivedAt}
-                </span>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: '#6b7280' }}>TSS</div>
-                <TSSBar score={sig.tss_score || 0} />
-              </div>
-              <div style={indicatorGrid}>
-                {[
-                  ['RSI', sig.rsi], ['ADX', sig.adx],
-                  ['ATR', sig.atr], ['EMA50', sig.ema50],
-                  ['EMA200', sig.ema200], ['MACD', sig.macd_hist],
-                ].map(([k, v]) => (
-                  <div key={k} style={{ background: '#1f2937', padding: 8, borderRadius: 8 }}>
-                    <div style={{ fontSize: 10, color: '#6b7280' }}>{k}</div>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: '#e5e7eb', marginTop: 2 }}>
-                      {(v || 0).toFixed(4)}
-                    </div>
-                  </div>
+        ) : (
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 260 }}>
+              <thead>
+                <tr>{['Symbol', 'Type', 'Lot', 'P&L'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {positions.map(p => (
+                  <tr key={p.ticket}
+                    onMouseEnter={e => e.currentTarget.style.background = '#1f2937'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    style={{ transition: 'background 0.1s' }}
+                  >
+                    <td style={{ ...S.td, fontWeight: 600, color: '#e5e7eb' }}>{p.symbol}</td>
+                    <td style={S.td}><DirectionBadge direction={p.type === 'buy' ? 1 : -1} /></td>
+                    <td style={S.td}>{p.volume}</td>
+                    <td style={{ ...S.td, fontWeight: 600, color: (p.profit || 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                      {(p.profit || 0) >= 0 ? '+' : ''}{(p.profit || 0).toFixed(2)}
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            </div>
-          ) : (
-            <div style={{ padding: '24px 0', textAlign: 'center', color: '#4b5563', fontSize: 12 }}>
-              No signal yet — waiting for the bot…
-            </div>
-          )}
-        </div>
-
-        {/* Positions */}
-        <div style={S.card}>
-          <div style={S.h3}>Open positions ({positions.length})</div>
-          {positions.length === 0 ? (
-            <div style={{ padding: '24px 0', textAlign: 'center', color: '#4b5563', fontSize: 12 }}>
-              No open positions
-            </div>
-          ) : (
-            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 260 }}>
-                <thead>
-                  <tr>{['Symbol', 'Type', 'Lot', 'P&L'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
-                </thead>
-                <tbody>
-                  {positions.map(p => (
-                    <tr key={p.ticket}
-                      onMouseEnter={e => e.currentTarget.style.background = '#1f2937'}
-                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                      style={{ transition: 'background 0.1s' }}
-                    >
-                      <td style={{ ...S.td, fontWeight: 600, color: '#e5e7eb' }}>{p.symbol}</td>
-                      <td style={S.td}><DirectionBadge direction={p.type === 'buy' ? 1 : -1} /></td>
-                      <td style={S.td}>{p.volume}</td>
-                      <td style={{ ...S.td, fontWeight: 600, color: (p.profit || 0) >= 0 ? '#4ade80' : '#f87171' }}>
-                        {(p.profit || 0) >= 0 ? '+' : ''}{(p.profit || 0).toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <RiskGauge />
@@ -451,6 +538,11 @@ export default function Dashboard() {
               const profitPct = t.profit_pct ?? 0
               const status    = t.is_expired || t.is_sold ? 'closed' : isLive ? 'live' : 'pending'
 
+              // color-code by strategy
+              const stratColor = t.symbol === 'R_25' ? '#38bdf8'
+                               : t.symbol === 'R_75' ? '#f59e0b'
+                               : '#6b7280'
+
               return (
                 <div key={t.id ?? t.contract_id} style={{
                   background:   '#1f2937',
@@ -468,7 +560,7 @@ export default function Dashboard() {
                           display: 'inline-block', flexShrink: 0,
                         }} />
                       )}
-                      <span style={{ color: '#e5e7eb', fontSize: 12, fontWeight: 600 }}>
+                      <span style={{ color: stratColor, fontSize: 12, fontWeight: 700 }}>
                         {t.symbol ?? '—'}
                       </span>
                       {t.contract_type && (
@@ -496,7 +588,6 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Live progress bar */}
                   {isLive && t.buy_price && (
                     <div style={{ marginTop: 8 }}>
                       <div style={{ height: 3, background: '#374151', borderRadius: 2, overflow: 'hidden' }}>

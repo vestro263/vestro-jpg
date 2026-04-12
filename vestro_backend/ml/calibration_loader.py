@@ -107,6 +107,20 @@ _DEFAULTS: dict[str, Thresholds] = {
         recovery_min=None,
     ),
 
+    "R_25": Thresholds(
+        symbol="R_25",
+        rsi_buy_min=30.0,
+        rsi_buy_max=50.0,    # tighter than V75's 45
+        rsi_sell_min=50.0,   # tighter than V75's 55
+        rsi_sell_max=70.0,
+        adx_min=20.0,        # raised — V25 trends are shallower
+        tss_min=2,
+        checklist_min=3,
+        confidence_min=0.0,
+        spike_min=None,
+        recovery_min=None,
+    ),
+
     "CRASH500": Thresholds(
         symbol="CRASH500",
 

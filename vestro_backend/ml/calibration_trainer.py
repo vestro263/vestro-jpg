@@ -93,6 +93,7 @@ FEATURES_CRASH500 = [
 
 STRATEGY_FEATURES = {
     "V75":      FEATURES_V75,
+    "V25":      FEATURES_V75,   # same feature set
     "Crash500": FEATURES_CRASH500,
 }
 
@@ -111,6 +112,18 @@ HARD_CODED_DEFAULTS = {
         "spike_min":      None,
         "recovery_min":   None,
     },
+
+    "R_25": {
+        "rsi_buy_max":    50.0,
+        "rsi_sell_min":   50.0,
+        "adx_min":        20.0,
+        "tss_min":        2,
+        "checklist_min":  3,
+        "confidence_min": 0.0,
+        "spike_min":      None,
+        "recovery_min":   None,
+    },
+
     "CRASH500": {
         "rsi_buy_max":    None,
         "rsi_sell_min":   None,
@@ -535,6 +548,7 @@ async def write_calibration(calibration: dict) -> None:
 
 SYMBOL_STRATEGY_MAP = {
     "R_75":     "V75",
+    "R_25":     "V25",
     "CRASH500": "Crash500",
 }
 
