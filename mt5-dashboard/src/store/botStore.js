@@ -63,7 +63,6 @@ const useBotStore = create(
         get().connect()
         get().startPolling()
 
-        // fetch bot status scoped to this account
         fetch(`${API}/api/bot/status`)
           .then(r => r.json())
           .then(d => set({ botRunning: d.running }))
@@ -274,12 +273,13 @@ const useBotStore = create(
       startPolling: () => {
         if (get()._pollInterval) clearInterval(get()._pollInterval)
         const id = setInterval(() => {
-            get().fetchPositions()
-            get().fetchAccount()
-            get().syncBotStatus()
+          get().fetchPositions()
+          get().fetchAccount()
+          get().syncBotStatus()
         }, 3000)
         set({ _pollInterval: id })
-    },
+      },
+    }),
 
     {
       name: 'vestro-auth',
