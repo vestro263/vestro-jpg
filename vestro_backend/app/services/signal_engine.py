@@ -126,7 +126,10 @@ async def run_signal_loop():
 
             print(f"[signal_engine] credentials found: {len(creds)}")
 
-            deriv_cred = next((c for c in creds if c.broker == "deriv"), None)
+            deriv_cred = next(
+                (c for c in creds if c.broker == "deriv" and c.user_id.startswith("VRTC")),
+                None
+            )
 
             if deriv_cred and not _runner_is_alive():
                 print("[signal_engine] booting strategy runner...")
