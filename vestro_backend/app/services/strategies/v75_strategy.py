@@ -586,7 +586,7 @@ class V75Strategy(BaseStrategy):
 
             confidence = signal.get("confidence", 0.0)
             min_conf = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
-            exec_thresh = max(min_conf, 0.30)
+            exec_thresh = max(min_conf, 0.60)
 
             if confidence < exec_thresh:
                 self.logger.info(

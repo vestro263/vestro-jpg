@@ -125,7 +125,7 @@ async def run_signal_loop():
                 creds  = result.scalars().all()
 
             print(f"[signal_engine] credentials found: {len(creds)}")
-
+            #------------DEMO EXEC-------------
             deriv_cred = next(
                 (c for c in creds if c.broker == "deriv" and c.user_id.startswith("VRTC")),
                 None
