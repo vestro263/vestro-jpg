@@ -39,6 +39,17 @@ async def broadcast_signal(data: dict):
 # NEWS
 # ─────────────────────────────────────────────────────────────
 
+@router.post("/firms/refresh")
+async def force_refresh():
+    global _firms_cache_time, _price_cache_time
+    _firms_cache_time = None
+    _price_cache_time = None
+    if _CACHE_FILE.exists():
+        _CACHE_FILE.unlink()
+    await _refresh_firms()
+    return {"firms_loaded": len(_firms_cache), "prices_loaded": len(_price_cache)}
+
+
 _news_cache: list = []
 _news_cache_time: datetime | None = None
 _CACHE_TTL = timedelta(minutes=5)
