@@ -256,7 +256,7 @@ async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
                 _overview_cache[symbol] = data
         except Exception:
             pass
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(62)
 
     _overview_cache_time = datetime.now(timezone.utc)
 
