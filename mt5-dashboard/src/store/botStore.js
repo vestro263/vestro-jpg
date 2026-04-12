@@ -275,9 +275,9 @@ const useBotStore = create(
         if (get()._pollInterval) clearInterval(get()._pollInterval)
         const id = setInterval(() => {
             get().fetchPositions()
-            get().fetchAccount()      // ← already polls every 5s
+            get().fetchAccount()
             get().syncBotStatus()
-        }, 3000)                      // ← reduce from 5000 to 3000ms
+        }, 3000)
         set({ _pollInterval: id })
     },
 
