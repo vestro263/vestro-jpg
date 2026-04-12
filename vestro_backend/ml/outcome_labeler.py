@@ -1,31 +1,12 @@
 """
 outcome_labeler.py
 ==================
-Retrospectively labels every SignalLog row using the triple-barrier method:
+Retrospectively labels every SignalLog row using the triple-barrier method.
 
-  For a BUY signal at entry_price with ATR-derived SL/TP:
-    Scan forward tick-by-tick from entry_time to entry_time + window
-    If price hits TP first  → label = +1  (WIN)
-    If price hits SL first  → label = -1  (LOSS)
-    If time runs out        → label =  0  (neutral / timeout)
-
-Windows labeled (per config):
-    15m  — primary metric (used by default in training)
-    30m  — primary extended
-    60m  — secondary confirmation
-    90m  — secondary extended
-    4h   — long-term window
-
-Run modes:
-    1. Scheduled task — call run_labeler() from your scheduler or signal_loop
-    2. Standalone     — python -m app.ml.outcome_labeler
-
-Only rows where:
-    - label_15m IS NULL  (not yet labeled)
-    - captured_at <= now() - 15 minutes  (enough time has elapsed)
-    - entry_price IS NOT NULL            (signal had a price attached)
-    - signal != 'HOLD'                   (no point labeling non-signals)
-are processed each run.
+Writes back:
+  label_15m / label_30m / label_60m / label_90m / label_4h  — ML training labels
+  outcome    — "WIN" | "LOSS" | "NEUTRAL"   ← used by /api/journal
+  exit_price — price at barrier touch or window end           ← used by journal
 """
 
 import asyncio
@@ -44,7 +25,6 @@ from .signal_log_model import SignalLog
 logger       = logging.getLogger(__name__)
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
 
-# ── How many ticks to fetch per window (Deriv max = 5000) ─────
 WINDOW_TICKS = {
     "15m": 900,
     "30m": 1800,
@@ -53,7 +33,6 @@ WINDOW_TICKS = {
     "4h":  5000,
 }
 
-# ── Time deltas for each window ───────────────────────────────
 WINDOW_SECONDS = {
     "15m": 15 * 60,
     "30m": 30 * 60,
@@ -63,21 +42,15 @@ WINDOW_SECONDS = {
 }
 
 
-# ============================================================
-# DERIV TICK FETCHER
-# ============================================================
+# ── Deriv tick fetcher ────────────────────────────────────────────────────────
 
 async def _fetch_ticks_range(
-    api_token: str,
-    symbol: str,
+    api_token:   str,
+    symbol:      str,
     start_epoch: int,
-    end_epoch: int,
-    count: int = 5000,
+    end_epoch:   int,
+    count:       int = 5000,
 ) -> list[tuple[int, float]]:
-    """
-    Fetch up to `count` ticks for `symbol` between start_epoch and end_epoch.
-    Returns list of (epoch_seconds, price).
-    """
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
     try:
         async with websockets.connect(url, open_timeout=15) as ws:
@@ -103,27 +76,29 @@ async def _fetch_ticks_range(
         return []
 
 
-# ============================================================
-# TRIPLE-BARRIER LABELER
-# ============================================================
+# ── Triple-barrier labeler ────────────────────────────────────────────────────
+# Returns (label, exit_price) instead of just label
 
 def _triple_barrier_label(
-    ticks: list[tuple[int, float]],
-    entry_price: float,
-    tp_price: float,
-    sl_price: float,
-    direction: int,           # +1 BUY, -1 SELL
+    ticks:          list[tuple[int, float]],
+    entry_price:    float,
+    tp_price:       float,
+    sl_price:       float,
+    direction:      int,        # +1 BUY, -1 SELL
     window_seconds: int,
-    entry_epoch: int,
-) -> int:
+    entry_epoch:    int,
+) -> tuple[int, float]:
     """
     Walk ticks forward from entry_epoch.
-    Return +1 if TP hit first, -1 if SL hit first, 0 if time expires.
+    Returns (label, exit_price):
+      label = +1 TP hit, -1 SL hit, 0 timeout
+      exit_price = price at the moment the barrier was hit (or last tick on timeout)
     """
     if not ticks or entry_price is None:
-        return 0
+        return 0, entry_price
 
-    deadline = entry_epoch + window_seconds
+    deadline   = entry_epoch + window_seconds
+    last_price = entry_price
 
     for epoch, price in ticks:
         if epoch < entry_epoch:
@@ -131,30 +106,40 @@ def _triple_barrier_label(
         if epoch > deadline:
             break
 
-        if direction == 1:    # BUY — TP above, SL below
+        last_price = price
+
+        if direction == 1:          # BUY — TP above, SL below
             if price >= tp_price:
-                return +1
+                return +1, price
             if price <= sl_price:
-                return -1
-        else:                 # SELL — TP below, SL above
+                return -1, price
+        else:                       # SELL — TP below, SL above
             if price <= tp_price:
-                return +1
+                return +1, price
             if price >= sl_price:
-                return -1
+                return -1, price
 
-    return 0   # timeout — neutral
+    return 0, last_price            # timeout — neutral, last seen price
 
 
-# ============================================================
-# MAIN LABELING ROUTINE
-# ============================================================
+# ── Label → outcome string ────────────────────────────────────────────────────
+
+def _label_to_outcome(label: int) -> str:
+    if label == 1:
+        return "WIN"
+    if label == -1:
+        return "LOSS"
+    return "NEUTRAL"
+
+
+# ── Main labeling routine ─────────────────────────────────────────────────────
 
 async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
     """
-    Fetch unlabeled SignalLog rows and write back triple-barrier labels.
+    Fetch unlabeled SignalLog rows and write back triple-barrier labels
+    PLUS outcome / exit_price so the journal can display them.
     Returns the number of rows labeled this run.
     """
-    # ── Use naive UTC throughout to match DB column type ──────
     now        = datetime.utcnow()
     now_epoch  = int(time.time())
     cutoff_15m = now - timedelta(minutes=16)
@@ -163,9 +148,9 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
         result = await db.execute(
             select(SignalLog)
             .where(
-                SignalLog.label_15m  == None,         # noqa: E711
+                SignalLog.label_15m  == None,          # noqa: E711
                 SignalLog.captured_at <= cutoff_15m,
-                SignalLog.entry_price != None,         # noqa: E711
+                SignalLog.entry_price != None,          # noqa: E711
                 SignalLog.signal      != "HOLD",
             )
             .order_by(SignalLog.captured_at)
@@ -182,13 +167,11 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
 
     for row in rows:
         try:
-            # captured_at is naive UTC — convert to epoch directly
             entry_epoch = int((row.captured_at - datetime(1970, 1, 1)).total_seconds())
             symbol      = row.symbol
             entry_price = row.entry_price
-            direction   = row.direction  # +1 or -1
+            direction   = row.direction     # +1 or -1
 
-            # Derive TP/SL from stored values; fall back to ATR-based estimate
             tp = row.tp_price
             sl = row.sl_price
 
@@ -201,7 +184,6 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                     tp = entry_price - atr_val
                     sl = entry_price + atr_val
 
-            # Fetch ticks covering the longest window (4h)
             max_window = WINDOW_SECONDS["4h"]
             end_epoch  = min(entry_epoch + max_window + 60, now_epoch)
 
@@ -217,13 +199,16 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 logger.warning(f"[outcome_labeler] no ticks for {symbol} row={row.id}")
                 continue
 
-            # Label each window using the same tick stream
-            labels = {}
+            # ── Label every elapsed window ────────────────────────────────
+            labels      = {}
+            exit_price  = None   # will be set from the primary (15m) window
+            primary_lbl = None
+
             for window_name, window_secs in WINDOW_SECONDS.items():
-                # Skip windows that haven't elapsed yet
                 if entry_epoch + window_secs > now_epoch:
                     continue
-                labels[window_name] = _triple_barrier_label(
+
+                lbl, ep = _triple_barrier_label(
                     ticks          = ticks,
                     entry_price    = entry_price,
                     tp_price       = tp,
@@ -232,14 +217,27 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                     window_seconds = window_secs,
                     entry_epoch    = entry_epoch,
                 )
+                labels[window_name] = lbl
+
+                # Use the 15m window as the primary outcome; fall back to
+                # the first window that has elapsed if 15m hasn't yet.
+                if window_name == "15m" or primary_lbl is None:
+                    primary_lbl = lbl
+                    exit_price  = ep
 
             if not labels:
                 logger.info(f"[outcome_labeler] row={row.id} — no windows elapsed yet, skipping")
                 continue
 
+            outcome = _label_to_outcome(primary_lbl)
+
             update_vals = {
                 "labeled_at": now,
+                # ── ML labels ────────────────────────────────────────────
                 **{f"label_{k}": v for k, v in labels.items()},
+                # ── Journal fields ────────────────────────────────────────
+                "outcome":    outcome,
+                "exit_price": exit_price,
             }
 
             async with AsyncSessionLocal() as db:
@@ -252,8 +250,10 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
 
             labeled += 1
             logger.info(
-                f"[outcome_labeler] labeled {row.strategy}:{row.symbol} "
-                f"signal={row.signal} labels={labels} row={row.id}"
+                "[outcome_labeler] labeled %s:%s signal=%s labels=%s outcome=%s "
+                "exit=%.5f row=%s",
+                row.strategy, row.symbol, row.signal,
+                labels, outcome, exit_price or 0, row.id,
             )
 
             await asyncio.sleep(0.5)
@@ -266,15 +266,9 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
     return labeled
 
 
-# ============================================================
-# STANDALONE ENTRY POINT
-# ============================================================
+# ── Standalone entry point ────────────────────────────────────────────────────
 
 async def run_labeler(api_token: str) -> None:
-    """
-    Runs until all currently-pending rows are labeled.
-    Called periodically from signal_engine.run_signal_loop().
-    """
     while True:
         n = await label_pending_rows(api_token, batch_size=50)
         if n == 0:

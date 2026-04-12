@@ -1,11 +1,12 @@
 """
-migrate_active_account.py
+migrate_signal_outcome.py
 =========================
-Fixes: column "active_account" is of type boolean but expression
-       is of type character varying
+Adds missing columns to signal_logs:
+    outcome     VARCHAR   — "WIN" | "LOSS" | "NEUTRAL"
+    exit_price  FLOAT     — price at barrier touch or window end
 
 Run once:
-    py migrate_active_account.py
+    py migrate_signal_outcome.py
 """
 
 import os
@@ -25,38 +26,46 @@ def run():
     engine = create_engine(DATABASE_URL, echo=False)
 
     with engine.begin() as conn:
-        print("\n── Checking users table columns ──")
+        print("\n── Current signal_logs columns ──")
         result = conn.execute(text("""
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_name = 'users'
+            WHERE table_name = 'signal_logs'
             ORDER BY ordinal_position
         """))
-        for row in result.fetchall():
-            print(f"  {row[0]:25s} {row[1]}")
+        existing = {row[0]: row[1] for row in result.fetchall()}
+        for col, dtype in existing.items():
+            print(f"  {col:30s} {dtype}")
 
-        print("\n── Fixing active_account column ──")
+        print("\n── Adding missing columns ──")
 
-        # Option 1: Drop the column if it's not needed
-        # conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS active_account"))
+        if "outcome" not in existing:
+            conn.execute(text("""
+                ALTER TABLE signal_logs
+                ADD COLUMN outcome VARCHAR
+            """))
+            print("✓ outcome column added")
+        else:
+            print("— outcome already exists, skipping")
 
-        # Option 2: Change type to VARCHAR to match what's being inserted
-        conn.execute(text("""
-            ALTER TABLE users
-            ALTER COLUMN active_account TYPE VARCHAR
-            USING active_account::VARCHAR
-        """))
-        print("✓ active_account changed to VARCHAR")
+        if "exit_price" not in existing:
+            conn.execute(text("""
+                ALTER TABLE signal_logs
+                ADD COLUMN exit_price DOUBLE PRECISION
+            """))
+            print("✓ exit_price column added")
+        else:
+            print("— exit_price already exists, skipping")
 
-        print("\n── Final users table schema ──")
+        print("\n── Final signal_logs schema ──")
         result = conn.execute(text("""
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_name = 'users'
+            WHERE table_name = 'signal_logs'
             ORDER BY ordinal_position
         """))
         for row in result.fetchall():
-            print(f"  {row[0]:25s} {row[1]}")
+            print(f"  {row[0]:30s} {row[1]}")
 
     engine.dispose()
     print("\n✓ Done")
