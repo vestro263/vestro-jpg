@@ -12,6 +12,7 @@ import pickle
 import pathlib
 import os
 import yfinance as yf
+yf.set_tz_cache_location("/tmp/yfinance_tz_cache")
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..database import get_db
