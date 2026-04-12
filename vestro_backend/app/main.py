@@ -393,6 +393,119 @@ async def record_outcome(payload: OutcomeUpdate, db: AsyncSession = Depends(get_
     }
 
 
+@app.get("/debug/walk-forward")
+async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
+    result = {}
+
+    # ── 1. How many labeled rows exist per symbol ─────────────────────────────
+    try:
+        r = await db.execute(text("""
+            SELECT symbol, strategy,
+                   COUNT(*)                                          AS total,
+                   COUNT(*) FILTER (WHERE label_15m IS NOT NULL)    AS labeled,
+                   COUNT(*) FILTER (WHERE label_15m IS NULL)        AS unlabeled,
+                   COUNT(*) FILTER (WHERE outcome IS NOT NULL)      AS has_outcome,
+                   MIN(captured_at)                                  AS oldest,
+                   MAX(captured_at)                                  AS newest
+            FROM signal_logs
+            WHERE signal != 'HOLD'
+            GROUP BY symbol, strategy
+            ORDER BY symbol
+        """))
+        result["labeled_rows"] = [
+            {
+                "symbol": row[0],
+                "strategy": row[1],
+                "total": row[2],
+                "labeled": row[3],
+                "unlabeled": row[4],
+                "has_outcome": row[5],
+                "oldest": str(row[6]),
+                "newest": str(row[7]),
+            }
+            for row in r.fetchall()
+        ]
+    except Exception as e:
+        result["labeled_rows"] = {"error": str(e)}
+
+    # ── 2. Calibration models in DB ───────────────────────────────────────────
+    try:
+        r = await db.execute(text("""
+            SELECT symbol, strategy, precision, recall, f1, n_samples,
+                   confidence_min, trained_at
+            FROM calibration_config
+            ORDER BY trained_at DESC
+        """))
+        rows = r.fetchall()
+        result["calibration_models"] = [
+            {
+                "symbol": row[0],
+                "strategy": row[1],
+                "precision": row[2],
+                "recall": row[3],
+                "f1": row[4],
+                "n_samples": row[5],
+                "confidence_min": row[6],
+                "trained_at": str(row[7]),
+            }
+            for row in rows
+        ]
+        result["models_exist"] = len(rows) > 0
+    except Exception as e:
+        result["calibration_models"] = {"error": str(e)}
+
+    # ── 3. Walk-forward readiness check ──────────────────────────────────────
+    MIN_SAMPLES = 200  # must match walk_forward_validator.py MIN_SAMPLES
+
+    readiness = {}
+    for entry in result.get("labeled_rows", []):
+        if isinstance(entry, dict) and "symbol" in entry:
+            sym = entry["symbol"]
+            labeled = entry["labeled"]
+            readiness[sym] = {
+                "labeled": labeled,
+                "min_required": MIN_SAMPLES,
+                "ready": labeled >= MIN_SAMPLES,
+                "need_more": max(0, MIN_SAMPLES - labeled),
+            }
+    result["walk_forward_readiness"] = readiness
+
+    # ── 4. Signal outcome fill rate (journal health) ──────────────────────────
+    try:
+        r = await db.execute(text("""
+            SELECT
+                COUNT(*)                                        AS total_signals,
+                COUNT(*) FILTER (WHERE outcome IS NOT NULL)    AS with_outcome,
+                COUNT(*) FILTER (WHERE exit_price IS NOT NULL) AS with_exit_price,
+                COUNT(*) FILTER (WHERE executed = true)        AS executed,
+                COUNT(*) FILTER (WHERE executed = true
+                    AND outcome IS NOT NULL)                    AS executed_and_closed
+            FROM signal_logs
+        """))
+        row = r.fetchone()
+        result["journal_health"] = {
+            "total_signals": row[0],
+            "with_outcome": row[1],
+            "with_exit_price": row[2],
+            "executed": row[3],
+            "executed_and_closed": row[4],
+            "outcome_fill_rate": f"{round(row[1] / row[0] * 100, 1)}%" if row[0] else "0%",
+        }
+    except Exception as e:
+        result["journal_health"] = {"error": str(e)}
+
+    # ── 5. Last labeler run estimate (newest labeled row) ─────────────────────
+    try:
+        r = await db.execute(text("""
+            SELECT MAX(labeled_at) FROM signal_logs WHERE labeled_at IS NOT NULL
+        """))
+        last = r.scalar()
+        result["last_labeler_run"] = str(last) if last else "never"
+    except Exception as e:
+        result["last_labeler_run"] = {"error": str(e)}
+
+    return result
+
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
