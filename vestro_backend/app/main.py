@@ -174,6 +174,39 @@ async def trigger_training():
     asyncio.create_task(run_trainer())
     return {"status": "training started"}
 
+@app.get("/debug/run-labeler-verbose")
+async def run_labeler_verbose():
+    from app.database import AsyncSessionLocal
+    from app.models import Credentials
+    from app.services.credential_store import decrypt
+    from ml.outcome_labeler import run_labeler
+    from sqlalchemy import select
+    import traceback
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Credentials))
+            creds  = result.scalars().all()
+
+        cred = next(
+            (c for c in creds if c.broker == "deriv" and c.user_id.startswith("VRTC")),
+            None
+        )
+
+        if not cred:
+            return {"status": "error", "detail": "no VRTC credential found"}
+
+        await run_labeler(decrypt(cred.password))   # await directly, no create_task
+        return {"status": "done"}
+
+    except Exception as e:
+        return {
+            "status":  "crashed",
+            "error":   str(e),
+            "trace":   traceback.format_exc(),
+        }
+
+
 @app.get("/debug/tables")
 async def list_tables(db: AsyncSession = Depends(get_db)):
     result = await db.execute(text(
