@@ -723,22 +723,28 @@ def bot_status():
     return {"running": _bot_running}
 
 # ─────────────────────────────────────────────────────────────
-# JOURNAL
+# JOURNAL  —  replace the existing @router.get("/journal") in routes/api.py
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/journal")
 async def get_journal(
     account_id: str = Query(...),
     limit:      int = Query(50, le=500),
+    symbol:     str | None = Query(None),
     db:         AsyncSession = Depends(get_db),
 ):
-    """
-    Returns closed signal_log rows for the given account (Deriv login ID).
-    A row is considered closed when outcome IS NOT NULL.
-    """
     from sqlalchemy import text
 
-    rows = await db.execute(text("""
+    filters = ["outcome IS NOT NULL", "executed = true"]
+    params  = {"limit": limit}
+
+    if symbol:
+        filters.append("symbol = :symbol")
+        params["symbol"] = symbol
+
+    where = " AND ".join(filters)
+
+    rows = await db.execute(text(f"""
         SELECT
             id,
             strategy,
@@ -748,37 +754,46 @@ async def get_journal(
             entry_price,
             exit_price,
             outcome,
-            executed,
             executed_at,
             captured_at,
-            label_15m
+            atr_zone
         FROM signal_logs
-        WHERE outcome IS NOT NULL
+        WHERE {where}
         ORDER BY captured_at DESC
         LIMIT :limit
-    """), {"limit": limit})
+    """), params)
 
     results = []
     for r in rows.fetchall():
+        entry_price = r[5]
+        exit_price  = r[6]
+        signal_dir  = str(r[3]).upper()
+        outcome     = r[7]
+
         profit = None
-        if r[5] is not None and r[6] is not None:   # entry_price, exit_price
-            direction = 1 if str(r[3]).upper() in ("BUY", "CALL", "RISE") else -1
-            profit    = round((r[6] - r[5]) * direction, 5)
+        if entry_price and exit_price:
+            direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
+            profit    = round((exit_price - entry_price) * direction, 5)
+
+        if profit is None:
+            profit = 1.0 if outcome == "WIN" else (-1.0 if outcome == "LOSS" else 0.0)
 
         results.append({
             "ticket":      str(r[0]),
-            "symbol":      r[1] or r[2],             # strategy name or symbol
-            "type":        r[3],                      # BUY / SELL
-            "volume":      0.0,                       # not stored in signal_logs
-            "open_price":  r[5],
-            "close_price": r[6],
-            "open_time":   str(r[10]) if r[10] else "—",   # captured_at
-            "close_time":  str(r[9])  if r[9]  else "—",   # executed_at
+            "symbol":      r[2],           # R_75 / R_25 / frxXAUUSD
+            "strategy":    r[1],           # V75 / V25 / Gold
+            "type":        signal_dir,
+            "volume":      0.0,
+            "open_price":  entry_price,
+            "close_price": exit_price,
+            "open_time":   str(r[9]) if r[9] else "—",
+            "close_time":  str(r[8]) if r[8] else "—",
             "swap":        0.0,
             "commission":  0.0,
             "profit":      profit,
-            "outcome":     r[7],
+            "outcome":     outcome,
             "confidence":  r[4],
+            "atr_zone":    r[10],
         })
 
     return results
