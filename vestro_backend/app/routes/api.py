@@ -736,10 +736,17 @@ async def get_journal(
 ):
     from sqlalchemy import text
 
-    # Only require outcome — do NOT require executed=true because
-    # the labeler writes outcome independently of the execution flag.
-    filters = ["outcome IS NOT NULL", "signal IN ('BUY', 'SELL')"]
-    params  = {"limit": limit}
+    # FIX: scope rows to the requested account_id
+    filters = [
+        "account_id = :account_id",
+        "outcome IS NOT NULL",
+        "signal IN ('BUY', 'SELL')"
+    ]
+
+    params = {
+        "account_id": account_id,
+        "limit": limit
+    }
 
     if symbol:
         filters.append("symbol = :symbol")
@@ -772,21 +779,25 @@ async def get_journal(
     """), params)
 
     results = []
+
     for r in rows.fetchall():
         entry_price = r[5]
         exit_price  = r[6]
         signal_dir  = str(r[3]).upper()
         outcome     = r[7]
 
-        # Real profit when exit_price is available
         profit = None
-        if entry_price and exit_price:
-            direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
-            profit    = round((exit_price - entry_price) * direction, 5)
 
-        # Fall back to synthetic +1/-1 from outcome
+        if entry_price is not None and exit_price is not None:
+            direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
+            profit = round((exit_price - entry_price) * direction, 5)
+
         if profit is None:
-            profit = 1.0 if outcome == "WIN" else (-1.0 if outcome == "LOSS" else 0.0)
+            profit = (
+                1.0 if outcome == "WIN"
+                else -1.0 if outcome == "LOSS"
+                else 0.0
+            )
 
         results.append({
             "ticket":      str(r[0]),
