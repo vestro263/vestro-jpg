@@ -85,11 +85,20 @@ async def _fetch_ticks_range(
     count:       int = 5000,
 ) -> list[tuple[int, float]]:
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
+
     try:
         async with websockets.connect(url, open_timeout=15) as ws:
+            # Authorize
             await ws.send(json.dumps({"authorize": api_token}))
-            await ws.recv()
+            auth_resp = json.loads(await ws.recv())
 
+            if "error" in auth_resp:
+                logger.error(
+                    f"[outcome_labeler] auth error ({symbol}): {auth_resp['error']}"
+                )
+                return []
+
+            # Request tick history
             await ws.send(json.dumps({
                 "ticks_history": symbol,
                 "start":         start_epoch,
@@ -97,18 +106,31 @@ async def _fetch_ticks_range(
                 "count":         count,
                 "style":         "ticks",
             }))
+
             data = json.loads(await ws.recv())
 
+        # Detect Deriv API errors
+        if "error" in data:
+            logger.error(
+                f"[outcome_labeler] Deriv error ({symbol}): {data['error']}"
+            )
+            return []
+
+        # Parse history safely
         history = data.get("history", {})
-        times   = history.get("times",  [])
+        times   = history.get("times", [])
         prices  = history.get("prices", [])
+
+        logger.info(
+            f"[outcome_labeler] {symbol} ticks={len(times)} "
+            f"start={start_epoch} end={end_epoch}"
+        )
+
         return [(int(t), float(p)) for t, p in zip(times, prices)]
 
     except Exception as exc:
         logger.error(f"[outcome_labeler] tick fetch error ({symbol}): {exc}")
         return []
-
-
 # =============================================================================
 # Triple-barrier labeller  (upgraded)
 # =============================================================================
