@@ -13,7 +13,6 @@ function useIsMobile(bp = 640) {
 }
 
 function normalizeTrade(t) {
-  // profit
   let profit = null
   if (t.profit !== undefined && t.profit !== null)
     profit = parseFloat(t.profit)
@@ -24,7 +23,6 @@ function normalizeTrade(t) {
   else if (t.sell_price !== undefined && t.buy_price !== undefined)
     profit = parseFloat(t.sell_price) - parseFloat(t.buy_price)
 
-  // closed check
   const hasOutcome = t.outcome === 'WIN' || t.outcome === 'LOSS' || t.outcome === 'NEUTRAL'
   const isClosed =
     hasOutcome ||
@@ -38,33 +36,49 @@ function normalizeTrade(t) {
 
   if (!isClosed) return null
 
-  // synthesise profit from outcome when not available
-  if ((profit === null || isNaN(profit)) && hasOutcome) {
+  if ((profit === null || isNaN(profit)) && hasOutcome)
     profit = t.outcome === 'WIN' ? 1 : t.outcome === 'LOSS' ? -1 : 0
-  }
 
   if (profit === null || isNaN(profit)) return null
 
   const openPrice  = parseFloat(t.open_price  ?? t.price_open  ?? t.entry_spot ?? t.buy_price  ?? 0)
   const closePrice = parseFloat(t.close_price ?? t.price_close ?? t.exit_spot  ?? t.sell_price ?? 0)
-  const openTime   = t.open_time  ?? t.purchase_time ?? t.date_start  ?? '—'
-  const closeTime  = t.close_time ?? t.sell_time     ?? t.date_expiry ?? '—'
-  const type       = t.type ?? t.contract_type ?? t.direction ?? null
 
   return {
     ticket:     t.ticket ?? t.contract_id ?? t.id ?? '—',
     symbol:     t.symbol ?? t.underlying  ?? '—',
-    type,
-    volume:     t.volume ?? t.amount ?? t.stake ?? 0,
+    strategy:   t.strategy ?? '—',
+    type:       t.type ?? t.contract_type ?? t.direction ?? null,
     openPrice,
     closePrice,
-    openTime,
-    closeTime,
-    swap:       parseFloat(t.swap       ?? 0),
-    commission: parseFloat(t.commission ?? 0),
+    openTime:   t.open_time  ?? t.purchase_time ?? t.date_start  ?? '—',
+    closeTime:  t.close_time ?? t.sell_time     ?? t.date_expiry ?? '—',
     profit,
     outcome:    t.outcome ?? null,
+    executed:   t.executed ?? false,
   }
+}
+
+// Strategy color map
+const STRAT_COLORS = {
+  V75:     '#f59e0b',
+  V25:     '#38bdf8',
+  Gold:    '#fcd34d',
+  Crash500:'#f87171',
+}
+
+function StratBadge({ strategy }) {
+  if (!strategy || strategy === '—') return null
+  const color = STRAT_COLORS[strategy] || '#6b7280'
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+      background: color + '22', color, border: `1px solid ${color}44`,
+      whiteSpace: 'nowrap',
+    }}>
+      {strategy}
+    </span>
+  )
 }
 
 function NormBadge({ type }) {
@@ -102,31 +116,46 @@ function OutcomeBadge({ outcome }) {
 function SortTh({ label, field, sort, onSort }) {
   const active = sort.field === field
   return (
-    <th onClick={() => onSort(field)} style={{ ...S.th, cursor: 'pointer', userSelect: 'none', color: active ? '#e5e7eb' : '#6b7280', whiteSpace: 'nowrap' }}>
+    <th onClick={() => onSort(field)} style={{
+      ...S.th, cursor: 'pointer', userSelect: 'none',
+      color: active ? '#e5e7eb' : '#6b7280', whiteSpace: 'nowrap',
+    }}>
       {label} <span style={{ opacity: active ? 1 : 0.3 }}>{active ? (sort.asc ? 'A' : 'D') : 'A'}</span>
     </th>
   )
 }
 
+// Available strategy filters
+const STRAT_FILTERS = ['All', 'V75', 'V25', 'Gold', 'Crash500']
+
 export default function Journal() {
   const { journal, journalLoading, fetchJournal } = useBotStore()
-  const [limit,  setLimit]  = useState(50)
-  const [search, setSearch] = useState('')
-  const [sort,   setSort]   = useState({ field: 'openTime', asc: false })
+  const [limit,       setLimit]       = useState(50)
+  const [search,      setSearch]      = useState('')
+  const [stratFilter, setStratFilter] = useState('All')
+  const [sort,        setSort]        = useState({ field: 'openTime', asc: false })
   const isMobile = useIsMobile()
 
   useEffect(() => { fetchJournal(limit) }, [limit])
 
   const closed = useMemo(() => {
-    const normalized = journal.map(normalizeTrade).filter(Boolean)
-    if (!search.trim()) return normalized
-    const q = search.trim().toLowerCase()
-    return normalized.filter(t =>
-      String(t.symbol).toLowerCase().includes(q) ||
-      String(t.ticket).toLowerCase().includes(q)  ||
-      String(t.type  ).toLowerCase().includes(q)
-    )
-  }, [journal, search])
+    let normalized = journal.map(normalizeTrade).filter(Boolean)
+
+    if (stratFilter !== 'All')
+      normalized = normalized.filter(t => t.strategy === stratFilter)
+
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      normalized = normalized.filter(t =>
+        String(t.symbol  ).toLowerCase().includes(q) ||
+        String(t.ticket  ).toLowerCase().includes(q) ||
+        String(t.strategy).toLowerCase().includes(q) ||
+        String(t.type    ).toLowerCase().includes(q)
+      )
+    }
+
+    return normalized
+  }, [journal, search, stratFilter])
 
   const sorted = useMemo(() => {
     const arr = [...closed]
@@ -176,6 +205,21 @@ export default function Journal() {
       <div style={S.card}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 14 }}>
           <span style={S.h3}>Trade Journal</span>
+
+          {/* Strategy filter pills */}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {STRAT_FILTERS.map(s => (
+              <button key={s} onClick={() => setStratFilter(s)} style={{
+                padding: '3px 9px', borderRadius: 5, border: 'none',
+                cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                background: stratFilter === s
+                  ? (STRAT_COLORS[s] || '#e5e7eb')
+                  : '#1f2937',
+                color: stratFilter === s ? '#0a0a0a' : '#6b7280',
+              }}>{s}</button>
+            ))}
+          </div>
+
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
@@ -184,9 +228,10 @@ export default function Journal() {
               background: '#1f2937', border: '1px solid #374151',
               borderRadius: 7, color: '#e5e7eb', fontSize: 11,
               padding: '5px 10px', outline: 'none',
-              width: isMobile ? '100%' : 170,
+              width: isMobile ? '100%' : 150,
             }}
           />
+
           <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: '#6b7280' }}>Show</span>
             {[25, 50, 100, 200].map(n => (
@@ -210,14 +255,15 @@ export default function Journal() {
             Loading journal...
           </div>
         ) : sorted.length === 0 ? (
-          <Empty icon="📓" text={search ? 'No trades match your filter' : 'No closed trades yet'} />
+          <Empty icon="📓" text={search || stratFilter !== 'All' ? 'No trades match your filter' : 'No closed trades yet'} />
         ) : (
           <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 680 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
               <thead>
                 <tr>
                   {[
                     { label: 'Ticket',      field: 'ticket'     },
+                    { label: 'Strategy',    field: 'strategy'   },
                     { label: 'Symbol',      field: 'symbol'     },
                     { label: 'Type',        field: 'type'       },
                     { label: 'Open Price',  field: 'openPrice'  },
@@ -241,6 +287,7 @@ export default function Journal() {
                     <td style={{ ...S.td, color: '#6b7280', fontFamily: 'monospace', fontSize: 10 }}>
                       {String(t.ticket).slice(0, 8)}...
                     </td>
+                    <td style={S.td}><StratBadge strategy={t.strategy} /></td>
                     <td style={{ ...S.td, fontWeight: 600, color: '#e5e7eb' }}>{t.symbol}</td>
                     <td style={S.td}><NormBadge type={t.type} /></td>
                     <td style={{ ...S.td, fontFamily: 'monospace' }}>
@@ -265,7 +312,8 @@ export default function Journal() {
               alignItems: 'center', fontSize: 12, flexWrap: 'wrap', gap: 8,
             }}>
               <span style={{ color: '#4b5563', fontSize: 11 }}>
-                {sorted.length} of {closed.length} trades{search ? ' (filtered)' : ''}
+                {sorted.length} of {closed.length} trades
+                {(search || stratFilter !== 'All') ? ' (filtered)' : ''}
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <span style={{ color: '#6b7280' }}>Net P&L ({closed.length} trades):</span>

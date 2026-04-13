@@ -723,7 +723,7 @@ def bot_status():
     return {"running": _bot_running}
 
 # ─────────────────────────────────────────────────────────────
-# JOURNAL  —  replace the existing @router.get("/journal") in routes/api.py
+# JOURNAL  —  replace @router.get("/journal") in routes/api.py
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/journal")
@@ -731,16 +731,23 @@ async def get_journal(
     account_id: str = Query(...),
     limit:      int = Query(50, le=500),
     symbol:     str | None = Query(None),
+    strategy:   str | None = Query(None),
     db:         AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import text
 
-    filters = ["outcome IS NOT NULL", "executed = true"]
+    # Only require outcome — do NOT require executed=true because
+    # the labeler writes outcome independently of the execution flag.
+    filters = ["outcome IS NOT NULL", "signal IN ('BUY', 'SELL')"]
     params  = {"limit": limit}
 
     if symbol:
         filters.append("symbol = :symbol")
         params["symbol"] = symbol
+
+    if strategy:
+        filters.append("strategy = :strategy")
+        params["strategy"] = strategy
 
     where = " AND ".join(filters)
 
@@ -756,7 +763,8 @@ async def get_journal(
             outcome,
             executed_at,
             captured_at,
-            atr_zone
+            atr_zone,
+            executed
         FROM signal_logs
         WHERE {where}
         ORDER BY captured_at DESC
@@ -770,18 +778,20 @@ async def get_journal(
         signal_dir  = str(r[3]).upper()
         outcome     = r[7]
 
+        # Real profit when exit_price is available
         profit = None
         if entry_price and exit_price:
             direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
             profit    = round((exit_price - entry_price) * direction, 5)
 
+        # Fall back to synthetic +1/-1 from outcome
         if profit is None:
             profit = 1.0 if outcome == "WIN" else (-1.0 if outcome == "LOSS" else 0.0)
 
         results.append({
             "ticket":      str(r[0]),
-            "symbol":      r[2],           # R_75 / R_25 / frxXAUUSD
-            "strategy":    r[1],           # V75 / V25 / Gold
+            "symbol":      r[2],
+            "strategy":    r[1],
             "type":        signal_dir,
             "volume":      0.0,
             "open_price":  entry_price,
@@ -794,6 +804,7 @@ async def get_journal(
             "outcome":     outcome,
             "confidence":  r[4],
             "atr_zone":    r[10],
+            "executed":    r[11],
         })
 
     return results
