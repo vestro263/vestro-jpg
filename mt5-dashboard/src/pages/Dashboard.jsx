@@ -29,11 +29,20 @@ const CONTRACT_TYPES = [
   { label: 'Touch / No Touch', value: 'touch' },
 ]
 
-// Active strategies — add new ones here and they appear automatically
 const STRATEGY_SYMBOLS = [
   { key: 'R_75', label: 'V75', color: '#f59e0b' },
   { key: 'R_25', label: 'V25', color: '#38bdf8' },
 ]
+
+// ── Regime config ─────────────────────────────────────────────────────────────
+// Maps regime string → { label, color, borderColor, bgColor, pulse }
+const REGIME_CONFIG = {
+  TREND:    { label: 'TREND',    color: '#4ade80', border: '#166534', bg: '#052e16', pulse: false },
+  RANGE:    { label: 'RANGE',    color: '#a78bfa', border: '#4c1d95', bg: '#1a0a2e', pulse: false },
+  HIGH_VOL: { label: 'HIGH VOL', color: '#fb923c', border: '#7c2d12', bg: '#1c0d05', pulse: true  },
+  CRASH:    { label: 'CRASH',    color: '#f87171', border: '#7f1d1d', bg: '#1f0707', pulse: true  },
+  UNKNOWN:  { label: 'SCANNING', color: '#6b7280', border: '#374151', bg: '#111827', pulse: false },
+}
 
 function useIsMobile(breakpoint = 640) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint)
@@ -53,7 +62,84 @@ const S = {
   th:   { padding: '7px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #374151', textAlign: 'left' },
 }
 
-// ── Active Account Banner ──────────────────────────────────────────────────────
+// ── RegimeBadge ───────────────────────────────────────────────────────────────
+// Displays the current market regime with appropriate color coding.
+// Pulse animation on CRASH and HIGH_VOL to draw attention.
+function RegimeBadge({ regime }) {
+  const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG.UNKNOWN
+  const [visible, setVisible] = useState(true)
+
+  // Pulse blink effect for high-attention regimes
+  useEffect(() => {
+    if (!cfg.pulse) { setVisible(true); return }
+    const id = setInterval(() => setVisible(v => !v), 700)
+    return () => clearInterval(id)
+  }, [cfg.pulse])
+
+  return (
+    <span style={{
+      display:        'inline-flex',
+      alignItems:     'center',
+      gap:            5,
+      fontSize:       10,
+      fontWeight:     700,
+      letterSpacing:  '0.06em',
+      padding:        '3px 8px',
+      borderRadius:   4,
+      background:     cfg.bg,
+      border:         `1px solid ${cfg.border}`,
+      color:          cfg.color,
+      opacity:        cfg.pulse ? (visible ? 1 : 0.4) : 1,
+      transition:     'opacity 0.2s',
+      whiteSpace:     'nowrap',
+    }}>
+      {/* Dot indicator */}
+      <span style={{
+        width:      6,
+        height:     6,
+        borderRadius: '50%',
+        background:  cfg.color,
+        flexShrink:  0,
+        boxShadow:  cfg.pulse ? `0 0 5px ${cfg.color}` : 'none',
+      }} />
+      {cfg.label}
+    </span>
+  )
+}
+
+// ── Regime suppression notice ─────────────────────────────────────────────────
+// Shown inside the signal card when a HOLD was caused by the regime gate.
+function RegimeSuppressedNotice({ regime, reason }) {
+  const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG.UNKNOWN
+  const isRegimeCaused = reason && (
+    reason.includes('regime') ||
+    reason.includes('CRASH') ||
+    reason.includes('HIGH_VOL')
+  )
+  if (!isRegimeCaused) return null
+
+  return (
+    <div style={{
+      display:      'flex',
+      alignItems:   'center',
+      gap:          8,
+      background:   cfg.bg,
+      border:       `1px solid ${cfg.border}`,
+      borderRadius: 6,
+      padding:      '7px 10px',
+      fontSize:     11,
+      color:        cfg.color,
+      lineHeight:   1.5,
+    }}>
+      <span style={{ fontSize: 14, flexShrink: 0 }}>
+        {regime === 'CRASH' ? '⚠️' : '🌊'}
+      </span>
+      <span>{reason}</span>
+    </div>
+  )
+}
+
+// ── Active Account Banner  (unchanged) ────────────────────────────────────────
 function ActiveAccountBanner() {
   const accountId = useBotStore(s => s.accountId)
   const account   = useBotStore(s => s.account)
@@ -96,7 +182,7 @@ function ActiveAccountBanner() {
   )
 }
 
-// ── Strategy Signal Cards ──────────────────────────────────────────────────────
+// ── Strategy Signal Cards  (regime-aware) ─────────────────────────────────────
 function StrategySignalCards({ signalMap, isMobile }) {
   return (
     <div style={{
@@ -107,29 +193,55 @@ function StrategySignalCards({ signalMap, isMobile }) {
       gap: 12,
     }}>
       {STRATEGY_SYMBOLS.map(({ key, label, color }) => {
-        const entry = signalMap?.[key]
-        const sig   = entry?.signal || {}
+        const entry  = signalMap?.[key]
+        const sig    = entry?.signal || {}
+        const regime = sig.regime || 'UNKNOWN'
+        const regCfg = REGIME_CONFIG[regime] || REGIME_CONFIG.UNKNOWN
 
         const confPct   = ((sig.confidence || 0) * 100)
         const confColor = confPct >= 70 ? '#4ade80' : confPct >= 50 ? '#fbbf24' : '#f87171'
 
+        // Card border changes with regime when a live signal exists
+        const cardBorderColor = entry
+          ? (regime === 'CRASH'    ? '#7f1d1d'
+          : regime === 'HIGH_VOL' ? '#7c2d12'
+          : regime === 'RANGE'    ? '#4c1d95'
+          : regime === 'TREND'    ? '#166534'
+          : '#1f2937')
+          : '#1f2937'
+
         return (
           <div key={key} style={{
             ...S.card,
-            borderTop: `2px solid ${color}`,
-            position: 'relative',
-            overflow: 'hidden',
+            borderTop:  `2px solid ${color}`,
+            border:     `1px solid ${cardBorderColor}`,
+            borderTopColor: color,          // keep strategy color on top edge
+            position:   'relative',
+            overflow:   'hidden',
+            transition: 'border-color 0.4s',
           }}>
-            {/* subtle color glow in top-right corner */}
+            {/* Strategy color glow */}
             <div style={{
               position: 'absolute', top: -30, right: -30,
               width: 80, height: 80, borderRadius: '50%',
               background: color, opacity: 0.05, pointerEvents: 'none',
             }} />
 
+            {/* Regime color wash overlay — visible only in warning regimes */}
+            {entry && (regime === 'CRASH' || regime === 'HIGH_VOL') && (
+              <div style={{
+                position:   'absolute', inset: 0,
+                background: `radial-gradient(ellipse at top right, ${regCfg.color}12 0%, transparent 70%)`,
+                pointerEvents: 'none',
+                borderRadius:  11,
+              }} />
+            )}
+
+            {/* ── Card header: strategy label + symbol key + REGIME badge ── */}
             <div style={{
               ...S.h3,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              flexWrap: 'wrap', gap: 6,
             }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{
@@ -141,12 +253,17 @@ function StrategySignalCards({ signalMap, isMobile }) {
                 }} />
                 {label} Signal
               </span>
-              <span style={{
-                fontSize: 10, color: '#4b5563',
-                background: '#1f2937', padding: '2px 6px', borderRadius: 4,
-                fontFamily: 'monospace',
-              }}>
-                {key}
+
+              {/* Right side: symbol pill + regime badge */}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {entry && <RegimeBadge regime={regime} />}
+                <span style={{
+                  fontSize: 10, color: '#4b5563',
+                  background: '#1f2937', padding: '2px 6px', borderRadius: 4,
+                  fontFamily: 'monospace',
+                }}>
+                  {key}
+                </span>
               </span>
             </div>
 
@@ -161,6 +278,9 @@ function StrategySignalCards({ signalMap, isMobile }) {
                     {entry.receivedAt}
                   </span>
                 </div>
+
+                {/* Regime suppression notice — shown when regime caused HOLD */}
+                <RegimeSuppressedNotice regime={regime} reason={sig.reason} />
 
                 {/* TSS */}
                 <div>
@@ -187,8 +307,8 @@ function StrategySignalCards({ signalMap, isMobile }) {
                   </div>
                 </div>
 
-                {/* Reason */}
-                {sig.reason && (
+                {/* Reason — only show when NOT a regime suppression (already shown above) */}
+                {sig.reason && !sig.reason.includes('regime') && (
                   <div style={{
                     fontSize: 10, color: '#6b7280',
                     background: '#1f2937', borderRadius: 6,
@@ -235,7 +355,7 @@ function StrategySignalCards({ signalMap, isMobile }) {
   )
 }
 
-// ── Quick Trade ────────────────────────────────────────────────────────────────
+// ── Quick Trade  (unchanged) ──────────────────────────────────────────────────
 function QuickTrade({ isMobile }) {
   const { signals, accountId } = useBotStore()
   const [symbol,       setSymbol]       = useState('R_100')
@@ -349,7 +469,6 @@ export default function Dashboard() {
 
   const isMobile = useIsMobile()
 
-  // Refresh account + positions whenever accountId changes
   useEffect(() => {
     if (accountId) {
       fetchAccount()
@@ -376,11 +495,6 @@ export default function Dashboard() {
     gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(4, minmax(0,1fr))',
     gap: 10,
   }
-  const grid2 = {
-    display: 'grid',
-    gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0,1fr))',
-    gap: 14,
-  }
   const btnBase = {
     display: 'inline-flex', alignItems: 'center', gap: 7,
     padding: '10px 18px', borderRadius: 8, border: 'none',
@@ -393,8 +507,6 @@ export default function Dashboard() {
     <div style={S.page}>
 
       <NewsBar />
-
-      {/* 🏦 ACTIVE ACCOUNT BANNER */}
       <ActiveAccountBanner />
 
       {/* 🤖 BOT CONTROLS */}
@@ -468,7 +580,7 @@ export default function Dashboard() {
       {/* ⚡ QUICK TRADE */}
       <QuickTrade isMobile={isMobile} />
 
-      {/* 📡 STRATEGY SIGNAL CARDS — V75 + V25 side by side */}
+      {/* 📡 STRATEGY SIGNAL CARDS — V75 + V25 with regime UI */}
       <StrategySignalCards signalMap={signalMap} isMobile={isMobile} />
 
       {/* 🔲 POSITIONS */}
@@ -538,10 +650,12 @@ export default function Dashboard() {
               const profitPct = t.profit_pct ?? 0
               const status    = t.is_expired || t.is_sold ? 'closed' : isLive ? 'live' : 'pending'
 
-              // color-code by strategy
               const stratColor = t.symbol === 'R_25' ? '#38bdf8'
                                : t.symbol === 'R_75' ? '#f59e0b'
                                : '#6b7280'
+
+              // Show regime badge in trade feed when available
+              const tradeRegime = t.regime || null
 
               return (
                 <div key={t.id ?? t.contract_id} style={{
@@ -552,7 +666,7 @@ export default function Dashboard() {
                   transition:   'border-color 0.3s',
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       {isLive && (
                         <span style={{
                           width: 6, height: 6, borderRadius: '50%',
@@ -571,6 +685,10 @@ export default function Dashboard() {
                         }}>
                           {t.contract_type === 'CALL' ? '▲ RISE' : '▼ FALL'}
                         </span>
+                      )}
+                      {/* Regime badge in trade feed */}
+                      {tradeRegime && tradeRegime !== 'UNKNOWN' && (
+                        <RegimeBadge regime={tradeRegime} />
                       )}
                       <span style={{ fontSize: 10, color: '#4b5563' }}>{t.time}</span>
                     </div>

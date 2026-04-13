@@ -1,30 +1,40 @@
 """
-v25_strategy.py
-===============
+v25_strategy.py  (upgraded)
+=============================
 VESTRO V25 Strategy — Volatility 25 Index
 5-phase pipeline: Data → Features → Patterns → Predict → Risk
 
-Key differences from V75:
-  [V25-DIFF-1] SYMBOL changed to "R_25" (Volatility 25 Index).
-  [V25-DIFF-2] ATR thresholds tightened — V25 moves ~1/3 as fast as V75;
-               sl_atr_mult default lowered from 1.5 → 1.2, atr_zone
-               "elevated" ratio threshold lowered (< 1.3 instead of < 1.5)
-               and "extreme" at < 2.0 instead of < 2.5.
-  [V25-DIFF-3] RSI bounds narrowed — overbought/oversold signals are more
-               reliable on V25 (rsi_buy_max default 50, rsi_sell_min 50).
-  [V25-DIFF-4] ADX minimum raised to 20 — V25 trends are shallower; a lower
-               ADX bar causes too many weak-trend entries.
-  [V25-DIFF-5] Confidence weight shifted slightly to checklist (w_chk 0.55)
-               and away from TSS (w_tss 0.45) because V25 indicator
-               alignment matters more than raw trend score.
-  [V25-DIFF-6] Cooldown reduced to 90 s — V25 candles are calmer and
-               re-entry windows close faster.
-  [V25-DIFF-7] RiskManager tier thresholds unchanged; however daily_dd for
-               "prop" tightened to 0.02 (V25 drawdowns are more predictable).
-  [V25-DIFF-8] Stake scaling capped at 8.0 (vs 10.0 on V75) to match the
-               lower per-trade volatility of V25.
-  [V25-DIFF-9] checklist_min default stays at 3; tss_min default stays at 2
-               (same as V75 after HOLD-FIX-2).
+Changes vs previous version
+-----------------------------
+[REGIME-GATE]      compute_signal() reads current market regime from
+                   signal_engine via get_current_regime() and applies:
+
+                   CRASH    → HOLD all BUY signals immediately.
+                              SELL still evaluated (crash = downtrend).
+                   HIGH_VOL → Suppress BUY; SELL still evaluated.
+                   RANGE    → Both directions evaluated but checklist
+                              tightened +1 via effective_checklist_min().
+                   TREND    → Normal pipeline, no change.
+                   UNKNOWN  → Fail-open (no gate on first boot).
+
+[REGIME-THRESHOLD] Uses t.effective_checklist_min() so RANGE regime
+                   tightening is handled in calibration_loader without
+                   duplicating logic here.
+
+[REGIME-LOG]       regime written to meta dict and broadcast payload so
+                   SignalLog rows carry regime context for outcome_labeler
+                   and per-regime precision analysis in walk_forward folds.
+
+All V25-specific differences preserved unchanged:
+  [V25-DIFF-1]  SYMBOL = "R_25"
+  [V25-DIFF-2]  Tighter ATR zone thresholds (V25 moves ~1/3 as fast as V75)
+  [V25-DIFF-3]  RSI bounds narrowed (rsi_buy_max=50, rsi_sell_min=50)
+  [V25-DIFF-4]  ADX minimum 20 (V75 is 25)
+  [V25-DIFF-5]  Confidence weights: w_tss=0.45, w_chk=0.55
+  [V25-DIFF-6]  Cooldown 90 s (V75 is 120 s)
+  [V25-DIFF-7]  Prop daily_dd 0.02
+  [V25-DIFF-8]  Stake cap $8.00 (V75 is $10.00)
+  [V25-DIFF-9]  checklist_min=3, tss_min=2 (same as V75 post HOLD-FIX)
 """
 
 import httpx
@@ -34,13 +44,14 @@ import statistics
 import websockets
 
 from .base_strategy import BaseStrategy
+from app.signal_engine import get_current_regime          # ← regime gate
 
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
 BACKEND_URL  = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
 
 
 # ============================================================
-# PHASE 2 — FEATURE ENGINE
+# PHASE 2 — FEATURE ENGINE  (unchanged from original v25)
 # ============================================================
 
 class _FeatureEngine:
@@ -145,7 +156,7 @@ class _FeatureEngine:
 
 
 # ============================================================
-# PHASE 3 — PATTERN EXTRACTOR
+# PHASE 3 — PATTERN EXTRACTOR  (unchanged from original v25)
 # ============================================================
 
 class _PatternExtractor:
@@ -168,7 +179,7 @@ class _PatternExtractor:
         if bull or bear:
             score += 1
 
-        # [V25-DIFF-4] adx_min default raised to 20 for V25
+        # [V25-DIFF-4] adx_min default 20 for V25
         adx_min = getattr(self.thresholds, "adx_min", 20)
         if adx and adx[-1] > adx_min:
             score += 1
@@ -207,7 +218,7 @@ class _PatternExtractor:
 
 
 # ============================================================
-# PHASE 4 — PREDICTION ENGINE
+# PHASE 4 — PREDICTION ENGINE  (regime-threshold wired in)
 # ============================================================
 
 class _PredictionEngine:
@@ -222,10 +233,10 @@ class _PredictionEngine:
         if len(atr_vals) < 21:
             return "normal"
         ratio = atr_vals[-1] / (statistics.mean(atr_vals[-21:-1]) + 1e-10)
-        # [V25-DIFF-2] Tighter ATR zone thresholds for V25's lower volatility
+        # [V25-DIFF-2] Tighter ATR zone thresholds for V25
         if ratio < 0.5:  return "low"
-        if ratio < 1.3:  return "normal"    # V75 was 1.5
-        if ratio < 2.0:  return "elevated"  # V75 was 2.5
+        if ratio < 1.3:  return "normal"    # V75 uses 1.5
+        if ratio < 2.0:  return "elevated"  # V75 uses 2.5
         return "extreme"
 
     def _entry_checklist(self, direction: str) -> int:
@@ -242,20 +253,20 @@ class _PredictionEngine:
         rng  = last_c["high"] - last_c["low"] + 1e-5
 
         # [V25-DIFF-3] RSI thresholds tighter for V25
-        rsi_buy_max    = getattr(self.thresholds, "rsi_buy_max",  50)   # V75 was 55
-        rsi_sell_min   = getattr(self.thresholds, "rsi_sell_min", 50)   # V75 was 45
+        rsi_buy_max    = getattr(self.thresholds, "rsi_buy_max",  50)
+        rsi_sell_min   = getattr(self.thresholds, "rsi_sell_min", 50)
         body_ratio_min = getattr(self.thresholds, "body_ratio_min", 0.4)
         vol_mult       = getattr(self.thresholds, "volume_spike_mult", 1.1)
 
         if direction == "buy":
-            if ema50[-1] > ema200[-1]:                                     score += 1
-            if rsi[-1] <= rsi_buy_max:                                     score += 1
-            if macd_h[-1] > 0:                                             score += 1
+            if ema50[-1] > ema200[-1]:                                          score += 1
+            if rsi[-1] <= rsi_buy_max:                                          score += 1
+            if macd_h[-1] > 0:                                                  score += 1
             if last_c["close"] > last_c["open"] and body / rng > body_ratio_min: score += 1
         else:
-            if ema50[-1] < ema200[-1]:                                     score += 1
-            if rsi[-1] >= rsi_sell_min:                                    score += 1
-            if macd_h[-1] < 0:                                             score += 1
+            if ema50[-1] < ema200[-1]:                                          score += 1
+            if rsi[-1] >= rsi_sell_min:                                         score += 1
+            if macd_h[-1] < 0:                                                  score += 1
             if last_c["close"] < last_c["open"] and body / rng > body_ratio_min: score += 1
 
         if len(volumes) > 1:
@@ -267,7 +278,7 @@ class _PredictionEngine:
         score += 1   # zone check
         return min(score, 7)
 
-    def predict(self) -> dict:
+    def predict(self, effective_checklist_min: int = None) -> dict:
         tss      = self.patterns.trend_strength_score()
         diverge  = self.patterns.rsi_divergence()
         compress = self.patterns.compression_zone()
@@ -278,7 +289,6 @@ class _PredictionEngine:
         ema50  = self.features.get("ema_50",  [closes[-1]])
         ema200 = self.features.get("ema_200", [closes[-1]])
 
-        # Adaptive ATR zone block
         blocked_zones = getattr(self.thresholds, "blocked_atr_zones", ["extreme"])
         if atr_zone in blocked_zones:
             return {
@@ -286,21 +296,13 @@ class _PredictionEngine:
                 "tss": tss, "checklist": 0, "atr_zone": atr_zone, "confidence": 0.0,
             }
 
-        # 2-of-3 EMA majority vote (same logic as V75 HOLD-FIX-1)
+        # 2-of-3 EMA majority vote (HOLD-FIX-1, same as V75)
         ema21_v  = ema21[-1]
         ema50_v  = ema50[-1]
         ema200_v = ema200[-1]
 
-        bull_points = sum([
-            ema21_v > ema50_v,
-            ema50_v > ema200_v,
-            ema21_v > ema200_v,
-        ])
-        bear_points = sum([
-            ema21_v < ema50_v,
-            ema50_v < ema200_v,
-            ema21_v < ema200_v,
-        ])
+        bull_points = sum([ema21_v > ema50_v, ema50_v > ema200_v, ema21_v > ema200_v])
+        bear_points = sum([ema21_v < ema50_v, ema50_v < ema200_v, ema21_v < ema200_v])
 
         if bull_points >= 2:
             direction = "buy"
@@ -314,8 +316,10 @@ class _PredictionEngine:
 
         checklist = self._entry_checklist(direction)
 
-        min_checklist = getattr(self.thresholds, "checklist_min", 3)
-        min_tss       = getattr(self.thresholds, "tss_min",       2)
+        # [REGIME-THRESHOLD] use regime-aware checklist minimum when passed in
+        min_checklist = effective_checklist_min if effective_checklist_min is not None \
+                        else getattr(self.thresholds, "checklist_min", 3)
+        min_tss       = getattr(self.thresholds, "tss_min", 2)
 
         if checklist < min_checklist or tss < min_tss:
             return {
@@ -324,9 +328,9 @@ class _PredictionEngine:
                 "tss": tss, "checklist": checklist, "atr_zone": atr_zone, "confidence": 0.0,
             }
 
-        # [V25-DIFF-5] checklist weighted slightly higher on V25
-        w_tss = getattr(self.thresholds, "w_tss",       0.45)   # V75 was 0.5
-        w_chk = getattr(self.thresholds, "w_checklist", 0.55)   # V75 was 0.5
+        # [V25-DIFF-5] Checklist weighted slightly higher on V25
+        w_tss = getattr(self.thresholds, "w_tss",       0.45)
+        w_chk = getattr(self.thresholds, "w_checklist", 0.55)
         confidence = min(1.0, (tss / 5) * w_tss + (checklist / 7) * w_chk)
 
         min_conf = getattr(self.thresholds, "confidence_min", 0.0)
@@ -353,7 +357,7 @@ class _PredictionEngine:
 
 
 # ============================================================
-# PHASE 5 — RISK MANAGER
+# PHASE 5 — RISK MANAGER  (unchanged from original v25)
 # ============================================================
 
 class _RiskManager:
@@ -361,7 +365,7 @@ class _RiskManager:
         "starter":     {"risk_pct": 0.01,   "max_trades": 2, "daily_dd": 0.03, "loss_limit": 2},
         "growth":      {"risk_pct": 0.015,  "max_trades": 3, "daily_dd": 0.04, "loss_limit": 3},
         "established": {"risk_pct": 0.02,   "max_trades": 4, "daily_dd": 0.05, "loss_limit": 3},
-        # [V25-DIFF-7] prop daily_dd tightened to 0.02 (V25 drawdowns are more predictable)
+        # [V25-DIFF-7] prop daily_dd tightened to 0.02
         "prop":        {"risk_pct": 0.0075, "max_trades": 2, "daily_dd": 0.02, "loss_limit": 2},
     }
 
@@ -385,7 +389,7 @@ class _RiskManager:
         return round(max(lots, 0.01), 2)
 
     def sl_tp(self, entry: float, direction: str, atr_val: float) -> dict:
-        # [V25-DIFF-2] sl_atr_mult default 1.2 (vs 1.5 on V75)
+        # [V25-DIFF-2] sl_atr_mult default 1.2 (V75 uses 1.5)
         sl_dist = atr_val * 1.2
         if direction == "buy":
             return {"sl": round(entry - sl_dist, 2), "tp": round(entry + sl_dist * 1.5, 2)}
@@ -398,9 +402,9 @@ class _RiskManager:
 
 class V25Strategy(BaseStrategy):
     NAME   = "V25"
-    SYMBOL = "R_25"   # [V25-DIFF-1]
+    SYMBOL = "R_25"          # [V25-DIFF-1]
     _last_executed:    float = 0
-    _cooldown_seconds: int   = 90   # [V25-DIFF-6] 90 s (V75 was 120 s)
+    _cooldown_seconds: int   = 90   # [V25-DIFF-6]
 
     def __init__(self, api_token, broadcast_fn, execute_trade_fn,
                  balance: float = 1000.0, is_prop: bool = False):
@@ -439,7 +443,6 @@ class V25Strategy(BaseStrategy):
             }
             for c in raw_candles
         ]
-
         self.logger.info(
             f"[{self.NAME}] fetched {len(candles)} candles | "
             f"balance={self.balance} | last_close={candles[-1]['close'] if candles else 'N/A'}"
@@ -452,6 +455,9 @@ class V25Strategy(BaseStrategy):
         from ml.calibration_loader import get_thresholds
         t = get_thresholds(self.SYMBOL)
 
+        # ── [REGIME-GATE] Read current regime ─────────────────────────────
+        regime = get_current_regime(self.SYMBOL)
+
         if len(candles) < 220:
             return {
                 "signal": "HOLD", "symbol": self.SYMBOL,
@@ -460,28 +466,53 @@ class V25Strategy(BaseStrategy):
                 "amount": 0.0, "meta": {}, "indicators": {},
             }
 
-        features = _FeatureEngine(candles).build_all()
-
+        features  = _FeatureEngine(candles).build_all()
         patterns  = _PatternExtractor(candles, features, t)
         predictor = _PredictionEngine(patterns, features, candles, t)
-        result    = predictor.predict()
+
+        # [REGIME-THRESHOLD] regime-aware checklist minimum
+        effective_chk = t.effective_checklist_min()
+        result        = predictor.predict(effective_checklist_min=effective_chk)
+
+        # ── [REGIME-GATE] Suppress after prediction based on regime ───────
+        if result["signal"] != "HOLD":
+            signal_direction = result["signal"]
+
+            if regime == "CRASH" and signal_direction == "BUY":
+                result = {
+                    "signal":    "HOLD",
+                    "reason":    "CRASH regime — BUY suppressed",
+                    "tss":       result.get("tss", 0),
+                    "checklist": result.get("checklist", 0),
+                    "atr_zone":  result.get("atr_zone", "normal"),
+                    "confidence": 0.0,
+                }
+            elif regime == "HIGH_VOL" and signal_direction == "BUY":
+                result = {
+                    "signal":    "HOLD",
+                    "reason":    "HIGH_VOL regime — BUY suppressed",
+                    "tss":       result.get("tss", 0),
+                    "checklist": result.get("checklist", 0),
+                    "atr_zone":  result.get("atr_zone", "normal"),
+                    "confidence": 0.0,
+                }
+            # RANGE handled via effective_checklist_min; no explicit suppression
 
         atr_val    = features["atr_14"][-1] if features.get("atr_14") else 1000
         atr_zone   = result.get("atr_zone", "normal")
         tss        = result.get("tss", 0)
         confidence = result.get("confidence", 0.0)
 
-        risk     = _RiskManager(self.balance, self.is_prop)
-        sl_mult  = getattr(t, "sl_atr_mult", 1.2)   # [V25-DIFF-2] default 1.2
-        sl_pips  = atr_val * sl_mult
-        lot      = risk.lot_size(sl_pips, atr_zone)
-        levels   = risk.sl_tp(
+        risk    = _RiskManager(self.balance, self.is_prop)
+        sl_mult = getattr(t, "sl_atr_mult", 1.2)   # [V25-DIFF-2]
+        sl_pips = atr_val * sl_mult
+        lot     = risk.lot_size(sl_pips, atr_zone)
+        levels  = risk.sl_tp(
             entry     = candles[-1]["close"],
             direction = "buy" if result["signal"] == "BUY" else "sell",
             atr_val   = atr_val,
         )
 
-        # Indicator snapshot
         indicators = {
             "rsi":       round(features["rsi_14"][-1], 2)         if features.get("rsi_14")         else None,
             "adx":       round(features["adx_14"][-1], 2)         if features.get("adx_14")         else None,
@@ -496,20 +527,21 @@ class V25Strategy(BaseStrategy):
             "action": result["signal"],
             "signal": {
                 "direction":  1 if result["signal"] == "BUY" else (-1 if result["signal"] == "SELL" else 0),
-                "rsi":        indicators["rsi"]      or 0,
-                "adx":        indicators["adx"]      or 0,
+                "rsi":        indicators["rsi"]       or 0,
+                "adx":        indicators["adx"]       or 0,
                 "atr":        indicators["atr"],
-                "ema50":      indicators["ema_50"]   or 0,
-                "ema200":     indicators["ema_200"]  or 0,
+                "ema50":      indicators["ema_50"]    or 0,
+                "ema200":     indicators["ema_200"]   or 0,
                 "macd_hist":  indicators["macd_hist"] or 0,
                 "tss_score":  tss,
                 "atr_zone":   atr_zone,
                 "confidence": confidence,
+                "regime":     regime,                 # ← [REGIME-LOG]
                 "reason":     result.get("reason", ""),
             }
         })
 
-        # ── Write SignalLog row, capture id for execute() ─────────
+        # ── Write SignalLog row ────────────────────────────────────────────
         signal_log_id = None
         if result["signal"] != "HOLD":
             from app.database import AsyncSessionLocal
@@ -564,11 +596,13 @@ class V25Strategy(BaseStrategy):
                 "tp":            levels["tp"],
                 "entry":         candles[-1]["close"],
                 "balance":       self.balance,
+                "regime":        regime,              # ← [REGIME-LOG]
                 "thresholds": {
-                    "confidence_min": t.confidence_min,
-                    "tss_min":        t.tss_min,
-                    "checklist_min":  t.checklist_min,
-                    "sl_atr_mult":    getattr(t, "sl_atr_mult", 1.2),
+                    "confidence_min":    t.confidence_min,
+                    "tss_min":           t.tss_min,
+                    "checklist_min":     t.checklist_min,
+                    "effective_chk_min": effective_chk,
+                    "sl_atr_mult":       getattr(t, "sl_atr_mult", 1.2),
                 },
             },
         }
@@ -584,7 +618,8 @@ class V25Strategy(BaseStrategy):
                 f"bot={bot_running} "
                 f"conf={signal.get('confidence', 0):.3f} "
                 f"amount={signal.get('amount', 0):.4f} "
-                f"atr={signal.get('meta', {}).get('atr_zone', '?')}"
+                f"atr={signal.get('meta', {}).get('atr_zone', '?')} "
+                f"regime={signal.get('meta', {}).get('regime', '?')}"
             )
 
             if not bot_running:
@@ -599,8 +634,8 @@ class V25Strategy(BaseStrategy):
                 self.logger.info(f"[{self.NAME}] lot size 0 — skipping")
                 return False
 
-            confidence = signal.get("confidence", 0.0)
-            min_conf = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
+            confidence  = signal.get("confidence", 0.0)
+            min_conf    = signal.get("meta", {}).get("thresholds", {}).get("confidence_min", 0.0)
             exec_thresh = max(min_conf, 0.60)
 
             if confidence < exec_thresh:
@@ -619,19 +654,37 @@ class V25Strategy(BaseStrategy):
         if signal["signal"] == "HOLD":
             return None
 
-        action = "rise" if signal["signal"] == "BUY" else "fall"
-
-        # ── Size stake from live balance (1% scaled by confidence) ──
+        action     = "rise" if signal["signal"] == "BUY" else "fall"
         confidence = signal.get("confidence", 0.60)
-        balance = signal.get("meta", {}).get("balance", self.balance) or self.balance
-        scale = 1.0 + (confidence - 0.30) * 2.5
-        stake = round(balance * 0.01 * scale, 2)
-        # [V25-DIFF-8] Cap lowered to 8.0 (V75 was 10.0) — V25 is calmer
-        stake = max(0.35, min(8.0, stake))
+        meta       = signal.get("meta", {})
+        balance    = meta.get("balance", self.balance) or self.balance
+        atr_zone   = meta.get("atr_zone", "normal")
+
+        if self.is_prop:
+            risk_pct = 0.0075
+        elif balance < 50:
+            risk_pct = 0.01
+        elif balance < 500:
+            risk_pct = 0.015
+        else:
+            risk_pct = 0.02
+
+        atr_mult = {"low": 1.0, "normal": 1.0, "elevated": 0.5, "extreme": 0.0}.get(atr_zone, 1.0)
+        if atr_mult == 0.0:
+            self.logger.info(f"[{self.NAME}] ATR extreme in execute() — aborting")
+            return None
+
+        conf_scale = max(0.5, min(1.5, 1.0 + (confidence - 0.60) * 2.5))
+        base_stake = balance * risk_pct
+        # [V25-DIFF-8] Cap $8.00 (V75 uses $10.00)
+        stake      = round(max(0.35, min(8.0, base_stake * conf_scale * atr_mult)), 2)
 
         self.logger.info(
             f"[{self.NAME}] EXECUTING {action.upper()} | "
-            f"conf={confidence:.3f} bal={balance:.2f} stake={stake}"
+            f"tier_risk={risk_pct:.2%} conf_scale={conf_scale:.2f} "
+            f"atr_mult={atr_mult} → stake=${stake} | "
+            f"bal=${balance:.2f} conf={confidence:.3f} "
+            f"regime={meta.get('regime', '?')}"
         )
 
         try:
@@ -642,12 +695,10 @@ class V25Strategy(BaseStrategy):
             )
 
             self.logger.info(
-                f"[{self.NAME}] trade placed | action={action} "
-                f"stake={stake} | result={result}"
+                f"[{self.NAME}] trade placed | action={action} stake={stake} | result={result}"
             )
 
-            # ── Mark signal_log as executed in DB ─────────────────
-            signal_log_id = signal.get("meta", {}).get("signal_log_id")
+            signal_log_id = meta.get("signal_log_id")
             if signal_log_id and result and result.get("contract_id"):
                 try:
                     async with httpx.AsyncClient() as client:
@@ -660,25 +711,22 @@ class V25Strategy(BaseStrategy):
                     self.logger.warning(f"[{self.NAME}] mark-executed failed: {mark_err}")
 
             await self.broadcast_fn({
-                "type": "trade_executed",
-                "strategy": self.NAME,
-                "action": action,
-                "amount": stake,
-                "symbol": self.SYMBOL,
-                "confidence": confidence,
+                "type":        "trade_executed",
+                "strategy":    self.NAME,
+                "action":      action,
+                "amount":      stake,
+                "symbol":      self.SYMBOL,
+                "confidence":  confidence,
+                "regime":      meta.get("regime", "UNKNOWN"),
                 "contract_id": result.get("contract_id") if result else None,
-                "buy_price": result.get("buy_price") if result else None,
-                "payout": result.get("payout") if result else None,
-                "meta": signal.get("meta", {}),
+                "buy_price":   result.get("buy_price")   if result else None,
+                "payout":      result.get("payout")      if result else None,
+                "meta":        meta,
             })
 
             return result
 
         except Exception as e:
             self.logger.error(f"[{self.NAME}] execute_trade_fn failed: {e}")
-            await self.broadcast_fn({
-                "type": "trade_error",
-                "strategy": self.NAME,
-                "error": str(e),
-            })
+            await self.broadcast_fn({"type": "trade_error", "strategy": self.NAME, "error": str(e)})
             return None

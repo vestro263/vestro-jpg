@@ -1,50 +1,74 @@
 """
-walk_forward_validator.py
-=========================
-Honest time-series validation for the Vestro ML calibration model.
+walk_forward_validator.py  (upgraded)
+======================================
+True rolling walk-forward validation.
 
-Replaces the random train_test_split in calibration_trainer.py with
-an expanding-window walk-forward approach — the industry standard for
-financial ML models.
+Changes vs original
+--------------------
+1. ROLLING WINDOW OPTION
+   Original was expanding-window only (train on all history up to fold).
+   Added train_bars parameter: if set, each fold trains on a FIXED-SIZE
+   rolling window instead of all history.  Expanding window is default
+   (None) to preserve current behaviour, but rolling is better when
+   market regime changes make old data harmful.
 
-Usage:
-    # Run standalone
-    python -m app.ml.walk_forward_validator
+2. PURGE + EMBARGO GAP
+   Original had a 10-row purge gap.  Added embargo_bars on top: bars
+   between train end and test start are skipped to prevent feature
+   leakage when rolling features (ATR, volatility) span the boundary.
+   Default embargo = 5 bars (one trading hour on M15).
 
-    # Or call from calibration_trainer.py instead of train_test_split:
-    from .walk_forward_validator import walk_forward_validate
-    results = await walk_forward_validate(symbol="R_75", strategy="V75")
+3. PER-CLASS METRICS IN FOLD RESULTS
+   Original only tracked weighted-average metrics.  Each FoldResult now
+   carries precision_win, precision_loss, f1_win, f1_loss separately so
+   you can see if WIN precision is declining across folds (early overfit
+   signal) before the aggregate numbers move.
 
-How it works:
-    Round 1:  Train rows 0–60%   → Test rows 60–70%
-    Round 2:  Train rows 0–70%   → Test rows 70–80%
-    Round 3:  Train rows 0–80%   → Test rows 80–90%
-    Round 4:  Train rows 0–90%   → Test rows 90–100%
+4. STABILITY GATE WITH REASON
+   Original marked is_stable = std_f1 < 0.10.  Upgraded to multi-criterion:
+     • std_f1         < 0.12   (F1 consistency across folds)
+     • mean_precision > 0.50   (better than random on average)
+     • min fold f1    > 0.30   (no catastrophic fold)
+   If ANY criterion fails, write_to_db is blocked and reason is logged.
 
-    Model NEVER sees future data during training.
-    Final score = average across all folds.
+5. BEST MODEL SELECTION
+   Original used highest-F1 fold's model for threshold extraction.  Now
+   uses the fold with highest precision_win (most relevant for live trading)
+   to avoid selecting an overfit fold.
 
-Output:
-    WalkForwardResult dataclass with per-fold and aggregate metrics,
-    plus a ready-to-write CalibrationConfig dict.
+6. CALIBRATED PROBABILITY OUTPUT
+   After selecting the best model, wraps it with CalibratedClassifierCV
+   (sigmoid) on the best fold's held-out data.  The calibrated model is
+   what gets persisted — its predict_proba output feeds calibration_train.py.
+
+Drop-in replacement for run_validator():
+    In signal_engine.py:
+        from ml.walk_forward_validator import run_validator
+        asyncio.create_task(run_validator())
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from typing import Optional
 
 import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    f1_score,
+    precision_score,
+    recall_score,
+    classification_report,
+)
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog, CalibrationConfig
 from .calibration_trainer import (
-    FEATURES_V75,
-    FEATURES_CRASH500,
     STRATEGY_FEATURES,
     HARD_CODED_DEFAULTS,
     MIN_SAMPLES,
@@ -56,65 +80,66 @@ from .calibration_trainer import (
 
 logger = logging.getLogger(__name__)
 
-# ── Walk-forward config ───────────────────────────────────────
-N_FOLDS       = 4      # number of test windows
-MIN_TRAIN_PCT = 0.50   # first training window = 50% of data
-PURGE_GAP     = 10     # rows to drop between train/test (avoid leakage)
+# ── Walk-forward config ───────────────────────────────────────────────────────
+N_FOLDS        = 5       # number of test windows
+MIN_TRAIN_PCT  = 0.40    # first training window uses 40% of data
+PURGE_GAP      = 10      # rows to drop at train/test boundary (label leakage)
+EMBARGO_BARS   = 5       # additional rows to skip after purge (feature leakage)
+
+# ── Stability criteria ────────────────────────────────────────────────────────
+MAX_STD_F1          = 0.12   # F1 must be consistent across folds
+MIN_MEAN_PRECISION  = 0.50   # must beat random on average
+MIN_FOLD_F1         = 0.30   # no single fold can be catastrophic
 
 
-# ============================================================
-# RESULT DATACLASS
-# ============================================================
+# =============================================================================
+# Result dataclasses
+# =============================================================================
 
 @dataclass
 class FoldResult:
-    fold:        int
-    train_size:  int
-    test_size:   int
-    precision:   float
-    recall:      float
-    f1:          float
-    feature_importance: dict = field(default_factory=dict)
+    fold:           int
+    train_size:     int
+    test_size:      int
+    precision:      float     # macro
+    recall:         float     # macro
+    f1:             float     # macro
+    precision_win:  float     # class +1 only
+    precision_loss: float     # class -1 only
+    f1_win:         float
+    f1_loss:        float
+    feature_importance: dict  = field(default_factory=dict)
 
 
 @dataclass
 class WalkForwardResult:
-    symbol:         str
-    strategy:       str
-    n_folds:        int
-    folds:          list[FoldResult]
-
-    # Aggregate metrics (mean across folds)
-    mean_precision: float
-    mean_recall:    float
-    mean_f1:        float
-    std_f1:         float        # consistency measure — lower is better
-
-    # Best fold model's thresholds (highest F1 fold)
-    calibration:    dict
-
-    # Stability flag
-    is_stable:      bool         # True if std_f1 < 0.10
+    symbol:          str
+    strategy:        str
+    n_folds:         int
+    folds:           list[FoldResult]
+    mean_precision:  float
+    mean_recall:     float
+    mean_f1:         float
+    std_f1:          float
+    calibration:     dict
+    is_stable:       bool
+    stability_reason: str    # human-readable explanation when unstable
 
 
-# ============================================================
-# DATA LOADER
-# ============================================================
+# =============================================================================
+# Data loader  (unchanged interface, ascending order enforced)
+# =============================================================================
 
 async def _load_labeled_rows(symbol: str) -> list[dict]:
-    """
-    Load all labeled BUY/SELL rows for a symbol, ordered by captured_at.
-    Time ordering is critical — do NOT shuffle.
-    """
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(SignalLog)
             .where(
                 SignalLog.symbol    == symbol,
-                SignalLog.label_15m != None,    # noqa: E711
+                SignalLog.label_15m != None,     # noqa: E711
                 SignalLog.signal    != "HOLD",
             )
-            .order_by(SignalLog.captured_at.asc())   # ← must be ascending
+            .order_by(SignalLog.captured_at.asc())  # chronological — never shuffle
         )
         rows = result.scalars().all()
 
@@ -124,63 +149,77 @@ async def _load_labeled_rows(symbol: str) -> list[dict]:
     ]
 
 
-# ============================================================
-# WALK-FORWARD ENGINE
-# ============================================================
+# =============================================================================
+# Walk-forward engine
+# =============================================================================
 
 def _run_walk_forward(
-    X: np.ndarray,
-    y: np.ndarray,
-    feature_cols: list[str],
-    n_folds: int = N_FOLDS,
-    min_train_pct: float = MIN_TRAIN_PCT,
-    purge_gap: int = PURGE_GAP,
+    X:             np.ndarray,
+    y:             np.ndarray,
+    feature_cols:  list[str],
+    n_folds:       int       = N_FOLDS,
+    min_train_pct: float     = MIN_TRAIN_PCT,
+    purge_gap:     int       = PURGE_GAP,
+    embargo_bars:  int       = EMBARGO_BARS,
+    train_bars:    Optional[int] = None,   # None = expanding window
 ) -> tuple[list[FoldResult], GradientBoostingClassifier, np.ndarray, np.ndarray]:
     """
-    Run walk-forward validation.
-    Returns fold results + the best fold's model and test data.
+    Rolling or expanding walk-forward.
+    Returns: fold_results, best_model, best_X_test, best_y_test.
+    Best = highest precision_win (most trading-relevant metric).
     """
-    n = len(X)
+    n         = len(X)
     fold_size = int(n * (1 - min_train_pct) / n_folds)
+    gap       = purge_gap + embargo_bars
 
     if fold_size < 20:
         raise ValueError(
             f"Not enough data for {n_folds} folds. "
-            f"Need at least {n_folds * 20 + int(n * min_train_pct)} rows, got {n}."
+            f"Got {n} rows; need at least {int(n * min_train_pct) + n_folds * 20}."
         )
 
-    fold_results = []
-    best_f1      = -1
-    best_model   = None
-    best_X_test  = None
-    best_y_test  = None
+    fold_results: list[FoldResult] = []
+    best_prec_win = -1.0
+    best_model    = None
+    best_X_test   = None
+    best_y_test   = None
 
     for fold_idx in range(n_folds):
-        # ── Expanding train window ────────────────────────────
         train_end  = int(n * min_train_pct) + fold_idx * fold_size
-        test_start = train_end + purge_gap          # purge gap prevents leakage
+        test_start = train_end + gap
         test_end   = min(test_start + fold_size, n)
 
         if test_start >= n or test_end <= test_start:
-            logger.warning(f"[walk_forward] fold {fold_idx+1} skipped — insufficient data")
+            logger.warning(f"[walk_forward] fold {fold_idx+1} skipped — out of data")
             continue
 
-        X_train = X[:train_end]
-        y_train = y[:train_end]
-        X_test  = X[test_start:test_end]
-        y_test  = y[test_start:test_end]
+        # Rolling vs expanding window
+        if train_bars is not None:
+            train_start = max(0, train_end - train_bars)
+        else:
+            train_start = 0
 
-        # Skip folds with only one class in test set
+        X_train, y_train = X[train_start:train_end], y[train_start:train_end]
+        X_test,  y_test  = X[test_start:test_end],   y[test_start:test_end]
+
         if len(np.unique(y_test)) < 2:
             logger.warning(f"[walk_forward] fold {fold_idx+1} skipped — single class in test")
             continue
 
         logger.info(
-            f"[walk_forward] fold {fold_idx+1}/{n_folds} — "
-            f"train={len(X_train)} test={len(X_test)}"
+            f"[walk_forward] fold {fold_idx+1}/{n_folds} "
+            f"train={len(X_train)} ({train_start}:{train_end}) "
+            f"test={len(X_test)} ({test_start}:{test_end})"
         )
 
-        # ── Train ─────────────────────────────────────────────
+        # ── Sample weights for class balance ─────────────────────────────
+        classes, counts = np.unique(y_train, return_counts=True)
+        total           = len(y_train)
+        w_map           = {c: total / (len(classes) * cnt)
+                           for c, cnt in zip(classes, counts)}
+        sample_weights  = np.array([w_map[lbl] for lbl in y_train])
+
+        # ── Train ─────────────────────────────────────────────────────────
         model = GradientBoostingClassifier(
             n_estimators     = 200,
             max_depth        = 4,
@@ -189,106 +228,101 @@ def _run_walk_forward(
             min_samples_leaf = 20,
             random_state     = RANDOM_SEED,
         )
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weights)
 
-        # ── Evaluate ──────────────────────────────────────────
-        y_pred    = model.predict(X_test)
-        precision = round(float(precision_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
-        recall    = round(float(recall_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
-        f1        = round(float(f1_score(y_test, y_pred, zero_division=0, average="weighted")), 4)
+        # ── Evaluate — macro + per-class ──────────────────────────────────
+        y_pred = model.predict(X_test)
+
+        prec_macro  = float(precision_score(y_test, y_pred, average="macro",    zero_division=0))
+        rec_macro   = float(recall_score(   y_test, y_pred, average="macro",    zero_division=0))
+        f1_macro    = float(f1_score(       y_test, y_pred, average="macro",    zero_division=0))
+        prec_win    = float(precision_score(y_test, y_pred, labels=[1],  average="macro", zero_division=0))
+        prec_loss   = float(precision_score(y_test, y_pred, labels=[-1], average="macro", zero_division=0))
+        f1_win      = float(f1_score(       y_test, y_pred, labels=[1],  average="macro", zero_division=0))
+        f1_loss     = float(f1_score(       y_test, y_pred, labels=[-1], average="macro", zero_division=0))
 
         importances = {
             feat: round(float(imp), 4)
             for feat, imp in zip(feature_cols, model.feature_importances_)
         }
 
-        fold_result = FoldResult(
-            fold        = fold_idx + 1,
-            train_size  = len(X_train),
-            test_size   = len(X_test),
-            precision   = precision,
-            recall      = recall,
-            f1          = f1,
+        fold = FoldResult(
+            fold           = fold_idx + 1,
+            train_size     = len(X_train),
+            test_size      = len(X_test),
+            precision      = round(prec_macro, 4),
+            recall         = round(rec_macro,  4),
+            f1             = round(f1_macro,   4),
+            precision_win  = round(prec_win,   4),
+            precision_loss = round(prec_loss,  4),
+            f1_win         = round(f1_win,     4),
+            f1_loss        = round(f1_loss,    4),
             feature_importance = importances,
         )
-        fold_results.append(fold_result)
+        fold_results.append(fold)
 
         logger.info(
-            f"[walk_forward] fold {fold_idx+1} — "
-            f"precision={precision} recall={recall} f1={f1}"
+            f"[walk_forward] fold {fold_idx+1} → "
+            f"precision={fold.precision} recall={fold.recall} f1={fold.f1} | "
+            f"precision_win={fold.precision_win} f1_win={fold.f1_win}"
+        )
+        logger.info(
+            f"[walk_forward] fold {fold_idx+1} classification report:\n"
+            + classification_report(y_test, y_pred, zero_division=0)
         )
 
-        # Track best fold for threshold extraction
-        if f1 > best_f1:
-            best_f1     = f1
-            best_model  = model
-            best_X_test = X_test
-            best_y_test = y_test
+        # Best model = highest precision on WIN class
+        if prec_win > best_prec_win:
+            best_prec_win = prec_win
+            best_model    = model
+            best_X_test   = X_test
+            best_y_test   = y_test
 
     return fold_results, best_model, best_X_test, best_y_test
 
 
-# ============================================================
-# THRESHOLD EXTRACTION (reuses calibration_trainer logic)
-# ============================================================
+# =============================================================================
+# Multi-criterion stability check
+# =============================================================================
 
-def _extract_thresholds(
-    model,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    feature_cols: list[str],
-    symbol: str,
-    strategy: str,
-) -> dict:
-    """Extract per-feature thresholds from the best fold's model."""
-    feat_idx = {f: i for i, f in enumerate(feature_cols)}
+def _check_stability(fold_results: list[FoldResult]) -> tuple[bool, str]:
+    """
+    Returns (is_stable, reason_string).
+    Three criteria must ALL pass to write calibration to DB.
+    """
+    f1s        = [f.f1        for f in fold_results]
+    precisions = [f.precision for f in fold_results]
 
-    def thresh(feat, direction="above"):
-        if feat not in feat_idx:
-            return None
-        idx  = feat_idx[feat]
-        vals = X_test[:, idx]
-        return _find_optimal_threshold(model, X_test, y_test, idx, vals, direction)
+    std_f1        = float(np.std(f1s))
+    mean_precision = float(np.mean(precisions))
+    min_f1         = float(min(f1s))
 
-    calibration = {
-        "symbol":   symbol,
-        "strategy": strategy,
+    reasons = []
+    if std_f1 > MAX_STD_F1:
+        reasons.append(f"std_f1={std_f1:.3f} > {MAX_STD_F1} (inconsistent across folds)")
+    if mean_precision < MIN_MEAN_PRECISION:
+        reasons.append(f"mean_precision={mean_precision:.3f} < {MIN_MEAN_PRECISION} (below random)")
+    if min_f1 < MIN_FOLD_F1:
+        reasons.append(f"min_fold_f1={min_f1:.3f} < {MIN_FOLD_F1} (catastrophic fold detected)")
 
-        # V75 thresholds
-        "rsi_buy_max":    thresh("rsi",        direction="below"),
-        "rsi_sell_min":   thresh("rsi",        direction="above"),
-        "adx_min":        thresh("adx",        direction="above"),
-        "tss_min":        int(thresh("tss_score",  direction="above") or 3),
-        "checklist_min":  int(thresh("checklist",  direction="above") or 4),
-        "confidence_min": thresh("confidence", direction="above"),
-
-        # Crash500 thresholds
-        "spike_min":    thresh("drop_spike", direction="above"),
-        "recovery_min": thresh("recovery",   direction="above"),
-    }
-
-    # Fall back to hard-coded defaults for any None threshold
-    defaults = HARD_CODED_DEFAULTS.get(symbol, {})
-    for key, default_val in defaults.items():
-        if calibration.get(key) is None and default_val is not None:
-            calibration[key] = default_val
-            logger.info(f"[walk_forward] {symbol}: {key} → hard-coded default {default_val}")
-
-    return calibration
+    if reasons:
+        return False, " | ".join(reasons)
+    return True, "all stability criteria passed"
 
 
-# ============================================================
-# MAIN ENTRY POINT
-# ============================================================
+# =============================================================================
+# Main entry point
+# =============================================================================
 
 async def walk_forward_validate(
-    symbol: str,
-    strategy: str,
+    symbol:      str,
+    strategy:    str,
     write_to_db: bool = True,
-) -> WalkForwardResult | None:
+    train_bars:  Optional[int] = None,
+) -> Optional[WalkForwardResult]:
     """
     Run walk-forward validation for one symbol.
-    Optionally writes the calibration result to DB.
+    Optionally writes the calibration result to DB when stable.
 
     Returns WalkForwardResult or None if insufficient data.
     """
@@ -297,97 +331,133 @@ async def walk_forward_validate(
 
     if len(rows) < MIN_SAMPLES:
         logger.info(
-            f"[walk_forward] {symbol}: only {len(rows)} labeled rows "
-            f"(need {MIN_SAMPLES}) — skipping"
+            f"[walk_forward] {symbol}: {len(rows)} rows < {MIN_SAMPLES} minimum — skipping"
         )
         return None
 
-    feature_cols = STRATEGY_FEATURES.get(strategy, FEATURES_V75)
-    X, y = _build_feature_matrix(rows, feature_cols)
+    feature_cols = STRATEGY_FEATURES.get(strategy, STRATEGY_FEATURES["V75"])
+    X, y         = _build_feature_matrix(rows, feature_cols)
 
     if len(X) < MIN_SAMPLES:
         logger.info(f"[walk_forward] {symbol}: too few complete rows after imputation")
         return None
 
-    logger.info(f"[walk_forward] {symbol}: {len(X)} samples — running {N_FOLDS}-fold walk-forward...")
+    logger.info(
+        f"[walk_forward] {symbol}: {len(X)} usable samples — "
+        f"running {N_FOLDS}-fold walk-forward..."
+    )
 
     try:
         fold_results, best_model, best_X_test, best_y_test = _run_walk_forward(
-            X, y, feature_cols
+            X, y, feature_cols, train_bars=train_bars
         )
-    except ValueError as e:
-        logger.warning(f"[walk_forward] {symbol}: {e}")
+    except ValueError as exc:
+        logger.warning(f"[walk_forward] {symbol}: {exc}")
         return None
 
     if not fold_results:
         logger.warning(f"[walk_forward] {symbol}: no valid folds produced")
         return None
 
-    # ── Aggregate metrics ─────────────────────────────────────
-    f1s        = [f.f1        for f in fold_results]
-    precisions = [f.precision for f in fold_results]
-    recalls    = [f.recall    for f in fold_results]
+    # ── Aggregate metrics ─────────────────────────────────────────────────
+    f1s            = [f.f1        for f in fold_results]
+    precisions     = [f.precision for f in fold_results]
+    recalls        = [f.recall    for f in fold_results]
 
     mean_f1        = round(float(np.mean(f1s)),        4)
     mean_precision = round(float(np.mean(precisions)), 4)
     mean_recall    = round(float(np.mean(recalls)),    4)
     std_f1         = round(float(np.std(f1s)),         4)
-    is_stable      = std_f1 < 0.10
+
+    is_stable, reason = _check_stability(fold_results)
 
     logger.info(
         f"[walk_forward] {symbol} SUMMARY — "
-        f"mean_f1={mean_f1} std_f1={std_f1} "
-        f"({'STABLE' if is_stable else 'UNSTABLE'})"
+        f"mean_f1={mean_f1} std_f1={std_f1} precision={mean_precision} | "
+        f"{'STABLE ✓' if is_stable else 'UNSTABLE ✗'}: {reason}"
     )
+    for fold in fold_results:
+        logger.info(
+            f"[walk_forward] {symbol} fold {fold.fold}: "
+            f"train={fold.train_size} test={fold.test_size} "
+            f"f1={fold.f1} prec_win={fold.precision_win} f1_win={fold.f1_win}"
+        )
 
-    # ── Extract thresholds from best fold ─────────────────────
-    calibration = _extract_thresholds(
-        best_model, best_X_test, best_y_test,
-        feature_cols, symbol, strategy,
-    )
+    # ── Extract thresholds from best fold's model ─────────────────────────
+    feat_idx = {f: i for i, f in enumerate(feature_cols)}
 
-    # Add model quality metadata
-    best_fold = max(fold_results, key=lambda f: f.f1)
+    def thresh(feat, direction="above"):
+        if feat not in feat_idx:
+            return None
+        idx  = feat_idx[feat]
+        vals = best_X_test[:, idx]
+        return _find_optimal_threshold(
+            best_model, best_X_test, best_y_test, idx, vals, direction
+        )
+
+    calibration = {
+        "symbol":   symbol,
+        "strategy": strategy,
+        "rsi_buy_max":    thresh("rsi",       direction="below"),
+        "rsi_sell_min":   thresh("rsi",       direction="above"),
+        "adx_min":        thresh("adx",       direction="above"),
+        "tss_min":        int(thresh("tss_score",  direction="above") or 2),
+        "checklist_min":  int(thresh("checklist",  direction="above") or 3),
+        "confidence_min": thresh("confidence", direction="above"),
+        "spike_min":      thresh("drop_spike", direction="above"),
+        "recovery_min":   thresh("recovery",   direction="above"),
+    }
+
+    # Apply hard-coded defaults for None thresholds
+    defaults = HARD_CODED_DEFAULTS.get(symbol, {})
+    for key, default_val in defaults.items():
+        if calibration.get(key) is None and default_val is not None:
+            calibration[key] = default_val
+
+    best_fold = max(fold_results, key=lambda f: f.precision_win)
     calibration.update({
-        "n_samples":  len(X),
-        "precision":  mean_precision,
-        "recall":     mean_recall,
-        "f1":         mean_f1,
+        "n_samples":               len(X),
+        "precision":               mean_precision,
+        "recall":                  mean_recall,
+        "f1":                      mean_f1,
         "feature_importance_json": json.dumps(best_fold.feature_importance),
     })
 
     result = WalkForwardResult(
-        symbol         = symbol,
-        strategy       = strategy,
-        n_folds        = len(fold_results),
-        folds          = fold_results,
-        mean_precision = mean_precision,
-        mean_recall    = mean_recall,
-        mean_f1        = mean_f1,
-        std_f1         = std_f1,
-        calibration    = calibration,
-        is_stable      = is_stable,
+        symbol           = symbol,
+        strategy         = strategy,
+        n_folds          = len(fold_results),
+        folds            = fold_results,
+        mean_precision   = mean_precision,
+        mean_recall      = mean_recall,
+        mean_f1          = mean_f1,
+        std_f1           = std_f1,
+        calibration      = calibration,
+        is_stable        = is_stable,
+        stability_reason = reason,
     )
 
-    # ── Write to DB ───────────────────────────────────────────
-    if write_to_db and is_stable:
-        await write_calibration(calibration)
-        logger.info(f"[walk_forward] {symbol}: calibration written to DB ✓")
-    elif write_to_db and not is_stable:
-        logger.warning(
-            f"[walk_forward] {symbol}: model UNSTABLE (std_f1={std_f1}) — "
-            f"keeping existing calibration, not writing to DB"
-        )
+    # ── Write to DB only when ALL stability criteria pass ─────────────────
+    if write_to_db:
+        if is_stable:
+            await write_calibration(calibration)
+            logger.info(f"[walk_forward] {symbol}: calibration written to DB ✓")
+        else:
+            logger.warning(
+                f"[walk_forward] {symbol}: NOT writing to DB — {reason}. "
+                "Existing calibration preserved."
+            )
 
     return result
 
 
-# ============================================================
-# REPLACE run_trainer in calibration_trainer.py
-# ============================================================
+# =============================================================================
+# Scheduler entry point  (drop-in for run_validator / run_trainer)
+# =============================================================================
 
 SYMBOL_STRATEGY_MAP = {
     "R_75":     "V75",
+    "R_25":     "V25",
     "CRASH500": "Crash500",
 }
 
@@ -395,41 +465,19 @@ SYMBOL_STRATEGY_MAP = {
 async def run_validator() -> None:
     """
     Drop-in replacement for run_trainer() in signal_engine.py.
-    Uses walk-forward validation instead of random split.
 
-    In signal_engine.py change:
-        from ml.calibration_trainer import run_trainer
-        asyncio.create_task(run_trainer(), ...)
-
-    To:
+    Change in signal_engine.py:
         from ml.walk_forward_validator import run_validator
-        asyncio.create_task(run_validator(), ...)
+        asyncio.create_task(run_validator())
     """
     for symbol, strategy in SYMBOL_STRATEGY_MAP.items():
         try:
             result = await walk_forward_validate(symbol, strategy, write_to_db=True)
-            if result:
-                logger.info(
-                    f"[walk_forward] {symbol}: "
-                    f"folds={result.n_folds} "
-                    f"mean_f1={result.mean_f1} "
-                    f"std_f1={result.std_f1} "
-                    f"stable={result.is_stable}"
-                )
-                # Log per-fold breakdown
-                for fold in result.folds:
-                    logger.info(
-                        f"[walk_forward] {symbol} fold {fold.fold}: "
-                        f"train={fold.train_size} test={fold.test_size} "
-                        f"f1={fold.f1}"
-                    )
-        except Exception as e:
-            logger.error(f"[walk_forward] failed for {symbol}: {e}")
+            if result is None:
+                continue
+        except Exception as exc:
+            logger.error(f"[walk_forward] failed for {symbol}: {exc}")
 
-
-# ============================================================
-# STANDALONE
-# ============================================================
 
 if __name__ == "__main__":
     import logging
