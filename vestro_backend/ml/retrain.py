@@ -51,7 +51,7 @@ from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog, CalibrationConfig
 from .feature_engineering import enrich_rows_batch, CANDLE_FEATURE_NAMES
-from .calibration_train import (
+from .calibration_trainer import (
     STRATEGY_FEATURES,
     SYMBOL_STRATEGY_MAP,
     MIN_SAMPLES,
