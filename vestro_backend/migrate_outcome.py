@@ -1,14 +1,4 @@
-"""
-migrate_signal_log_columns.py
-=============================
-Adds missing columns to signal_logs:
-    outcome     VARCHAR   — "WIN" | "LOSS" | "NEUTRAL"
-    exit_price  FLOAT     — price at barrier touch or window end
-
-Run once:
-    py migrate_signal_log_columns.py
-"""
-
+# inspect_gold_rows.py
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -17,11 +7,10 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Fix old postgres URL format
+# Normalize URL for sync SQLAlchemy
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Convert asyncpg URL to sync psycopg format for migration
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
@@ -29,55 +18,40 @@ if DATABASE_URL.startswith("postgresql+asyncpg://"):
 def run():
     engine = create_engine(DATABASE_URL, echo=False)
 
+    sql = """
+    SELECT strategy, symbol, signal, direction, entry_price, atr,
+           tp_price, sl_price, outcome, exit_price, captured_at
+    FROM signal_logs
+    WHERE symbol = 'frxXAUUSD'
+      AND signal != 'HOLD'
+    ORDER BY captured_at DESC
+    LIMIT 20
+    """
+
     with engine.begin() as conn:
-        print("\n── Current signal_logs columns ──")
+        rows = conn.execute(text(sql)).fetchall()
 
-        result = conn.execute(text("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'signal_logs'
-            ORDER BY ordinal_position
-        """))
+        if not rows:
+            print("No Gold rows found.")
+            return
 
-        existing = {row[0]: row[1] for row in result.fetchall()}
-
-        for col, dtype in existing.items():
-            print(f"  {col:30s} {dtype}")
-
-        print("\n── Adding missing columns ──")
-
-        if "outcome" not in existing:
-            conn.execute(text("""
-                ALTER TABLE signal_logs
-                ADD COLUMN outcome VARCHAR
-            """))
-            print("✓ outcome column added")
-        else:
-            print("— outcome already exists, skipping")
-
-        if "exit_price" not in existing:
-            conn.execute(text("""
-                ALTER TABLE signal_logs
-                ADD COLUMN exit_price DOUBLE PRECISION
-            """))
-            print("✓ exit_price column added")
-        else:
-            print("— exit_price already exists, skipping")
-
-        print("\n── Final signal_logs schema ──")
-
-        result = conn.execute(text("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'signal_logs'
-            ORDER BY ordinal_position
-        """))
-
-        for row in result.fetchall():
-            print(f"  {row[0]:30s} {row[1]}")
+        for r in rows:
+            print(f"""
+        strategy    : {r.strategy}
+        symbol      : {r.symbol}
+        signal      : {r.signal}
+        direction   : {r.direction}
+        entry_price : {r.entry_price}
+        atr         : {r.atr}
+        tp_price    : {r.tp_price}
+        sl_price    : {r.sl_price}
+        outcome     : {r.outcome}
+        exit_price  : {r.exit_price}
+        captured_at : {r.captured_at}
+        {'-' * 120}
+        """)
 
     engine.dispose()
-    print("\n✓ Done")
 
 
 if __name__ == "__main__":

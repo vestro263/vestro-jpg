@@ -38,33 +38,84 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     log.info("Vestro backend starting up")
 
+    # 1. Initialize database + create tables
     await init_db()
     log.info("DB tables ready")
 
+    # 2. Warm caches / preload data
     await _refresh_firms()
     log.info("Price cache ready")
 
-    # Restore bot state
+    # 3. Restore bot running state after deploy/restart
     import vestro_backend.app.routes.api as api_module
     api_module._bot_running = True
     api_module._write_bot_state(True)
     log.info("Bot auto-started on deploy")
 
-
-
-
-    asyncio.create_task(run_signal_loop())
+    # 4. Start main signal engine loop
+    signal_task = asyncio.create_task(run_signal_loop())
     log.info("Signal engine running")
 
+    # 5. Start scheduler (trainer / labeler / jobs)
     scheduler = create_scheduler()
     scheduler.start()
     log.info("Scheduler running")
 
+    # 6. Optional startup ML sync
+    try:
+        from ml.calibration_loader import force_reload
+        await force_reload()
+        log.info("Calibration cache loaded")
+    except Exception as e:
+        log.warning(f"Calibration preload skipped: {e}")
+
+    try:
+        from ml.calibration_trainer import run_trainer
+        asyncio.create_task(run_trainer())
+        log.info("Initial trainer task launched")
+    except Exception as e:
+        log.warning(f"Trainer startup skipped: {e}")
+
+    try:
+        from sqlalchemy import select
+        from app.models import Credentials
+        from app.services.credential_store import decrypt
+        from app.database import AsyncSessionLocal
+        from ml.outcome_labeler import run_labeler
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Credentials).where(Credentials.broker == "deriv").limit(1)
+            )
+            cred = result.scalar_one_or_none()
+
+        if cred:
+            asyncio.create_task(run_labeler(decrypt(cred.password)))
+            log.info("Initial labeler task launched")
+        else:
+            log.warning("No Deriv credentials found for startup labeler")
+    except Exception as e:
+        log.warning(f"Labeler startup skipped: {e}")
+
+    # ---------------- RUN APP ----------------
     yield
 
-    scheduler.shutdown(wait=False)
-    log.info("Vestro backend shut down")
+    # ---------------- SHUTDOWN ----------------
+    log.info("Shutdown started")
 
+    try:
+        scheduler.shutdown(wait=False)
+        log.info("Scheduler stopped")
+    except Exception as e:
+        log.warning(f"Scheduler shutdown error: {e}")
+
+    try:
+        signal_task.cancel()
+        log.info("Signal engine stopped")
+    except Exception as e:
+        log.warning(f"Signal task shutdown error: {e}")
+
+    log.info("Vestro backend shut down")
 
 # ------------------ APP INIT ------------------
 app = FastAPI(
