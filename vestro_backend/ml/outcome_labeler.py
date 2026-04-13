@@ -331,9 +331,15 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 )
                 labels[window_name] = lbl
 
-                if window_name == "15m" or primary_lbl is None:
+                # first available label
+                if primary_lbl is None:
                     primary_lbl = lbl
-                    exit_price  = ep
+                    exit_price = ep
+
+                # upgrade NEUTRAL to decisive result from later window
+                if primary_lbl == 0 and lbl != 0:
+                    primary_lbl = lbl
+                    exit_price = ep
 
             if not labels:
                 logger.info(
