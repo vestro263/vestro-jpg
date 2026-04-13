@@ -506,6 +506,22 @@ async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
 
     return result
 
+
+@app.get("/debug/run-labeler")
+async def debug_run_labeler(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from app.models import Credentials
+    from app.services.credential_store import decrypt
+    result = await db.execute(
+        select(Credentials).where(Credentials.broker == "deriv").limit(1)
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        return {"error": "no deriv credentials"}
+    from ml.outcome_labeler import run_labeler
+    asyncio.create_task(run_labeler(decrypt(cred.password)))
+    return {"status": "labeler started"}
+
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
