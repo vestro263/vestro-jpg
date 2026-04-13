@@ -36,7 +36,6 @@ const STRATEGY_SYMBOLS = [
 ]
 
 // ── Regime config ─────────────────────────────────────────────────────────────
-// Maps regime string → { label, color, borderColor, bgColor, pulse }
 const REGIME_CONFIG = {
   TREND:    { label: 'TREND',    color: '#4ade80', border: '#166534', bg: '#052e16', pulse: false },
   RANGE:    { label: 'RANGE',    color: '#a78bfa', border: '#4c1d95', bg: '#1a0a2e', pulse: false },
@@ -64,13 +63,10 @@ const S = {
 }
 
 // ── RegimeBadge ───────────────────────────────────────────────────────────────
-// Displays the current market regime with appropriate color coding.
-// Pulse animation on CRASH and HIGH_VOL to draw attention.
 function RegimeBadge({ regime }) {
   const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG.UNKNOWN
   const [visible, setVisible] = useState(true)
 
-  // Pulse blink effect for high-attention regimes
   useEffect(() => {
     if (!cfg.pulse) { setVisible(true); return }
     const id = setInterval(() => setVisible(v => !v), 700)
@@ -94,7 +90,6 @@ function RegimeBadge({ regime }) {
       transition:     'opacity 0.2s',
       whiteSpace:     'nowrap',
     }}>
-      {/* Dot indicator */}
       <span style={{
         width:      6,
         height:     6,
@@ -109,7 +104,6 @@ function RegimeBadge({ regime }) {
 }
 
 // ── Regime suppression notice ─────────────────────────────────────────────────
-// Shown inside the signal card when a HOLD was caused by the regime gate.
 function RegimeSuppressedNotice({ regime, reason }) {
   const cfg = REGIME_CONFIG[regime] || REGIME_CONFIG.UNKNOWN
   const isRegimeCaused = reason && (
@@ -140,11 +134,13 @@ function RegimeSuppressedNotice({ regime, reason }) {
   )
 }
 
-// ── Active Account Banner  (unchanged) ────────────────────────────────────────
+// ── Active Account Banner ─────────────────────────────────────────────────────
 function ActiveAccountBanner() {
   const accountId = useBotStore(s => s.accountId)
   const account   = useBotStore(s => s.account)
-  const isDemo    = accountId?.startsWith('VRT') ?? false
+
+  // Trust is_virtual from store — written from DB, never from prefix
+  const isDemo = account?.is_virtual ?? false
 
   if (!accountId) return null
 
@@ -183,7 +179,7 @@ function ActiveAccountBanner() {
   )
 }
 
-// ── Strategy Signal Cards  (regime-aware) ─────────────────────────────────────
+// ── Strategy Signal Cards ─────────────────────────────────────────────────────
 function StrategySignalCards({ signalMap, isMobile }) {
   return (
     <div style={{
@@ -202,7 +198,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
         const confPct   = ((sig.confidence || 0) * 100)
         const confColor = confPct >= 70 ? '#4ade80' : confPct >= 50 ? '#fbbf24' : '#f87171'
 
-        // Card border changes with regime when a live signal exists
         const cardBorderColor = entry
           ? (regime === 'CRASH'    ? '#7f1d1d'
           : regime === 'HIGH_VOL' ? '#7c2d12'
@@ -216,19 +211,17 @@ function StrategySignalCards({ signalMap, isMobile }) {
             ...S.card,
             borderTop:  `2px solid ${color}`,
             border:     `1px solid ${cardBorderColor}`,
-            borderTopColor: color,          // keep strategy color on top edge
+            borderTopColor: color,
             position:   'relative',
             overflow:   'hidden',
             transition: 'border-color 0.4s',
           }}>
-            {/* Strategy color glow */}
             <div style={{
               position: 'absolute', top: -30, right: -30,
               width: 80, height: 80, borderRadius: '50%',
               background: color, opacity: 0.05, pointerEvents: 'none',
             }} />
 
-            {/* Regime color wash overlay — visible only in warning regimes */}
             {entry && (regime === 'CRASH' || regime === 'HIGH_VOL') && (
               <div style={{
                 position:   'absolute', inset: 0,
@@ -238,7 +231,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
               }} />
             )}
 
-            {/* ── Card header: strategy label + symbol key + REGIME badge ── */}
             <div style={{
               ...S.h3,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -255,7 +247,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
                 {label} Signal
               </span>
 
-              {/* Right side: symbol pill + regime badge */}
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {entry && <RegimeBadge regime={regime} />}
                 <span style={{
@@ -271,7 +262,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
             {entry ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
 
-                {/* Direction + ATR zone + time */}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <DirectionBadge direction={sig.direction} />
                   <ATRZoneBadge zone={sig.atr_zone} />
@@ -280,16 +270,13 @@ function StrategySignalCards({ signalMap, isMobile }) {
                   </span>
                 </div>
 
-                {/* Regime suppression notice — shown when regime caused HOLD */}
                 <RegimeSuppressedNotice regime={regime} reason={sig.reason} />
 
-                {/* TSS */}
                 <div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>TSS</div>
                   <TSSBar score={sig.tss_score || 0} />
                 </div>
 
-                {/* Confidence bar */}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                     <span style={{ fontSize: 11, color: '#6b7280' }}>Confidence</span>
@@ -308,7 +295,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
                   </div>
                 </div>
 
-                {/* Reason — only show when NOT a regime suppression (already shown above) */}
                 {sig.reason && !sig.reason.includes('regime') && (
                   <div style={{
                     fontSize: 10, color: '#6b7280',
@@ -319,7 +305,6 @@ function StrategySignalCards({ signalMap, isMobile }) {
                   </div>
                 )}
 
-                {/* Indicators 2-col grid */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 6 }}>
                   {[
                     ['RSI',    sig.rsi],
@@ -356,7 +341,7 @@ function StrategySignalCards({ signalMap, isMobile }) {
   )
 }
 
-// ── Quick Trade  (unchanged) ──────────────────────────────────────────────────
+// ── Quick Trade ───────────────────────────────────────────────────────────────
 function QuickTrade({ isMobile }) {
   const { signals, accountId } = useBotStore()
   const [symbol,       setSymbol]       = useState('R_100')
@@ -470,6 +455,9 @@ export default function Dashboard() {
 
   const isMobile = useIsMobile()
 
+  // Trust is_virtual from store — set from DB, never from prefix
+  const isDemo = account?.is_virtual ?? false
+
   useEffect(() => {
     if (accountId) {
       fetchAccount()
@@ -562,7 +550,7 @@ export default function Dashboard() {
           label="Equity"
           value={`$${(account.equity || account.balance || 0).toLocaleString('en', { minimumFractionDigits: 2 })}`}
           color="#4ade80"
-          sub={accountId?.startsWith('VRT') ? 'Demo account' : 'Real account'}
+          sub={isDemo ? 'Demo account' : 'Real account'}
         />
         <StatCard
           label="Open P&L"
@@ -581,7 +569,7 @@ export default function Dashboard() {
       {/* ⚡ QUICK TRADE */}
       <QuickTrade isMobile={isMobile} />
 
-      {/* 📡 STRATEGY SIGNAL CARDS — V75 + V25 with regime UI */}
+      {/* 📡 STRATEGY SIGNAL CARDS */}
       <StrategySignalCards signalMap={signalMap} isMobile={isMobile} />
 
       {/* 🔲 POSITIONS */}
@@ -655,7 +643,6 @@ export default function Dashboard() {
                                : t.symbol === 'R_75' ? '#f59e0b'
                                : '#6b7280'
 
-              // Show regime badge in trade feed when available
               const tradeRegime = t.regime || null
 
               return (
@@ -687,7 +674,6 @@ export default function Dashboard() {
                           {t.contract_type === 'CALL' ? '▲ RISE' : '▼ FALL'}
                         </span>
                       )}
-                      {/* Regime badge in trade feed */}
                       {tradeRegime && tradeRegime !== 'UNKNOWN' && (
                         <RegimeBadge regime={tradeRegime} />
                       )}

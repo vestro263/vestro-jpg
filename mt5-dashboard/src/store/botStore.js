@@ -38,6 +38,7 @@ const useBotStore = create(
       broker:          null,
       accountId:       null,
       authError:       null,
+      demoUrl:         null,   // set when backend returns demo_account_required
       derivAccounts:   null,
       pendingAccounts: null,
 
@@ -48,6 +49,8 @@ const useBotStore = create(
 
       setPendingAccounts: (accounts) => set({ pendingAccounts: accounts }),
 
+      setDemoUrl: (url) => set({ demoUrl: url }),
+
       // ── login ─────────────────────────────────────────────
       login: (broker, accountId, accountData) => {
         set({
@@ -55,10 +58,12 @@ const useBotStore = create(
           broker,
           accountId,
           authError:       null,
+          demoUrl:         null,
           pendingAccounts: null,
           account: {
             ...accountData,
-            is_virtual: accountId?.startsWith('VRT') ?? false,
+            // Trust is_demo from the accounts payload — never derive from prefix
+            is_virtual: accountData.is_demo ?? false,
           },
         })
         get().connect()
@@ -168,7 +173,8 @@ const useBotStore = create(
               set({
                 account: {
                   ...data.account,
-                  is_virtual: state.accountId?.startsWith('VRT') ?? false,
+                  // Preserve is_virtual from DB — don't re-derive from prefix
+                  is_virtual: state.account?.is_virtual ?? false,
                 }
               })
             }
@@ -235,7 +241,8 @@ const useBotStore = create(
           set({
             account: {
               ...data,
-              is_virtual: accountId.startsWith('VRT'),
+              // Backend returns is_virtual correctly — trust it
+              is_virtual: data.is_virtual ?? false,
             }
           })
         } catch {}

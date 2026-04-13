@@ -2,12 +2,15 @@
 routes/auth.py
 ==============
 Identity model:
-  Credentials.account_id     = Deriv loginid e.g. CR123456, VRTC9999  (clean, queryable)
+  Credentials.account_id     = Deriv loginid e.g. VRTC9999            (clean, queryable)
   Credentials.google_user_id = internal User.id FK                     (login identity)
   Credentials.is_demo        = derived once on save, trusted forever   (never recomputed)
 
-  Legacy raw-DB column `user_id` is kept alive only for the migration backfill.
-  All ORM queries use account_id.
+Demo-only policy:
+  Vestro only operates on Deriv VRTC demo accounts.
+  Wallet accounts (VRW, RW) are silently skipped.
+  Real accounts (CR, MF, etc.) are rejected at the OAuth callback.
+  If no VRTC account is found, the user is redirected to create one on Deriv.
 """
 
 import json
@@ -34,6 +37,23 @@ BACKEND_URL          = os.environ.get("BACKEND_URL",          "https://vestro-jp
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT      = f"{BACKEND_URL}/auth/google/callback"
+
+# ── Account type rules ────────────────────────────────────────────────────────
+# Only VRTC accounts are tradeable demo accounts in Deriv.
+# VRW / RW are wallet containers — they hold balance but cannot place trades.
+# All other prefixes (CR, MF, etc.) are real-money accounts.
+DEMO_PREFIX     = "VRTC"
+WALLET_PREFIXES = ("VRW", "RW")
+
+DERIV_CREATE_DEMO_URL = "https://app.deriv.com/account/demo"
+
+
+def _is_wallet(account_id: str) -> bool:
+    return account_id.startswith(WALLET_PREFIXES)
+
+
+def _is_demo(account_id: str) -> bool:
+    return account_id.startswith(DEMO_PREFIX)
 
 
 # ── STEP 1 — Start Google login ───────────────────────────────
@@ -105,13 +125,17 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
-    # Find Credentials linked to this Google user
+    # Find demo credentials linked to this Google user
     result = await db.execute(
-        select(Credentials).where(Credentials.google_user_id == user.id)
+        select(Credentials).where(
+            Credentials.google_user_id == user.id,
+            Credentials.is_demo == True,              # noqa: E712
+        )
     )
     creds = result.scalars().all()
 
     if not creds:
+        # No demo account linked yet — send to Deriv OAuth to connect one
         deriv_url = (
             f"https://oauth.deriv.com/oauth2/authorize"
             f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
@@ -130,8 +154,8 @@ async def google_callback(
                 "balance":    info.get("balance", 0),
                 "currency":   info.get("currency", "USD"),
                 "name":       info.get("name", ""),
-                "type":       "demo" if cred.is_demo else "real",
-                "is_demo":    cred.is_demo,
+                "type":       "demo",
+                "is_demo":    True,
                 "broker":     "deriv",
                 "user_id":    user.id,
                 "email":      user.email,
@@ -140,6 +164,7 @@ async def google_callback(
             print(f"[auth] failed for account_id={cred.account_id}: {e}")
 
     if not accounts:
+        # Credentials exist but all failed to connect — re-auth with Deriv
         deriv_url = (
             f"https://oauth.deriv.com/oauth2/authorize"
             f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
@@ -173,6 +198,19 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
+        # ── Skip wallet accounts silently ─────────────────────────────────
+        if _is_wallet(acct):
+            print(f"[auth] skipping wallet account {acct}")
+            i += 1
+            continue
+
+        # ── Reject real accounts — demo-only policy ───────────────────────
+        if not _is_demo(acct):
+            print(f"[auth] skipping real account {acct} — demo-only mode")
+            i += 1
+            continue
+
+        # ── Only VRTC reaches here ────────────────────────────────────────
         try:
             info = await get_account_info(DERIV_APP_ID, token)
         except Exception as e:
@@ -180,22 +218,19 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             i += 1
             continue
 
-        # Look up by account_id (new) — fall back to legacy user_id raw column
-        # so existing rows are found even before the backfill migration runs
         result = await db.execute(
             select(Credentials).where(Credentials.account_id == acct)
         )
         cred = result.scalar_one_or_none()
-
         if not cred:
             cred = Credentials()
             db.add(cred)
 
-        # ── Write all fields cleanly ──────────────────────────────────────
-        cred.account_id      = acct                      # clean, unencrypted, queryable
-        cred.is_demo = bool(info.get("is_virtual", False))  # info already in scope
+        # is_demo confirmed from API response — authoritative, not prefix-guessed
+        cred.account_id      = acct
+        cred.is_demo         = bool(info.get("is_virtual", False))
         cred.broker          = "deriv"
-        cred.login           = encrypt(acct)             # keep for backward compat
+        cred.login           = encrypt(acct)
         cred.password        = encrypt(token)
         cred.api_token       = encrypt(token)
         cred.server          = encrypt("")
@@ -209,8 +244,8 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             "balance":    info.get("balance", 0),
             "currency":   cur,
             "name":       info.get("name", ""),
-            "type":       "demo" if cred.is_demo else "real",
-            "is_demo":    cred.is_demo,
+            "type":       "demo",
+            "is_demo":    True,
             "broker":     "deriv",
             "user_id":    user.id    if user else "",
             "email":      user.email if user else "",
@@ -219,8 +254,14 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
+    # No VRTC account found among the returned Deriv accounts
     if not accounts:
-        return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts")
+        create_demo_url = urllib.parse.quote(DERIV_CREATE_DEMO_URL)
+        return RedirectResponse(
+            f"{FRONTEND_URL}?error=demo_account_required"
+            f"&message=Please+create+a+Deriv+demo+account+first"
+            f"&deriv_demo_url={create_demo_url}"
+        )
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
     uid    = user.id             if user else ""
@@ -233,16 +274,24 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 # ── STEP 4 — Set active account (DB-persisted) ───────────────
 
 class SetActiveAccount(BaseModel):
-    deriv_account: str   # Deriv loginid e.g. CR123456
+    deriv_account: str   # Deriv loginid e.g. VRTC9999
     user_id:       str   # Google User.id
 
 
 @router.post("/auth/set-active-account")
 async def set_active_account(body: SetActiveAccount, db: AsyncSession = Depends(get_db)):
+    # Enforce demo-only at this layer too
+    if not _is_demo(body.deriv_account):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only demo accounts can be set as active. Got: {body.deriv_account}",
+        )
+
     result = await db.execute(select(User).where(User.id == body.user_id))
     user   = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
     user.active_account = body.deriv_account
     await db.commit()
     return {"status": "ok", "active": body.deriv_account}
@@ -279,7 +328,10 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         return {"found": False}
 
     result = await db.execute(
-        select(Credentials).where(Credentials.google_user_id == user.id)
+        select(Credentials).where(
+            Credentials.google_user_id == user.id,
+            Credentials.is_demo == True,              # noqa: E712
+        )
     )
     creds = result.scalars().all()
 
@@ -292,11 +344,11 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         "accounts": [
             {
                 "account_id": c.account_id,
-                "type":       "demo" if c.is_demo else "real",
-                "is_demo":    c.is_demo,
+                "type":       "demo",
+                "is_demo":    True,
                 "broker":     c.broker,
             }
             for c in creds
-            if c.account_id   # skip any rows not yet backfilled
+            if c.account_id
         ],
     }

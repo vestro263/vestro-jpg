@@ -44,16 +44,23 @@ export default function App() {
   useEffect(() => {
     const params        = new URLSearchParams(window.location.search)
     const accountsParam = params.get('accounts')
-    const userIdParam   = params.get('user_id')
     const error         = params.get('error')
 
     // Always clean the URL
     window.history.replaceState({}, '', '/')
 
     if (error) {
+      // Pull the demo URL if backend sent one
+      const derivDemoUrl = params.get('deriv_demo_url')
+      if (derivDemoUrl) {
+        useBotStore.getState().setDemoUrl(decodeURIComponent(derivDemoUrl))
+      }
+
       useBotStore.getState().setAuthError(
-        error === 'google_auth_failed'  ? 'Google sign-in failed. Please try again.' :
-        error === 'no_deriv_accounts'   ? 'No Deriv accounts found. Please connect one.' :
+        error === 'google_auth_failed'     ? 'Google sign-in failed. Please try again.' :
+        error === 'google_token_failed'    ? 'Google authentication failed. Please try again.' :
+        error === 'no_deriv_accounts'      ? 'No Deriv accounts found. Please connect one.' :
+        error === 'demo_account_required'  ? 'Vestro requires a Deriv demo account. Please create one and reconnect.' :
         'Something went wrong. Please try again.'
       )
       setAuthChecked(true)
@@ -65,7 +72,7 @@ export default function App() {
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
         if (Array.isArray(accounts) && accounts.length) {
-          setDerivAccounts(accounts)   // saves + shows selector
+          setDerivAccounts(accounts)
         }
       } catch {}
       setAuthChecked(true)
@@ -73,7 +80,6 @@ export default function App() {
     }
 
     if (isLoggedIn) {
-      // Already have an active session
       setAuthChecked(true)
       return
     }
@@ -85,20 +91,17 @@ export default function App() {
         .then(r => r.json())
         .then(data => {
           if (data.found && data.accounts?.length) {
-            // Re-build account list from check response and show selector
             const saved = useBotStore.getState().derivAccounts
             if (saved?.length) {
               setPendingAccounts(saved)
             }
           }
-          // else — fall through to Login
         })
         .catch(() => {})
         .finally(() => setAuthChecked(true))
       return
     }
 
-    // No session at all — show Login
     setAuthChecked(true)
   }, [])
 
