@@ -35,7 +35,7 @@ class TradeBody(BaseModel):
 
 @router.get("/api/account/{user_id}")
 async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Credentials).where(Credentials.user_id == user_id))
+    result = await db.execute(select(Credentials).where(Credentials.account_id == account_id))
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="No credentials found")

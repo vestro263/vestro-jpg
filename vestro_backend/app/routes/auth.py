@@ -193,7 +193,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
         # ── Write all fields cleanly ──────────────────────────────────────
         cred.account_id      = acct                      # clean, unencrypted, queryable
-        cred.is_demo         = acct.startswith("VRT")    # derived once, trusted forever
+        cred.is_demo = bool(info.get("is_virtual", False))  # info already in scope
         cred.broker          = "deriv"
         cred.login           = encrypt(acct)             # keep for backward compat
         cred.password        = encrypt(token)

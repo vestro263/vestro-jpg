@@ -240,9 +240,11 @@ async def run_labeler_verbose():
             creds  = result.scalars().all()
 
         cred = next(
-            (c for c in creds if c.broker == "deriv" and c.user_id.startswith("VRTC")),
+            (c for c in creds if c.broker == "deriv" and c.is_demo and c.account_id),
             None
         )
+        if not cred:
+            return {"status": "error", "detail": "no demo credential found"}
 
         if not cred:
             return {"status": "error", "detail": "no VRTC credential found"}
@@ -267,9 +269,11 @@ async def list_tables(db: AsyncSession = Depends(get_db)):
 
 @app.get("/debug/creds")
 async def check_creds(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text("SELECT id, user_id, broker FROM credentials"))
+
+    result = await db.execute(text("SELECT id, account_id, is_demo, broker FROM credentials"))
     rows = result.fetchall()
-    return {"count": len(rows), "rows": [{"id": r[0], "user_id": r[1], "broker": r[2]} for r in rows]}
+    return {"count": len(rows),
+            "rows": [{"id": r[0], "account_id": r[1], "is_demo": r[2], "broker": r[3]} for r in rows]}
 
 @app.get("/debug/ml-detail")
 async def ml_detail(db: AsyncSession = Depends(get_db)):
