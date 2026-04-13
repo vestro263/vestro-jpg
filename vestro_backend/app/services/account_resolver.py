@@ -14,7 +14,7 @@ class AccountResolver:
                 u.email,
                 u.id as user_id
             FROM users u
-            JOIN credentials c ON c.user_id = u.id
+            JOIN credentials c ON c.google_user_id = u.id
             WHERE LOWER(u.email) = LOWER(:email)
               AND c.is_active = true
         """), {"email": email})

@@ -1,10 +1,13 @@
 """
 routes/auth.py
 ==============
-Uses ONLY existing DB columns + one new nullable column:
-  Credentials.google_user_id VARCHAR (added via init_db migration)
-  Credentials.user_id        = Deriv loginid e.g. CR123456 (unchanged)
-  User.active_account        = last selected Deriv loginid (persisted)
+Identity model:
+  Credentials.account_id     = Deriv loginid e.g. CR123456, VRTC9999  (clean, queryable)
+  Credentials.google_user_id = internal User.id FK                     (login identity)
+  Credentials.is_demo        = derived once on save, trusted forever   (never recomputed)
+
+  Legacy raw-DB column `user_id` is kept alive only for the migration backfill.
+  All ORM queries use account_id.
 """
 
 import json
@@ -118,27 +121,23 @@ async def google_callback(
 
     accounts = []
     for cred in creds:
+        if not cred.account_id:
+            continue
         try:
-            info = await get_account_info(
-                DERIV_APP_ID,
-                decrypt(cred.password)
-            )
-
-            account_id = cred.login
-
+            info = await get_account_info(DERIV_APP_ID, decrypt(cred.password))
             accounts.append({
-                "account_id": account_id,
-                "balance": info.get("balance", 0),
-                "currency": info.get("currency", "USD"),
-                "name": info.get("name", ""),
-                "type": "demo" if account_id.startswith("VRT") else "real",
-                "broker": "deriv",
-                "user_id": user.id,
-                "email": user.email,
+                "account_id": cred.account_id,
+                "balance":    info.get("balance", 0),
+                "currency":   info.get("currency", "USD"),
+                "name":       info.get("name", ""),
+                "type":       "demo" if cred.is_demo else "real",
+                "is_demo":    cred.is_demo,
+                "broker":     "deriv",
+                "user_id":    user.id,
+                "email":      user.email,
             })
-
         except Exception as e:
-            print(f"[auth] failed {cred.login}: {e}")
+            print(f"[auth] failed for account_id={cred.account_id}: {e}")
 
     if not accounts:
         deriv_url = (
@@ -149,7 +148,6 @@ async def google_callback(
         return RedirectResponse(deriv_url)
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-    # Pass active_account so frontend can auto-select the last used account
     active = user.active_account or ""
     return RedirectResponse(
         f"{FRONTEND_URL}?accounts={accounts_json}&user_id={user.id}&active_account={active}"
@@ -182,16 +180,22 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             i += 1
             continue
 
+        # Look up by account_id (new) — fall back to legacy user_id raw column
+        # so existing rows are found even before the backfill migration runs
         result = await db.execute(
-            select(Credentials).where(Credentials.user_id == acct)
+            select(Credentials).where(Credentials.account_id == acct)
         )
         cred = result.scalar_one_or_none()
+
         if not cred:
-            cred = Credentials(user_id=acct)
+            cred = Credentials()
             db.add(cred)
 
+        # ── Write all fields cleanly ──────────────────────────────────────
+        cred.account_id      = acct                      # clean, unencrypted, queryable
+        cred.is_demo         = acct.startswith("VRT")    # derived once, trusted forever
         cred.broker          = "deriv"
-        cred.login           = encrypt(acct)
+        cred.login           = encrypt(acct)             # keep for backward compat
         cred.password        = encrypt(token)
         cred.api_token       = encrypt(token)
         cred.server          = encrypt("")
@@ -205,7 +209,8 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             "balance":    info.get("balance", 0),
             "currency":   cur,
             "name":       info.get("name", ""),
-            "type":       "demo" if acct.startswith("VRT") else "real",
+            "type":       "demo" if cred.is_demo else "real",
+            "is_demo":    cred.is_demo,
             "broker":     "deriv",
             "user_id":    user.id    if user else "",
             "email":      user.email if user else "",
@@ -251,15 +256,16 @@ async def get_active_account(user_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No active account set")
 
     result = await db.execute(
-        select(Credentials).where(Credentials.user_id == user.active_account)
+        select(Credentials).where(Credentials.account_id == user.active_account)
     )
     cred = result.scalar_one_or_none()
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
 
     return {
-        "deriv_account": user.active_account,
+        "deriv_account": cred.account_id,
         "api_token":     decrypt(cred.password),
+        "is_demo":       cred.is_demo,
     }
 
 
@@ -285,10 +291,12 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         "active_account": user.active_account or "",
         "accounts": [
             {
-                "account_id": c.user_id,
-                "type":       "demo" if (c.user_id or "").startswith("VRT") else "real",
+                "account_id": c.account_id,
+                "type":       "demo" if c.is_demo else "real",
+                "is_demo":    c.is_demo,
                 "broker":     c.broker,
             }
             for c in creds
+            if c.account_id   # skip any rows not yet backfilled
         ],
     }

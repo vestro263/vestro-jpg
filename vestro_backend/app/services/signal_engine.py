@@ -26,6 +26,11 @@ Changes vs original
 4. GRACEFUL TASK REFERENCE MANAGEMENT
    All background tasks are stored in _background_tasks set so the GC
    can't cancel them mid-run (asyncio best practice for fire-and-forget).
+
+5. CREDENTIAL LOOKUP USES account_id + is_demo
+   Replaced c.user_id.startswith("VRTC") — crashed on NULL user_id rows —
+   with c.is_demo which is written on every credential save and never NULL.
+   Runner is booted with cred.account_id (clean, unencrypted Deriv loginid).
 """
 
 import asyncio
@@ -46,8 +51,8 @@ from datetime import datetime
 from .strategies.strategy_runner import StrategyRunner
 from ml.calibration_loader import start_reload_loop, get_thresholds, set_cached_regime
 from ml.outcome_labeler    import run_labeler
-from ml.retrain            import run_retrain_pipeline          # ← replaces run_validator
-from ml.regime_detector    import RegimeDetector, RegimeLabel   # ← new
+from ml.retrain            import run_retrain_pipeline
+from ml.regime_detector    import RegimeDetector, RegimeLabel
 
 DERIV_APP_ID    = os.environ["DERIV_APP_ID"]
 BACKEND_URL     = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
@@ -69,6 +74,7 @@ def _is_bot_running() -> bool:
         return _BOT_STATE_FILE.read_text().strip() == "1"
     except Exception:
         return False
+
 
 def _fire_task(coro, name: str) -> asyncio.Task:
     """
@@ -94,8 +100,8 @@ async def _refresh_regimes(api_token: str) -> None:
     Statistical detection is used here (no fit required) so this runs fast
     at signal-fire cadence without needing the clustering model.
     """
-    from ml.feature_engineering  import fetch_candles, build_feature_df, GRANULARITY
-    from ml.regime_detector      import detect_current_regime
+    from ml.feature_engineering import fetch_candles, build_feature_df, GRANULARITY
+    from ml.regime_detector     import detect_current_regime
 
     symbol_map = {"R_75": "R_75", "R_25": "R_25", "CRASH500": "CRASH500"}
 
@@ -112,7 +118,7 @@ async def _refresh_regimes(api_token: str) -> None:
 
             prev = _current_regimes.get(symbol, RegimeLabel.UNKNOWN.value)
             _set_regime(symbol, regime.value)
-            set_cached_regime(symbol, regime.value)   # ← push into calibration_loader cache
+            set_cached_regime(symbol, regime.value)
 
             if prev != regime.value:
                 print(
@@ -125,7 +131,7 @@ async def _refresh_regimes(api_token: str) -> None:
 
 
 # =============================================================================
-# Unchanged helpers
+# Helpers
 # =============================================================================
 
 async def broadcast_to_frontend(data: dict):
@@ -230,9 +236,17 @@ async def run_signal_loop():
 
             print(f"[signal_engine] credentials found: {len(creds)}")
 
-            # ── Demo / VRTC account ───────────────────────────────────
+            # ── Select demo account ───────────────────────────────────────
+            # is_demo is written on every credential save — never NULL,
+            # never derived from a string prefix at runtime.
+            # account_id is the clean unencrypted Deriv loginid.
             deriv_cred = next(
-                (c for c in creds if c.broker == "deriv" and c.user_id.startswith("VRTC")),
+                (
+                    c for c in creds
+                    if c.broker == "deriv"
+                    and c.is_demo
+                    and c.account_id          # skip any rows not yet backfilled
+                ),
                 None,
             )
 
@@ -242,9 +256,18 @@ async def run_signal_loop():
                     _api_token = decrypt(deriv_cred.password)
 
                 if not _runner_is_alive():
-                    print("[signal_engine] booting strategy runner...")
-                    await _boot_strategy_runner(_api_token, deriv_cred.user_id)
+                    print(
+                        f"[signal_engine] booting strategy runner "
+                        f"account_id={deriv_cred.account_id}..."
+                    )
+                    await _boot_strategy_runner(_api_token, deriv_cred.account_id)
                     _fire_task(start_reload_loop(), name="calibration-reload")
+            else:
+                print(
+                    f"[signal_engine] no demo credential found — "
+                    f"checked {len(creds)} row(s). "
+                    f"Runner will not boot until a demo account is linked."
+                )
 
             if _runner_is_alive():
                 print("[signal_engine] runner alive — execution delegated to strategies")
@@ -269,17 +292,6 @@ async def run_signal_loop():
                 )
 
             # ── Every 120 loops (~60 min): full retrain pipeline ─────────
-            # Replaces the old run_validator() call.
-            # run_retrain_pipeline:
-            #   1. loads labeled rows from DB
-            #   2. enriches with candle features (needs api_token)
-            #   3. detects regimes + preserves crash rows
-            #   4. balances classes
-            #   5. walk-forward validates
-            #   6. calibrates with Platt / Isotonic
-            #   7. saves versioned model + writes CalibrationConfig to DB
-            # calibration_loader.start_reload_loop() picks up the new DB
-            # row within its next 30-minute refresh cycle.
             if _loop_count % 120 == 0 and _api_token:
                 _fire_task(
                     run_retrain_pipeline(api_token=_api_token),

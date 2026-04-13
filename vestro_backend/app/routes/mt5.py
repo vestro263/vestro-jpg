@@ -11,7 +11,7 @@ router = APIRouter()
 
 async def get_token_for_account(account_id: str, db: AsyncSession) -> str:
     result = await db.execute(
-        select(Credentials).where(Credentials.user_id == account_id)
+        select(Credentials).where(Credentials.account_id == account_id)
     )
     cred = result.scalar_one_or_none()
     if not cred:
@@ -25,7 +25,7 @@ async def account(account_id: str, db: AsyncSession = Depends(get_db)):
     return {
         **info,
         "account_id": account_id,
-        "is_virtual": account_id.startswith("VRT"),
+        "is_virtual": cred.is_demo,
     }
 
 @router.post("/api/trade")

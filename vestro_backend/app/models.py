@@ -35,21 +35,21 @@ class Credentials(Base):
     __tablename__ = "credentials"
 
     id              = Column(Integer, primary_key=True)
-
     google_user_id  = Column(String, ForeignKey("users.id"), index=True)
-
     broker          = Column(String)
 
-    login           = Column(String)   # DERIV ACCOUNT ID
-    password        = Column(String)   # encrypted token
+    account_id      = Column(String, index=True)   # ← NEW: Deriv loginid e.g. VRTC123, CR456
+                                                    #   replaces the raw-DB-only user_id ghost
 
+    login           = Column(String)               # keep — encrypted copy (backward compat)
+    password        = Column(String)               # encrypted token
     server          = Column(String)
-    api_token       = Column(String)
+    api_token       = Column(String)               # encrypted token (same as password)
     meta_account_id = Column(String)
 
-    is_demo         = Column(Boolean, default=False)
+    is_demo         = Column(Boolean, default=False)   # NOW written on save
     is_active       = Column(Boolean, default=True)
-    # ── RELATIONSHIP ────────────────────────────
+
     user = relationship(
         "User",
         foreign_keys=[google_user_id],

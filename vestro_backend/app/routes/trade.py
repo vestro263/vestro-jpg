@@ -49,7 +49,8 @@ async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     if body.account_id:
         result = await db.execute(
-            select(Credentials).where(Credentials.user_id == body.account_id)
+        select(Credentials).where(Credentials.account_id == body.account_id)
+
         )
     else:
         result = await db.execute(

@@ -48,11 +48,25 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # ── One-time migrations ──────────────────────────────
-        # Safe to run on every startup — IF NOT EXISTS means no-op after first run
-        await conn.execute(text(
-            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS google_user_id VARCHAR"
-        ))
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_cred_google_user_id ON credentials(google_user_id)"
-        ))
+        migrations = [
+            # ── Existing ─────────────────────────────────────────────────────
+            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS google_user_id VARCHAR",
+            "CREATE INDEX IF NOT EXISTS ix_cred_google_user_id ON credentials(google_user_id)",
+
+            # ── New ──────────────────────────────────────────────────────────
+            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS account_id VARCHAR",
+            "CREATE INDEX IF NOT EXISTS ix_cred_account_id ON credentials(account_id)",
+
+            # Backfill: copy legacy user_id → account_id, derive is_demo
+            # Idempotent — WHERE account_id IS NULL means it only runs on unset rows
+            """
+            UPDATE credentials
+            SET   account_id = user_id,
+                  is_demo    = (user_id LIKE 'VRT%')
+            WHERE account_id IS NULL
+              AND user_id    IS NOT NULL
+            """,
+        ]
+
+        for sql in migrations:
+            await conn.execute(text(sql))

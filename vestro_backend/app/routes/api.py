@@ -653,57 +653,52 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
     accounts = []
 
     for cred in creds:
+        # Skip rows that were never properly linked to a Deriv account
+        if not cred.account_id:
+            continue
+
         try:
-            # decrypt stored API token / password
             api_token = decrypt(cred.password)
 
             async with websockets.connect(
                 f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
             ) as ws:
-
-                # authorize with broker
                 await ws.send(json.dumps({"authorize": api_token}))
-
                 resp = json.loads(
                     await asyncio.wait_for(ws.recv(), timeout=8)
                 )
 
-            # skip invalid credentials
             if "error" in resp:
                 continue
 
             auth = resp["authorize"]
 
-            is_demo = auth.get("is_virtual", 0) == 1
-
-            balance = auth.get("balance", 0.0)
+            # Balance comes from the live call — it changes
+            balance = 0.0
             try:
-                balance = float(balance)
+                balance = float(auth.get("balance", 0.0))
             except Exception:
-                balance = 0.0
+                pass
+
+            # is_demo comes from the DB — it never changes after account creation
+            # Fallback to live value only if DB column was not backfilled yet
+            is_demo = cred.is_demo if cred.is_demo is not None else (
+                auth.get("is_virtual", 0) == 1
+            )
 
             accounts.append({
-                "account_id": auth.get("loginid"),
-
-                # ✅ ALWAYS send real broker value (no masking)
-                "balance": balance,
-
-                "currency": auth.get("currency", "USD"),
-                "name": auth.get("fullname", ""),
-
-                # clean type separation
-                "type": "demo" if is_demo else "real",
-
-                # optional UI hint only (not logic-critical)
-                "is_demo": is_demo,
-
-                "broker": "deriv",
+                "account_id": cred.account_id,        # trust DB, not live response
+                "balance":    balance,
+                "currency":   auth.get("currency", "USD"),
+                "name":       auth.get("fullname", ""),
+                "type":       "demo" if is_demo else "real",
+                "is_demo":    is_demo,
+                "broker":     "deriv",
             })
 
         except asyncio.TimeoutError:
             print(f"[accounts] timeout for cred_id={cred.id}")
             continue
-
         except Exception as e:
             print(f"[accounts] failed for cred_id={cred.id}: {e}")
             continue
