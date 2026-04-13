@@ -12,11 +12,13 @@ To add a new strategy in future:
 from .v75_strategy     import V75Strategy
 from .crash500_strategy import Crash500Strategy
 from .v25_strategy import V25Strategy
-
+from .gold_strategy import GoldStrategy
 
 # ── Add new strategies here ───────────────────────────────────
 STRATEGY_REGISTRY = [
     V75Strategy,
     Crash500Strategy,
     V25Strategy,
+    GoldStrategy,
+
 ]

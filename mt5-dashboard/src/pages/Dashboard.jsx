@@ -32,6 +32,7 @@ const CONTRACT_TYPES = [
 const STRATEGY_SYMBOLS = [
   { key: 'R_75', label: 'V75', color: '#f59e0b' },
   { key: 'R_25', label: 'V25', color: '#38bdf8' },
+  { key: 'frxXAUUSD', label: 'Gold', color: '#fcd34d' }
 ]
 
 // ── Regime config ─────────────────────────────────────────────────────────────
