@@ -1,25 +1,33 @@
+# fix_active_accounts.py
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 load_dotenv()
-url = os.getenv("DATABASE_URL","")
 
-if url.startswith("postgres://"):
-    url = url.replace("postgres://","postgresql://",1)
-if url.startswith("postgresql+asyncpg://"):
-    url = url.replace("postgresql+asyncpg://","postgresql://",1)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
-engine = create_engine(url)
+engine = create_engine(DATABASE_URL)
+
+MAPPING = {
+    "martinkaduku@gmail.com": "VRTC15325596",
+    "walternyika07@gmail.com": "VRW1670605",
+    "apoloniachikurumani@gmail.com": "VRTC6214285",
+    "winniemanyawu@gmail.com": None,   # choose real account first
+}
 
 with engine.begin() as conn:
-    rows = conn.execute(text("""
-        SELECT u.email, u.id, c.user_id AS account_id, c.broker
-        FROM users u
-        JOIN credentials c
-          ON c.google_user_id = u.id
-        ORDER BY u.email
-    """)).fetchall()
+    for email, acct in MAPPING.items():
+        if acct:
+            conn.execute(text("""
+                UPDATE users
+                SET active_account = :acct
+                WHERE email = :email
+            """), {"acct": acct, "email": email})
+            print(f"Updated {email} -> {acct}")
 
-    for r in rows:
-        print(f"{r.email} -> {r.account_id} ({r.broker})")
+print("Done.")

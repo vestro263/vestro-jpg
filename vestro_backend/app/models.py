@@ -35,16 +35,29 @@ class Credentials(Base):
     __tablename__ = "credentials"
 
     id              = Column(Integer, primary_key=True)
-    user_id         = Column(String, nullable=True)              # Deriv loginid e.g. CR123456
+
+    # ── OWNER LINK ─────────────────────────────
     google_user_id  = Column(String, ForeignKey("users.id"), index=True, nullable=True)
 
-    broker          = Column(String)
-    login           = Column(String)
-    password        = Column(String)
-    server          = Column(String)
-    api_token       = Column(String)
-    meta_account_id = Column(String)
+    # ── BROKER IDENTITY ─────────────────────────
+    broker          = Column(String, nullable=False)
 
+    # ── REAL TRADING ACCOUNT ID (CRITICAL FIX) ──
+    account_id      = Column(String, index=True, nullable=False)
+    # e.g. CR10292919, VRW1670559, VRTC15325596
+
+    # ── AUTH FIELDS ─────────────────────────────
+    login           = Column(String, nullable=True)
+    password        = Column(String, nullable=True)
+    server          = Column(String, nullable=True)
+    api_token       = Column(String, nullable=True)
+    meta_account_id = Column(String, nullable=True)
+
+    # ── NEW: ACCOUNT STATE (FIXES YOUR BUGS) ────
+    is_demo         = Column(Boolean, default=False, nullable=False)
+    is_active       = Column(Boolean, default=True, nullable=False)
+
+    # ── RELATIONSHIP ────────────────────────────
     user = relationship(
         "User",
         foreign_keys=[google_user_id],

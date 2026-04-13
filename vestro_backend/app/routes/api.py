@@ -645,40 +645,70 @@ def get_account():
 def get_positions():
     return _positions_cache
 
-
 @router.get("/accounts")
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Credentials))
-    creds  = result.scalars().all()
+    creds = result.scalars().all()
 
     accounts = []
+
     for cred in creds:
         try:
+            # decrypt stored API token / password
             api_token = decrypt(cred.password)
+
             async with websockets.connect(
                 f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
             ) as ws:
-                await ws.send(json.dumps({"authorize": api_token}))
-                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
 
+                # authorize with broker
+                await ws.send(json.dumps({"authorize": api_token}))
+
+                resp = json.loads(
+                    await asyncio.wait_for(ws.recv(), timeout=8)
+                )
+
+            # skip invalid credentials
             if "error" in resp:
                 continue
 
             auth = resp["authorize"]
+
+            is_demo = auth.get("is_virtual", 0) == 1
+
+            balance = auth.get("balance", 0.0)
+            try:
+                balance = float(balance)
+            except Exception:
+                balance = 0.0
+
             accounts.append({
                 "account_id": auth.get("loginid"),
-                "balance":    auth.get("balance", 0.0),
-                "currency":   auth.get("currency", "USD"),
-                "name":       auth.get("fullname", ""),
-                "type":       "demo" if auth.get("is_virtual", 0) == 1 else "real",
-                "broker":     "deriv",
+
+                # ✅ ALWAYS send real broker value (no masking)
+                "balance": balance,
+
+                "currency": auth.get("currency", "USD"),
+                "name": auth.get("fullname", ""),
+
+                # clean type separation
+                "type": "demo" if is_demo else "real",
+
+                # optional UI hint only (not logic-critical)
+                "is_demo": is_demo,
+
+                "broker": "deriv",
             })
+
+        except asyncio.TimeoutError:
+            print(f"[accounts] timeout for cred_id={cred.id}")
+            continue
+
         except Exception as e:
-            print(f"[accounts] failed for {cred.user_id}: {e}")
+            print(f"[accounts] failed for cred_id={cred.id}: {e}")
             continue
 
     return accounts
-
 # ─────────────────────────────────────────────────────────────
 # BOT CONTROL
 # ─────────────────────────────────────────────────────────────
@@ -729,136 +759,65 @@ def bot_status():
 @router.get("/journal")
 async def get_journal(
     account_id: str | None = Query(None),
-    email:      str | None = Query(None),
-    limit:      int = Query(50, le=500),
-    symbol:     str | None = Query(None),
-    strategy:   str | None = Query(None),
-    db:         AsyncSession = Depends(get_db),
+    email: str | None = Query(None),
+    limit: int = Query(50, le=500),
+    symbol: str | None = None,
+    strategy: str | None = None,
+    db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import text
 
-    # -------------------------------------------------
-    # Resolve usable trading account ids
-    # -------------------------------------------------
+    # ─────────────────────────────
+    # 1. Resolve accounts ONCE
+    # ─────────────────────────────
     account_ids = set()
 
-    # Direct account_id passed by frontend
     if account_id:
         account_ids.add(account_id)
 
-    # Resolve via email -> users -> credentials.user_id
     if email:
-        rows = await db.execute(text("""
-            SELECT c.user_id
-            FROM users u
-            JOIN credentials c
-              ON c.google_user_id = u.id
-            WHERE LOWER(u.email) = LOWER(:email)
-        """), {"email": email})
+        from app.services.account_resolver import AccountResolver
+        rows = await AccountResolver.resolve_by_email(db, email)
+        for r in rows:
+            account_ids.add(r.account_id)
 
-        for r in rows.fetchall():
-            if r[0]:
-                account_ids.add(r[0])
-
-    # If nothing resolved, fall back to legacy rows
     if not account_ids:
-        account_ids.add("default_account")
+        return []  # HARD STOP (no fallback junk)
 
-    # -------------------------------------------------
-    # Build WHERE clause
-    # -------------------------------------------------
-    filters = [
-        "outcome IS NOT NULL",
-        "signal IN ('BUY', 'SELL')",
-    ]
-
+    # ─────────────────────────────
+    # 2. Query signal logs
+    # ─────────────────────────────
     params = {"limit": limit}
+    placeholders = []
 
-    acc_placeholders = []
     for i, acc in enumerate(account_ids):
         key = f"acc_{i}"
-        acc_placeholders.append(f":{key}")
         params[key] = acc
+        placeholders.append(f":{key}")
 
-    # Include legacy NULL rows only when using fallback
-    if account_ids == {"default_account"}:
-        filters.append(
-            f"(account_id IN ({','.join(acc_placeholders)}) OR account_id IS NULL)"
-        )
-    else:
-        filters.append(f"account_id IN ({','.join(acc_placeholders)})")
+    where = f"""
+        account_id IN ({','.join(placeholders)})
+    """
 
     if symbol:
-        filters.append("symbol = :symbol")
+        where += " AND symbol = :symbol"
         params["symbol"] = symbol
 
     if strategy:
-        filters.append("strategy = :strategy")
+        where += " AND strategy = :strategy"
         params["strategy"] = strategy
 
-    where = " AND ".join(filters)
-
-    # -------------------------------------------------
-    # Query journal rows
-    # -------------------------------------------------
     rows = await db.execute(text(f"""
-        SELECT
-            id,
-            strategy,
-            symbol,
-            signal,
-            confidence,
-            entry_price,
-            exit_price,
-            outcome,
-            executed_at,
-            captured_at,
-            atr_zone,
-            executed,
-            account_id
+        SELECT *
         FROM signal_logs
         WHERE {where}
         ORDER BY captured_at DESC
         LIMIT :limit
     """), params)
 
-    results = []
+    return [dict(r._mapping) for r in rows.fetchall()]
 
-    for r in rows.fetchall():
-        entry_price = r[5]
-        exit_price  = r[6]
-        signal_dir  = str(r[3]).upper()
-        outcome     = r[7]
 
-        profit = None
-        if entry_price is not None and exit_price is not None:
-            direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
-            profit = round((exit_price - entry_price) * direction, 5)
-
-        if profit is None:
-            profit = 1.0 if outcome == "WIN" else (-1.0 if outcome == "LOSS" else 0.0)
-
-        results.append({
-            "ticket":      str(r[0]),
-            "symbol":      r[2],
-            "strategy":    r[1],
-            "type":        signal_dir,
-            "volume":      0.0,
-            "open_price":  entry_price,
-            "close_price": exit_price,
-            "open_time":   str(r[9]) if r[9] else "—",
-            "close_time":  str(r[8]) if r[8] else "—",
-            "swap":        0.0,
-            "commission":  0.0,
-            "profit":      profit,
-            "outcome":     outcome,
-            "confidence":  r[4],
-            "atr_zone":    r[10],
-            "executed":    r[11],
-            "account_id":  r[12],
-        })
-
-    return results
 # ─────────────────────────────────────────────────────────────
 # AUTH
 # ─────────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ def _extract_features(signal: dict, strategy_name: str) -> dict:
         symbol      = signal.get("symbol", "UNKNOWN"),
         signal      = raw_signal,
         direction   = direction,
+        account_id=signal.get("account_id"),
         entry_price = meta.get("entry") or meta.get("bid"),
         sl_price    = meta.get("sl"),
         tp_price    = meta.get("tp"),
