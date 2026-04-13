@@ -1,30 +1,65 @@
 import os
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
 
+# ─────────────────────────────
+# LOAD ENV FIRST (CRITICAL FIX)
+# ─────────────────────────────
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
+# ─────────────────────────────
+# NOW SAFE TO IMPORT APP
+# ─────────────────────────────
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.models import Credentials
 
-with engine.begin() as conn:
-    conn.execute(text("""
-        ALTER TABLE credentials
-        ADD COLUMN IF NOT EXISTS account_id TEXT;
-    """))
 
-    conn.execute(text("""
-        ALTER TABLE credentials
-        ADD COLUMN IF NOT EXISTS is_demo BOOLEAN DEFAULT false;
-    """))
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
-    conn.execute(text("""
-        ALTER TABLE credentials
-        ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
-    """))
+SessionLocal = sessionmaker(bind=engine)
 
-print("✅ credentials schema fixed")
+
+def is_demo(login: str | None) -> bool:
+    if not login:
+        return False
+    return login.upper().startswith(("VRTC", "VRT", "DMT"))
+
+
+def run():
+    db = SessionLocal()
+
+    try:
+        rows = db.query(Credentials).all()
+
+        for r in rows:
+            if not r.login:
+                r.login = getattr(r, "user_id", None)
+
+            r.is_demo = is_demo(r.login)
+
+            if getattr(r, "is_active", None) is None:
+                r.is_active = True
+
+        db.commit()
+
+        print("✅ Migration complete")
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Migration failed: {e}")
+        raise
+
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    run()

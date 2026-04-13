@@ -119,19 +119,26 @@ async def google_callback(
     accounts = []
     for cred in creds:
         try:
-            info = await get_account_info(DERIV_APP_ID, decrypt(cred.password))
+            info = await get_account_info(
+                DERIV_APP_ID,
+                decrypt(cred.password)
+            )
+
+            account_id = cred.login
+
             accounts.append({
-                "account_id": cred.user_id,
-                "balance":    info.get("balance", 0),
-                "currency":   info.get("currency", "USD"),
-                "name":       info.get("name", ""),
-                "type":       "demo" if cred.user_id.startswith("VRT") else "real",
-                "broker":     "deriv",
-                "user_id":    user.id,
-                "email":      user.email,
+                "account_id": account_id,
+                "balance": info.get("balance", 0),
+                "currency": info.get("currency", "USD"),
+                "name": info.get("name", ""),
+                "type": "demo" if account_id.startswith("VRT") else "real",
+                "broker": "deriv",
+                "user_id": user.id,
+                "email": user.email,
             })
+
         except Exception as e:
-            print(f"[auth] failed to fetch account {cred.user_id}: {e}")
+            print(f"[auth] failed {cred.login}: {e}")
 
     if not accounts:
         deriv_url = (

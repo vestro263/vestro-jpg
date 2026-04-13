@@ -36,27 +36,19 @@ class Credentials(Base):
 
     id              = Column(Integer, primary_key=True)
 
-    # ── OWNER LINK ─────────────────────────────
-    google_user_id  = Column(String, ForeignKey("users.id"), index=True, nullable=True)
+    google_user_id  = Column(String, ForeignKey("users.id"), index=True)
 
-    # ── BROKER IDENTITY ─────────────────────────
-    broker          = Column(String, nullable=False)
+    broker          = Column(String)
 
-    # ── REAL TRADING ACCOUNT ID (CRITICAL FIX) ──
-    account_id      = Column(String, index=True, nullable=False)
-    # e.g. CR10292919, VRW1670559, VRTC15325596
+    login           = Column(String)   # DERIV ACCOUNT ID
+    password        = Column(String)   # encrypted token
 
-    # ── AUTH FIELDS ─────────────────────────────
-    login           = Column(String, nullable=True)
-    password        = Column(String, nullable=True)
-    server          = Column(String, nullable=True)
-    api_token       = Column(String, nullable=True)
-    meta_account_id = Column(String, nullable=True)
+    server          = Column(String)
+    api_token       = Column(String)
+    meta_account_id = Column(String)
 
-    # ── NEW: ACCOUNT STATE (FIXES YOUR BUGS) ────
-    is_demo         = Column(Boolean, default=False, nullable=False)
-    is_active       = Column(Boolean, default=True, nullable=False)
-
+    is_demo         = Column(Boolean, default=False)
+    is_active       = Column(Boolean, default=True)
     # ── RELATIONSHIP ────────────────────────────
     user = relationship(
         "User",
