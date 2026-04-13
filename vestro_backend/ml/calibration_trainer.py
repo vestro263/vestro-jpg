@@ -148,8 +148,9 @@ async def _load_rows(symbol: str) -> list[dict]:
             select(SignalLog)
             .where(
                 SignalLog.symbol    == symbol,
-                SignalLog.label_15m != None,    # noqa: E711
+                SignalLog.label_15m != None,
                 SignalLog.signal    != "HOLD",
+                SignalLog.executed  == True,   # ← only rows you actually traded
             )
             .order_by(SignalLog.captured_at)
         )
@@ -158,7 +159,6 @@ async def _load_rows(symbol: str) -> list[dict]:
         {col.name: getattr(r, col.name) for col in SignalLog.__table__.columns}
         for r in rows
     ]
-
 
 def _build_feature_matrix(
     rows:         list[dict],

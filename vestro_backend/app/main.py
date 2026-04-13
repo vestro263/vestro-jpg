@@ -167,6 +167,14 @@ async def check_ml_data(db: AsyncSession = Depends(get_db)):
 
     return results
 
+# in your FastAPI router
+@router.post("/api/calibration/train")
+async def trigger_training():
+    from ml.calibration_trainer import run_trainer
+    asyncio.create_task(run_trainer())
+    return {"status": "training started"}
+
+
 
 @app.get("/debug/tables")
 async def list_tables(db: AsyncSession = Depends(get_db)):
