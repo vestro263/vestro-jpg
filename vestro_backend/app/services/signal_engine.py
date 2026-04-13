@@ -40,6 +40,7 @@ import json
 import websockets
 import pathlib
 from ml.signal_log_model import SignalLog
+from .regime_cache import get_current_regime, set_current_regime as _set_regime
 
 from datetime import datetime
 from .strategies.strategy_runner import StrategyRunner
@@ -68,22 +69,6 @@ def _is_bot_running() -> bool:
         return _BOT_STATE_FILE.read_text().strip() == "1"
     except Exception:
         return False
-
-
-def get_current_regime(symbol: str) -> str:
-    """
-    Read the cached regime for a symbol.  Used by strategies at signal-fire time.
-
-    Returns a RegimeLabel string: "TREND" | "RANGE" | "HIGH_VOL" | "CRASH" | "UNKNOWN"
-    Falls back to "UNKNOWN" if no regime has been detected yet so strategies
-    fail-open (they apply no regime gate) rather than suppressing all signals.
-
-    Usage in v75_strategy.py compute_signal():
-        from app.signal_engine import get_current_regime
-        regime = get_current_regime(self.SYMBOL)
-    """
-    return _current_regimes.get(symbol, RegimeLabel.UNKNOWN.value)
-
 
 def _fire_task(coro, name: str) -> asyncio.Task:
     """
@@ -126,7 +111,7 @@ async def _refresh_regimes(api_token: str) -> None:
             regime    = detect_current_regime(candle_df, lookback=20)
 
             prev = _current_regimes.get(symbol, RegimeLabel.UNKNOWN.value)
-            _current_regimes[symbol] = regime.value
+            _set_regime(symbol, regime.value)
             set_cached_regime(symbol, regime.value)   # ← push into calibration_loader cache
 
             if prev != regime.value:

@@ -44,7 +44,7 @@ import statistics
 import websockets
 
 from .base_strategy import BaseStrategy
-from app.services.signal_engine import get_current_regime          # ← regime gate
+from app.services.regime_cache import get_current_regime          # ← regime gate
 
 DERIV_APP_ID = os.environ["DERIV_APP_ID"]
 BACKEND_URL  = os.environ.get("BACKEND_URL", "https://vestro-jpg.onrender.com")
