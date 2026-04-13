@@ -329,6 +329,7 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 "exit_price": exit_price,
             }
 
+
             async with AsyncSessionLocal() as db:
                 await db.execute(
                     update(SignalLog)

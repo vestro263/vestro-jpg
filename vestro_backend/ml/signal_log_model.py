@@ -91,6 +91,9 @@ class SignalLog(SignalLogBase):
     # ── Timestamps ───────────────────────────────────────────
     captured_at = Column(DateTime, server_default=func.now(), nullable=False)
     executed    = Column(Boolean,  default=False)   # did we actually fire a trade?
+    # in signal_log_model.py, add to SignalLog:
+    outcome = Column(String, nullable=True)  # "WIN" | "LOSS" | "NEUTRAL"
+    exit_price = Column(Float, nullable=True)
 
     __table_args__ = (
         Index("ix_sl_symbol_signal",    "symbol", "signal"),

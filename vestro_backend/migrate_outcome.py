@@ -1,12 +1,12 @@
 """
-migrate_signal_outcome.py
-=========================
+migrate_signal_log_columns.py
+=============================
 Adds missing columns to signal_logs:
     outcome     VARCHAR   — "WIN" | "LOSS" | "NEUTRAL"
     exit_price  FLOAT     — price at barrier touch or window end
 
 Run once:
-    py migrate_signal_outcome.py
+    py migrate_signal_log_columns.py
 """
 
 import os
@@ -16,9 +16,13 @@ from sqlalchemy import create_engine, text
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Fix old postgres URL format
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-if "postgresql+asyncpg://" in DATABASE_URL:
+
+# Convert asyncpg URL to sync psycopg format for migration
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
@@ -27,13 +31,16 @@ def run():
 
     with engine.begin() as conn:
         print("\n── Current signal_logs columns ──")
+
         result = conn.execute(text("""
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = 'signal_logs'
             ORDER BY ordinal_position
         """))
+
         existing = {row[0]: row[1] for row in result.fetchall()}
+
         for col, dtype in existing.items():
             print(f"  {col:30s} {dtype}")
 
@@ -58,12 +65,14 @@ def run():
             print("— exit_price already exists, skipping")
 
         print("\n── Final signal_logs schema ──")
+
         result = conn.execute(text("""
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = 'signal_logs'
             ORDER BY ordinal_position
         """))
+
         for row in result.fetchall():
             print(f"  {row[0]:30s} {row[1]}")
 
