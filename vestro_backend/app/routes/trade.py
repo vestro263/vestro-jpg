@@ -33,17 +33,23 @@ class TradeBody(BaseModel):
     signal_id:     str   = ""   # ← NEW: passed by signal_engine so we can close the log
 
 
-@router.get("/api/account/{user_id}")
-async def get_account(user_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Credentials).where(Credentials.account_id == account_id))
-    cred = result.scalar_one_or_none()
-    if not cred:
-        raise HTTPException(status_code=404, detail="No credentials found")
-    if cred.broker == "welltrade":
-        return await welltrade.get_account_info(cred.meta_account_id)
-    else:
-        return await get_account_info(DERIV_APP_ID, decrypt(cred.password))
+@router.get("/api/account/{account_id}")
+async def get_account(account_id: str, db: AsyncSession = Depends(get_db)):
 
+    result = await db.execute(
+        select(Credentials).where(Credentials.account_id == account_id)
+    )
+
+    cred = result.scalar_one_or_none()
+
+    if not cred:
+        return {"error": "account not found"}
+
+    return {
+        "account_id": cred.account_id,
+        "is_demo": cred.is_demo,
+        "broker": cred.broker,
+    }
 
 @router.post("/api/trade")
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
