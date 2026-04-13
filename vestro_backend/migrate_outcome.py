@@ -1,51 +1,25 @@
-# fix_signal_logs_account_id.py
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 load_dotenv()
+url = os.getenv("DATABASE_URL","")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+if url.startswith("postgres://"):
+    url = url.replace("postgres://","postgresql://",1)
+if url.startswith("postgresql+asyncpg://"):
+    url = url.replace("postgresql+asyncpg://","postgresql://",1)
 
-# Normalize URL for sync SQLAlchemy
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+engine = create_engine(url)
 
-if DATABASE_URL.startswith("postgresql+asyncpg://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+with engine.begin() as conn:
+    rows = conn.execute(text("""
+        SELECT u.email, u.id, c.user_id AS account_id, c.broker
+        FROM users u
+        JOIN credentials c
+          ON c.google_user_id = u.id
+        ORDER BY u.email
+    """)).fetchall()
 
-
-def run():
-    engine = create_engine(DATABASE_URL, echo=False)
-
-    with engine.begin() as conn:
-        # 1. Add account_id column
-        conn.execute(text("""
-            ALTER TABLE signal_logs
-            ADD COLUMN IF NOT EXISTS account_id VARCHAR
-        """))
-
-        # 2. Optional index for faster journal queries
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS ix_signal_logs_account_id
-            ON signal_logs(account_id)
-        """))
-
-        # 3. Backfill existing rows using credentials/user_id if known
-        # (edit this line if you want one default account)
-        conn.execute(text("""
-            UPDATE signal_logs
-            SET account_id = 'default_account'
-            WHERE account_id IS NULL
-        """))
-
-        print("signal_logs updated successfully.")
-        print("- added account_id column")
-        print("- created index")
-        print("- backfilled null rows")
-
-    engine.dispose()
-
-
-if __name__ == "__main__":
-    run()
+    for r in rows:
+        print(f"{r.email} -> {r.account_id} ({r.broker})")

@@ -728,7 +728,8 @@ def bot_status():
 
 @router.get("/journal")
 async def get_journal(
-    account_id: str = Query(...),
+    account_id: str | None = Query(None),
+    email:      str | None = Query(None),
     limit:      int = Query(50, le=500),
     symbol:     str | None = Query(None),
     strategy:   str | None = Query(None),
@@ -736,17 +737,56 @@ async def get_journal(
 ):
     from sqlalchemy import text
 
-    # FIX: scope rows to the requested account_id
+    # -------------------------------------------------
+    # Resolve usable trading account ids
+    # -------------------------------------------------
+    account_ids = set()
+
+    # Direct account_id passed by frontend
+    if account_id:
+        account_ids.add(account_id)
+
+    # Resolve via email -> users -> credentials.user_id
+    if email:
+        rows = await db.execute(text("""
+            SELECT c.user_id
+            FROM users u
+            JOIN credentials c
+              ON c.google_user_id = u.id
+            WHERE LOWER(u.email) = LOWER(:email)
+        """), {"email": email})
+
+        for r in rows.fetchall():
+            if r[0]:
+                account_ids.add(r[0])
+
+    # If nothing resolved, fall back to legacy rows
+    if not account_ids:
+        account_ids.add("default_account")
+
+    # -------------------------------------------------
+    # Build WHERE clause
+    # -------------------------------------------------
     filters = [
-        "account_id = :account_id",
         "outcome IS NOT NULL",
-        "signal IN ('BUY', 'SELL')"
+        "signal IN ('BUY', 'SELL')",
     ]
 
-    params = {
-        "account_id": account_id,
-        "limit": limit
-    }
+    params = {"limit": limit}
+
+    acc_placeholders = []
+    for i, acc in enumerate(account_ids):
+        key = f"acc_{i}"
+        acc_placeholders.append(f":{key}")
+        params[key] = acc
+
+    # Include legacy NULL rows only when using fallback
+    if account_ids == {"default_account"}:
+        filters.append(
+            f"(account_id IN ({','.join(acc_placeholders)}) OR account_id IS NULL)"
+        )
+    else:
+        filters.append(f"account_id IN ({','.join(acc_placeholders)})")
 
     if symbol:
         filters.append("symbol = :symbol")
@@ -758,6 +798,9 @@ async def get_journal(
 
     where = " AND ".join(filters)
 
+    # -------------------------------------------------
+    # Query journal rows
+    # -------------------------------------------------
     rows = await db.execute(text(f"""
         SELECT
             id,
@@ -771,7 +814,8 @@ async def get_journal(
             executed_at,
             captured_at,
             atr_zone,
-            executed
+            executed,
+            account_id
         FROM signal_logs
         WHERE {where}
         ORDER BY captured_at DESC
@@ -787,17 +831,12 @@ async def get_journal(
         outcome     = r[7]
 
         profit = None
-
         if entry_price is not None and exit_price is not None:
             direction = 1 if signal_dir in ("BUY", "CALL", "RISE") else -1
             profit = round((exit_price - entry_price) * direction, 5)
 
         if profit is None:
-            profit = (
-                1.0 if outcome == "WIN"
-                else -1.0 if outcome == "LOSS"
-                else 0.0
-            )
+            profit = 1.0 if outcome == "WIN" else (-1.0 if outcome == "LOSS" else 0.0)
 
         results.append({
             "ticket":      str(r[0]),
@@ -816,6 +855,7 @@ async def get_journal(
             "confidence":  r[4],
             "atr_zone":    r[10],
             "executed":    r[11],
+            "account_id":  r[12],
         })
 
     return results
