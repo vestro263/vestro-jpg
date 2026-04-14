@@ -4,14 +4,10 @@ import useBotStore from '../store/botStore'
 const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 export default function Login() {
-  const { setAuthError, authError } = useBotStore()
+  const { authError, demoUrl } = useBotStore()
   const [loading, setLoading] = useState(false)
 
-  // Parse error context from URL on mount
-  const params = new URLSearchParams(window.location.search)
-  const errorType = params.get('error')
-  const derivDemoUrl = params.get('deriv_demo_url')
-  const isDemoRequired = errorType === 'demo_account_required'
+  const isDemoRequired = authError?.includes('create one')
 
   function handleGoogleLogin() {
     setLoading(true)
@@ -19,7 +15,7 @@ export default function Login() {
   }
 
   function handleCreateDemo() {
-    window.open(derivDemoUrl || 'https://app.deriv.com/account/demo', '_blank')
+    window.open(demoUrl || 'https://app.deriv.com/account/demo', '_blank')
   }
 
   return (
@@ -54,7 +50,7 @@ export default function Login() {
             <button
               onClick={handleGoogleLogin}
               disabled={loading}
-              style={styles.googleBtn}
+              style={{ ...styles.googleBtn, opacity: loading ? 0.7 : 1 }}
             >
               <GoogleIcon />
               {loading ? 'Redirecting…' : 'Continue with Google'}
@@ -99,8 +95,6 @@ const styles = {
   note: { color: '#475569', fontSize: 13, textAlign: 'center', margin: '16px 0 0', lineHeight: 1.5 },
   divider: { height: 1, background: '#1e2d45', margin: '24px 0 16px' },
   fine: { color: '#334155', fontSize: 11, textAlign: 'center', lineHeight: 1.6, margin: 0 },
-
-  // Demo-required state
   demoBox: { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 10, padding: '20px 18px', marginBottom: 4, display: 'flex', flexDirection: 'column', gap: 10 },
   demoIcon: { width: 28, height: 28, borderRadius: '50%', background: '#1e3a5f', color: '#60a5fa', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   demoTitle: { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
