@@ -142,3 +142,25 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
 
             if contract.get("is_expired") or contract.get("is_sold"):
                 break
+
+
+async def get_mt5_login_list(app_id: str, token: str) -> list[dict]:
+    """
+    Returns all MT5 accounts linked to the given Deriv token.
+    Each item has: login, server, balance, currency, account_type, landing_company_short
+    """
+    import json
+
+    url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"authorize": token}))
+        auth = json.loads(await ws.recv())
+        if auth.get("error"):
+            raise Exception(f"authorize failed: {auth['error']['message']}")
+
+        await ws.send(json.dumps({"mt5_login_list": 1}))
+        resp = json.loads(await ws.recv())
+        if resp.get("error"):
+            raise Exception(f"mt5_login_list failed: {resp['error']['message']}")
+
+        return resp.get("mt5_login_list", [])

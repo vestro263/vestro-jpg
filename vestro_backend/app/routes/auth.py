@@ -299,3 +299,72 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
             if c.account_id
         ],
     }
+
+
+from ..services.deriv_ws import get_account_info, get_mt5_login_list
+
+class LinkDemoAccount(BaseModel):
+    user_id:       str
+    mt5_login_id:  str   # numeric string, e.g. "6072772"
+
+
+@router.post("/auth/link-demo-account")
+async def link_demo_account(body: LinkDemoAccount, db: AsyncSession = Depends(get_db)):
+    # 1. Validate user exists
+    result = await db.execute(select(User).where(User.id == body.user_id))
+    user   = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2. Find ANY already-stored VRTC credential to borrow a valid token from
+    result = await db.execute(
+        select(Credentials).where(
+            Credentials.google_user_id == user.id,
+            Credentials.is_demo == True,
+        )
+    )
+    existing_creds = result.scalars().all()
+
+    if not existing_creds:
+        # No linked accounts yet — scan ALL VRTC creds in DB as fallback
+        result = await db.execute(
+            select(Credentials).where(Credentials.is_demo == True)
+        )
+        existing_creds = result.scalars().all()
+
+    # 3. Walk credentials, call mt5_login_list, find match
+    matched_cred = None
+    for cred in existing_creds:
+        try:
+            token      = decrypt(cred.password)
+            mt5_accounts = await get_mt5_login_list(DERIV_APP_ID, token)
+            match = next(
+                (a for a in mt5_accounts if str(a.get("login")) == str(body.mt5_login_id)),
+                None,
+            )
+            if match:
+                matched_cred = cred
+                break
+        except Exception as e:
+            print(f"[link_demo_account] skipping cred {cred.account_id}: {e}")
+            continue
+
+    if not matched_cred:
+        raise HTTPException(
+            status_code=404,
+            detail="No demo account found matching that MT5 login ID. "
+                   "Make sure you're entering the Login ID from your Deriv demo MT5 account.",
+        )
+
+    # 4. Link it to this user
+    matched_cred.google_user_id = user.id
+    if not user.active_account:
+        user.active_account = matched_cred.account_id
+    await db.commit()
+
+    return {
+        "status":      "ok",
+        "account_id":  matched_cred.account_id,
+        "is_demo":     matched_cred.is_demo,
+        "active":      user.active_account,
+    }
