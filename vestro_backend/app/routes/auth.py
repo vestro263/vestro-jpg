@@ -50,7 +50,22 @@ def _is_wallet(account_id: str) -> bool:
 def _is_demo(account_id: str) -> bool:
     return account_id.startswith(DEMO_PREFIX)
 
+from fastapi import Request, HTTPException
+from sqlalchemy import select
 
+async def get_current_user(request: Request, db: AsyncSession):
+    user_id = request.cookies.get("user_id")
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not logged in")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
 # ── STEP 1 — Start Google login ───────────────────────────────
 
 @router.get("/auth/google")
@@ -310,22 +325,7 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-from fastapi import Request, HTTPException
-from sqlalchemy import select
 
-async def get_current_user(request: Request, db):
-    user_id = request.cookies.get("user_id")
-
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not logged in")
-
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return user
 
 
 from ..services.deriv_ws import get_account_info, get_mt5_login_list
@@ -351,10 +351,10 @@ async def link_demo_account(
     creds = result.scalars().all()
 
     if not creds:
-        raise HTTPException(
-            status_code=404,
-            detail="No linked demo accounts found for this user",
-        )
+        return {
+            "status": "no_accounts",
+            "detail": "Please connect a Deriv demo account first"
+        }
 
     matched_cred = None
 
