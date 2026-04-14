@@ -7,9 +7,19 @@ export default function Login() {
   const { setAuthError, authError } = useBotStore()
   const [loading, setLoading] = useState(false)
 
+  // Parse error context from URL on mount
+  const params = new URLSearchParams(window.location.search)
+  const errorType = params.get('error')
+  const derivDemoUrl = params.get('deriv_demo_url')
+  const isDemoRequired = errorType === 'demo_account_required'
+
   function handleGoogleLogin() {
     setLoading(true)
     window.location.href = `${API}/auth/google`
+  }
+
+  function handleCreateDemo() {
+    window.open(derivDemoUrl || 'https://app.deriv.com/account/demo', '_blank')
   }
 
   return (
@@ -23,25 +33,40 @@ export default function Login() {
 
         <p style={styles.sub}>Sign in to access your trading dashboard</p>
 
-        {authError && (
-          <div style={styles.error}>{authError}</div>
+        {isDemoRequired ? (
+          <div style={styles.demoBox}>
+            <div style={styles.demoIcon}>!</div>
+            <p style={styles.demoTitle}>Demo account required</p>
+            <p style={styles.demoText}>
+              Vestro only works with Deriv demo accounts. Create a free demo account on Deriv, then come back and sign in.
+            </p>
+            <button onClick={handleCreateDemo} style={styles.derivBtn}>
+              Create Deriv demo account →
+            </button>
+            <button onClick={handleGoogleLogin} style={styles.retryBtn}>
+              I already created one — sign in
+            </button>
+          </div>
+        ) : (
+          <>
+            {authError && <div style={styles.error}>{authError}</div>}
+
+            <button
+              onClick={handleGoogleLogin}
+              disabled={loading}
+              style={styles.googleBtn}
+            >
+              <GoogleIcon />
+              {loading ? 'Redirecting…' : 'Continue with Google'}
+            </button>
+
+            <p style={styles.note}>
+              After signing in, you'll connect your Deriv account to start trading.
+            </p>
+          </>
         )}
 
-        <button
-          onClick={handleGoogleLogin}
-          disabled={loading}
-          style={styles.googleBtn}
-        >
-          <GoogleIcon />
-          {loading ? 'Redirecting…' : 'Continue with Google'}
-        </button>
-
-        <p style={styles.note}>
-          After signing in, you'll connect your Deriv account to start trading.
-        </p>
-
         <div style={styles.divider} />
-
         <p style={styles.fine}>
           Your Deriv credentials are encrypted and never stored in plain text.
         </p>
@@ -74,4 +99,12 @@ const styles = {
   note: { color: '#475569', fontSize: 13, textAlign: 'center', margin: '16px 0 0', lineHeight: 1.5 },
   divider: { height: 1, background: '#1e2d45', margin: '24px 0 16px' },
   fine: { color: '#334155', fontSize: 11, textAlign: 'center', lineHeight: 1.6, margin: 0 },
+
+  // Demo-required state
+  demoBox: { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 10, padding: '20px 18px', marginBottom: 4, display: 'flex', flexDirection: 'column', gap: 10 },
+  demoIcon: { width: 28, height: 28, borderRadius: '50%', background: '#1e3a5f', color: '#60a5fa', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  demoTitle: { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
+  demoText: { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
+  derivBtn: { width: '100%', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, padding: '11px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginTop: 4 },
+  retryBtn: { width: '100%', background: 'transparent', color: '#475569', border: '1px solid #1e2d45', borderRadius: 8, padding: '10px 0', fontSize: 13, cursor: 'pointer' },
 }
