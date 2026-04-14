@@ -37,10 +37,15 @@ export default function Login() {
     setLinkError('')
     try {
       const res = await fetch(`${API}/auth/link-demo-account`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ mt5_login_id: trimmed }),
-      })
+          method: "POST",
+          credentials: "include",   // 🔥 THIS IS REQUIRED
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            mt5_login_id: trimmed
+          })
+        })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Linking failed')
       window.location.href = `${FRONTEND_URL}?user_id=${userId}&active_account=${data.active}`
