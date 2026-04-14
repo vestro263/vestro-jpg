@@ -39,7 +39,7 @@ export default function Login() {
       const res = await fetch(`${API}/auth/link-demo-account`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ user_id: userId, mt5_login_id: trimmed }),
+        body:    JSON.stringify({ mt5_login_id: trimmed }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Linking failed')
@@ -121,7 +121,7 @@ export default function Login() {
             <div style={styles.hint}>
               <div style={styles.hintRow}>
                 <span style={styles.hintLabel}>Login ID</span>
-                <span style={styles.hintValue}>6072772</span>
+                <span style={styles.hintValue}>7070770</span>
               </div>
               <div style={styles.hintRow}>
                 <span style={styles.hintLabel}>Server</span>
@@ -131,7 +131,7 @@ export default function Login() {
 
             <input
               style={styles.input}
-              placeholder="Enter Login ID, e.g. 6072772"
+              placeholder="Enter Login ID, e.g. 7070770"
               value={mt5Id}
               onChange={e => setMt5Id(e.target.value.replace(/\D/g, ''))}
               onKeyDown={e => e.key === 'Enter' && handleLinkAccount()}

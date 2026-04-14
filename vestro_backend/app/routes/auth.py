@@ -90,6 +90,7 @@ async def google_callback(
                 "grant_type":    "authorization_code",
             },
         )
+
         token_data = token_resp.json()
         if "error" in token_data:
             print(f"[google_callback] token error: {token_data}")
@@ -110,26 +111,34 @@ async def google_callback(
 
     # Upsert User by email
     result = await db.execute(select(User).where(User.email == email))
-    user   = result.scalar_one_or_none()
+    user = result.scalar_one_or_none()
+
     if not user:
         user = User(email=email, name=name, avatar_url=avatar_url)
         db.add(user)
     else:
-        user.name       = name
+        user.name = name
         user.avatar_url = avatar_url
+
     await db.commit()
     await db.refresh(user)
 
-    # Always go through Deriv OAuth to get fresh tokens.
-    # This ensures newly created demo accounts are always picked up
-    # and tokens are never stale.
+    # 🔥 IMPORTANT: set cookie BEFORE redirect
     deriv_url = (
         f"https://oauth.deriv.com/oauth2/authorize"
         f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
         f"&state={user.id}"
     )
-    return RedirectResponse(deriv_url)
 
+    response = RedirectResponse(deriv_url)
+    response.set_cookie(
+        key="user_id",
+        value=str(user.id),
+        httponly=True,
+        samesite="lax"
+    )
+
+    return response
 
 # ── STEP 3 — Deriv OAuth callback ────────────────────────────
 
@@ -301,70 +310,81 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
+from fastapi import Request, HTTPException
+from sqlalchemy import select
+
+async def get_current_user(request: Request, db):
+    user_id = request.cookies.get("user_id")
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not logged in")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
 from ..services.deriv_ws import get_account_info, get_mt5_login_list
 
 class LinkDemoAccount(BaseModel):
-    user_id:       str
     mt5_login_id:  str   # numeric string, e.g. "6072772"
 
 
 @router.post("/auth/link-demo-account")
-async def link_demo_account(body: LinkDemoAccount, db: AsyncSession = Depends(get_db)):
-    # 1. Validate user exists
-    result = await db.execute(select(User).where(User.id == body.user_id))
-    user   = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+async def link_demo_account(
+    body: LinkDemoAccount,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    user = await get_current_user(request, db)
 
-    # 2. Find ANY already-stored VRTC credential to borrow a valid token from
     result = await db.execute(
         select(Credentials).where(
             Credentials.google_user_id == user.id,
             Credentials.is_demo == True,
         )
     )
-    existing_creds = result.scalars().all()
+    creds = result.scalars().all()
 
-    if not existing_creds:
-        # No linked accounts yet — scan ALL VRTC creds in DB as fallback
-        result = await db.execute(
-            select(Credentials).where(Credentials.is_demo == True)
+    if not creds:
+        raise HTTPException(
+            status_code=404,
+            detail="No linked demo accounts found for this user",
         )
-        existing_creds = result.scalars().all()
 
-    # 3. Walk credentials, call mt5_login_list, find match
     matched_cred = None
-    for cred in existing_creds:
+
+    for cred in creds:
         try:
-            token      = decrypt(cred.password)
+            token = decrypt(cred.password)
             mt5_accounts = await get_mt5_login_list(DERIV_APP_ID, token)
-            match = next(
-                (a for a in mt5_accounts if str(a.get("login")) == str(body.mt5_login_id)),
-                None,
-            )
-            if match:
+
+            if any(str(a.get("login")) == body.mt5_login_id for a in mt5_accounts):
                 matched_cred = cred
                 break
-        except Exception as e:
-            print(f"[link_demo_account] skipping cred {cred.account_id}: {e}")
+
+        except Exception:
             continue
 
     if not matched_cred:
         raise HTTPException(
             status_code=404,
-            detail="No demo account found matching that MT5 login ID. "
-                   "Make sure you're entering the Login ID from your Deriv demo MT5 account.",
+            detail="MT5 login not found in your demo accounts",
         )
 
-    # 4. Link it to this user
     matched_cred.google_user_id = user.id
+
     if not user.active_account:
         user.active_account = matched_cred.account_id
+
     await db.commit()
 
     return {
-        "status":      "ok",
-        "account_id":  matched_cred.account_id,
-        "is_demo":     matched_cred.is_demo,
-        "active":      user.active_account,
+        "status": "ok",
+        "account_id": matched_cred.account_id,
+        "active": user.active_account,
     }
