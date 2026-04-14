@@ -14,9 +14,10 @@ export default function Login() {
     window.location.href = `${API}/auth/google`
   }
 
-  function handleCreateDemo() {
-    window.open(demoUrl || 'https://app.deriv.com/account/demo', '_blank')
-  }
+
+    function handleCreateDemo() {
+      window.open(demoUrl || 'https://hub.deriv.com/tradershub/home', '_blank')
+    }
 
   return (
     <div style={styles.outer}>

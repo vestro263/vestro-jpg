@@ -38,14 +38,9 @@ GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT      = f"{BACKEND_URL}/auth/google/callback"
 
-# ── Account type rules ────────────────────────────────────────────────────────
-# Only VRTC accounts are tradeable demo accounts in Deriv.
-# VRW / RW are wallet containers — they hold balance but cannot place trades.
-# All other prefixes (CR, MF, etc.) are real-money accounts.
-DEMO_PREFIX     = "VRTC"
-WALLET_PREFIXES = ("VRW", "RW")
-
-DERIV_CREATE_DEMO_URL = "https://app.deriv.com/account/demo"
+DEMO_PREFIX          = "VRTC"
+WALLET_PREFIXES      = ("VRW", "RW")
+DERIV_CREATE_DEMO_URL = "https://hub.deriv.com/tradershub/home"
 
 
 def _is_wallet(account_id: str) -> bool:
@@ -125,58 +120,15 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
-    # Find demo credentials linked to this Google user
-    result = await db.execute(
-        select(Credentials).where(
-            Credentials.google_user_id == user.id,
-            Credentials.is_demo == True,              # noqa: E712
-        )
+    # Always go through Deriv OAuth to get fresh tokens.
+    # This ensures newly created demo accounts are always picked up
+    # and tokens are never stale.
+    deriv_url = (
+        f"https://oauth.deriv.com/oauth2/authorize"
+        f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
+        f"&state={user.id}"
     )
-    creds = result.scalars().all()
-
-    if not creds:
-        # No demo account linked yet — send to Deriv OAuth to connect one
-        deriv_url = (
-            f"https://oauth.deriv.com/oauth2/authorize"
-            f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
-            f"&state={user.id}"
-        )
-        return RedirectResponse(deriv_url)
-
-    accounts = []
-    for cred in creds:
-        if not cred.account_id:
-            continue
-        try:
-            info = await get_account_info(DERIV_APP_ID, decrypt(cred.password))
-            accounts.append({
-                "account_id": cred.account_id,
-                "balance":    info.get("balance", 0),
-                "currency":   info.get("currency", "USD"),
-                "name":       info.get("name", ""),
-                "type":       "demo",
-                "is_demo":    True,
-                "broker":     "deriv",
-                "user_id":    user.id,
-                "email":      user.email,
-            })
-        except Exception as e:
-            print(f"[auth] failed for account_id={cred.account_id}: {e}")
-
-    if not accounts:
-        # Credentials exist but all failed to connect — re-auth with Deriv
-        deriv_url = (
-            f"https://oauth.deriv.com/oauth2/authorize"
-            f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
-            f"&state={user.id}"
-        )
-        return RedirectResponse(deriv_url)
-
-    accounts_json = urllib.parse.quote(json.dumps(accounts))
-    active = user.active_account or ""
-    return RedirectResponse(
-        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={user.id}&active_account={active}"
-    )
+    return RedirectResponse(deriv_url)
 
 
 # ── STEP 3 — Deriv OAuth callback ────────────────────────────
@@ -185,6 +137,8 @@ async def google_callback(
 async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     params  = dict(request.query_params)
     user_id = params.get("state", "")
+
+    print(f"[deriv_callback] params: {params}")
 
     user = None
     if user_id:
@@ -198,23 +152,21 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
-        # ── Skip wallet accounts silently ─────────────────────────────────
         if _is_wallet(acct):
-            print(f"[auth] skipping wallet account {acct}")
+            print(f"[deriv_callback] skipping wallet account {acct}")
             i += 1
             continue
 
-        # ── Reject real accounts — demo-only policy ───────────────────────
         if not _is_demo(acct):
-            print(f"[auth] skipping real account {acct} — demo-only mode")
+            print(f"[deriv_callback] skipping real account {acct} — demo-only mode")
             i += 1
             continue
 
-        # ── Only VRTC reaches here ────────────────────────────────────────
+        # Only VRTC reaches here
         try:
             info = await get_account_info(DERIV_APP_ID, token)
         except Exception as e:
-            print(f"[auth] get_account_info failed for {acct}: {e}")
+            print(f"[deriv_callback] get_account_info failed for {acct}: {e}")
             i += 1
             continue
 
@@ -226,7 +178,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             cred = Credentials()
             db.add(cred)
 
-        # is_demo confirmed from API response — authoritative, not prefix-guessed
         cred.account_id      = acct
         cred.is_demo         = bool(info.get("is_virtual", False))
         cred.broker          = "deriv"
@@ -254,13 +205,10 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    # No VRTC account found among the returned Deriv accounts
     if not accounts:
-        create_demo_url = urllib.parse.quote(DERIV_CREATE_DEMO_URL)
         return RedirectResponse(
             f"{FRONTEND_URL}?error=demo_account_required"
-            f"&message=Please+create+a+Deriv+demo+account+first"
-            f"&deriv_demo_url={create_demo_url}"
+            f"&deriv_demo_url={DERIV_CREATE_DEMO_URL}"
         )
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
@@ -274,13 +222,12 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 # ── STEP 4 — Set active account (DB-persisted) ───────────────
 
 class SetActiveAccount(BaseModel):
-    deriv_account: str   # Deriv loginid e.g. VRTC9999
-    user_id:       str   # Google User.id
+    deriv_account: str
+    user_id:       str
 
 
 @router.post("/auth/set-active-account")
 async def set_active_account(body: SetActiveAccount, db: AsyncSession = Depends(get_db)):
-    # Enforce demo-only at this layer too
     if not _is_demo(body.deriv_account):
         raise HTTPException(
             status_code=400,
