@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 
 # ─────────────────────────────
-# LOAD ENV FIRST (CRITICAL FIX)
+# LOAD ENV FIRST
 # ─────────────────────────────
 load_dotenv()
 
@@ -15,46 +15,37 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # ─────────────────────────────
-# NOW SAFE TO IMPORT APP
+# SAFE IMPORTS AFTER ENV LOAD
 # ─────────────────────────────
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.models import Credentials
-
+from app.models import User
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-
 SessionLocal = sessionmaker(bind=engine)
-
-
-def is_demo(login: str | None) -> bool:
-    if not login:
-        return False
-    return login.upper().startswith(("VRTC", "VRT", "DMT"))
 
 
 def run():
     db = SessionLocal()
 
     try:
-        rows = db.query(Credentials).all()
+        rows = db.query(User.id, User.email).all()
 
-        for r in rows:
-            if not r.login:
-                r.login = getattr(r, "user_id", None)
+        if not rows:
+            print("⚠️ No users found")
+            return
 
-            r.is_demo = is_demo(r.login)
+        print("\n📌 USERS TABLE")
+        print("-" * 50)
 
-            if getattr(r, "is_active", None) is None:
-                r.is_active = True
+        for user_id, email in rows:
+            print(f"ID: {user_id} | Email: {email}")
 
-        db.commit()
-
-        print("✅ Migration complete")
+        print("-" * 50)
+        print(f"✅ Total Users: {len(rows)}")
 
     except Exception as e:
-        db.rollback()
-        print(f"❌ Migration failed: {e}")
+        print(f"❌ Query failed: {e}")
         raise
 
     finally:
