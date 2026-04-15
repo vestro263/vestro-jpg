@@ -1,17 +1,18 @@
 import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
-const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
+const API          = import.meta.env.VITE_API_URL      ?? 'https://vestro-jpg.onrender.com'
 const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL ?? 'https://vestro-ui.onrender.com'
 
 export default function Login() {
-  const { authError, demoUrl, userId } = useBotStore()
-  const [loading, setLoading] = useState(false)
+  const { authError, demoUrl } = useBotStore()
+  const userId = useBotStore(s => s.account?.user_id || s.userId || '')
 
-  const [showModal, setShowModal] = useState(false)
-  const [mt5Id, setMt5Id]         = useState('')
-  const [linking, setLinking]     = useState(false)
-  const [linkError, setLinkError] = useState('')
+  const [loading,    setLoading]    = useState(false)
+  const [showModal,  setShowModal]  = useState(false)
+  const [mt5Id,      setMt5Id]      = useState('')
+  const [linking,    setLinking]    = useState(false)
+  const [linkError,  setLinkError]  = useState('')
 
   const isDemoRequired = authError?.includes('create one')
 
@@ -37,17 +38,16 @@ export default function Login() {
     setLinkError('')
     try {
       const res = await fetch(`${API}/auth/link-demo-account`, {
-          method: "POST",
-          credentials: "include",   // 🔥 THIS IS REQUIRED
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            mt5_login_id: trimmed
-          })
-        })
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          mt5_login_id: trimmed,
+          user_id:      userId,
+        }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Linking failed')
+      // Redirect back to app with the linked account
       window.location.href = `${FRONTEND_URL}?user_id=${userId}&active_account=${data.active}`
     } catch (err) {
       setLinkError(err.message)
@@ -107,7 +107,6 @@ export default function Login() {
 
       </div>
 
-      {/* MT5 link modal */}
       {showModal && (
         <div style={styles.overlay} onClick={() => setShowModal(false)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
@@ -118,11 +117,11 @@ export default function Login() {
             </div>
 
             <p style={styles.modalSub}>
-              Open Deriv, tap your account name → <strong style={{ color: '#94a3b8' }}>Account details</strong>.
+              Open Deriv, tap your account name →{' '}
+              <strong style={{ color: '#94a3b8' }}>Account details</strong>.
               Copy the <strong style={{ color: '#94a3b8' }}>Login ID</strong> shown there.
             </p>
 
-            {/* Mini visual hint */}
             <div style={styles.hint}>
               <div style={styles.hintRow}>
                 <span style={styles.hintLabel}>Login ID</span>
@@ -179,42 +178,37 @@ function GoogleIcon() {
 }
 
 const styles = {
-  outer:      { minHeight: '100dvh', background: '#030712', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
-  card:       { background: '#0f1623', border: '1px solid #1e2d45', borderRadius: 16, padding: '40px 36px', width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column' },
-  brand:      { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 },
-  brandDot:   { width: 10, height: 10, borderRadius: '50%', background: '#3b82f6', display: 'inline-block' },
-  brandName:  { color: '#f1f5f9', fontSize: 22, fontWeight: 600, letterSpacing: '-0.5px' },
-  sub:        { color: '#64748b', fontSize: 14, margin: '0 0 28px', lineHeight: 1.5 },
-  error:      { color: '#f87171', fontSize: 13, background: '#1f1217', border: '1px solid #7f1d1d', borderRadius: 6, padding: '10px 14px', marginBottom: 16, lineHeight: 1.5 },
-  googleBtn:  { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: '#fff', color: '#1e293b', border: 'none', borderRadius: 8, padding: '12px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer' },
-  note:       { color: '#475569', fontSize: 13, textAlign: 'center', margin: '16px 0 0', lineHeight: 1.5 },
-  divider:    { height: 1, background: '#1e2d45', margin: '24px 0 16px' },
-  fine:       { color: '#334155', fontSize: 11, textAlign: 'center', lineHeight: 1.6, margin: 0 },
-  demoBox:    { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 10, padding: '20px 18px', marginBottom: 4, display: 'flex', flexDirection: 'column', gap: 10 },
-  demoIcon:   { width: 28, height: 28, borderRadius: '50%', background: '#1e3a5f', color: '#60a5fa', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  demoTitle:  { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
-  demoText:   { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
-  derivBtn:   { width: '100%', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, padding: '11px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginTop: 4 },
-  retryBtn:   { width: '100%', background: 'transparent', color: '#475569', border: '1px solid #1e2d45', borderRadius: 8, padding: '10px 0', fontSize: 13, cursor: 'pointer' },
-
-  // Modal
-  overlay:    { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '16px' },
-  modal:      { background: '#0f1623', border: '1px solid #1e2d45', borderRadius: 14, padding: '24px 22px', width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 14 },
-  modalHeader:{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  modalTitle: { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
-  closeBtn:   { background: 'none', border: 'none', color: '#475569', fontSize: 20, cursor: 'pointer', padding: 0, lineHeight: 1 },
-  modalSub:   { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
-
-  // Mini hint card
-  hint:       { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 8, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 },
-  hintRow:    { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  hintLabel:  { color: '#475569', fontSize: 12 },
-  hintValue:  { color: '#93c5fd', fontSize: 13, fontFamily: 'monospace', fontWeight: 600 },
+  outer:          { minHeight: '100dvh', background: '#030712', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
+  card:           { background: '#0f1623', border: '1px solid #1e2d45', borderRadius: 16, padding: '40px 36px', width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column' },
+  brand:          { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 },
+  brandDot:       { width: 10, height: 10, borderRadius: '50%', background: '#3b82f6', display: 'inline-block' },
+  brandName:      { color: '#f1f5f9', fontSize: 22, fontWeight: 600, letterSpacing: '-0.5px' },
+  sub:            { color: '#64748b', fontSize: 14, margin: '0 0 28px', lineHeight: 1.5 },
+  error:          { color: '#f87171', fontSize: 13, background: '#1f1217', border: '1px solid #7f1d1d', borderRadius: 6, padding: '10px 14px', marginBottom: 16, lineHeight: 1.5 },
+  googleBtn:      { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: '#fff', color: '#1e293b', border: 'none', borderRadius: 8, padding: '12px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer' },
+  note:           { color: '#475569', fontSize: 13, textAlign: 'center', margin: '16px 0 0', lineHeight: 1.5 },
+  divider:        { height: 1, background: '#1e2d45', margin: '24px 0 16px' },
+  fine:           { color: '#334155', fontSize: 11, textAlign: 'center', lineHeight: 1.6, margin: 0 },
+  demoBox:        { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 10, padding: '20px 18px', marginBottom: 4, display: 'flex', flexDirection: 'column', gap: 10 },
+  demoIcon:       { width: 28, height: 28, borderRadius: '50%', background: '#1e3a5f', color: '#60a5fa', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  demoTitle:      { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
+  demoText:       { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
+  derivBtn:       { width: '100%', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, padding: '11px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginTop: 4 },
+  retryBtn:       { width: '100%', background: 'transparent', color: '#475569', border: '1px solid #1e2d45', borderRadius: 8, padding: '10px 0', fontSize: 13, cursor: 'pointer' },
+  overlay:        { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '16px' },
+  modal:          { background: '#0f1623', border: '1px solid #1e2d45', borderRadius: 14, padding: '24px 22px', width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 14 },
+  modalHeader:    { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  modalTitle:     { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
+  closeBtn:       { background: 'none', border: 'none', color: '#475569', fontSize: 20, cursor: 'pointer', padding: 0, lineHeight: 1 },
+  modalSub:       { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
+  hint:           { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 8, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 },
+  hintRow:        { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  hintLabel:      { color: '#475569', fontSize: 12 },
+  hintValue:      { color: '#93c5fd', fontSize: 13, fontFamily: 'monospace', fontWeight: 600 },
   hintValueMuted: { color: '#334155', fontSize: 13, fontFamily: 'monospace' },
-
-  input:      { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 8, padding: '11px 13px', color: '#f1f5f9', fontSize: 15, fontFamily: 'monospace', outline: 'none', letterSpacing: '0.05em' },
-  linkError:  { color: '#f87171', fontSize: 12, margin: 0, lineHeight: 1.5 },
-  modalBtns:  { display: 'flex', gap: 10, marginTop: 2 },
-  cancelBtn:  { flex: 1, background: 'transparent', color: '#475569', border: '1px solid #1e2d45', borderRadius: 8, padding: '10px 0', fontSize: 13, cursor: 'pointer' },
-  linkBtn:    { flex: 2, background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  input:          { background: '#0d1f35', border: '1px solid #1e3a5f', borderRadius: 8, padding: '11px 13px', color: '#f1f5f9', fontSize: 15, fontFamily: 'monospace', outline: 'none', letterSpacing: '0.05em' },
+  linkError:      { color: '#f87171', fontSize: 12, margin: 0, lineHeight: 1.5 },
+  modalBtns:      { display: 'flex', gap: 10, marginTop: 2 },
+  cancelBtn:      { flex: 1, background: 'transparent', color: '#475569', border: '1px solid #1e2d45', borderRadius: 8, padding: '10px 0', fontSize: 13, cursor: 'pointer' },
+  linkBtn:        { flex: 2, background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
 }
