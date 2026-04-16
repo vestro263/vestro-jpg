@@ -22,7 +22,7 @@ const useBotStore = create(
         is_virtual: false,
       },
       signals:        [],
-      signalMap:      {},   // ← per-symbol latest signal: { R_75: {...}, R_25: {...} }
+      signalMap:      {},
       positions:      [],
       tradeFeed:      [],
       journal:        [],
@@ -37,8 +37,9 @@ const useBotStore = create(
       isLoggedIn:      false,
       broker:          null,
       accountId:       null,
+      userId:          null,
       authError:       null,
-      demoUrl:         null,   // set when backend returns demo_account_required
+      demoUrl:         null,
       derivAccounts:   null,
       pendingAccounts: null,
 
@@ -51,6 +52,8 @@ const useBotStore = create(
 
       setDemoUrl: (url) => set({ demoUrl: url }),
 
+      setUserId: (id) => set({ userId: id }),
+
       // ── login ─────────────────────────────────────────────
       login: (broker, accountId, accountData) => {
         set({
@@ -62,7 +65,6 @@ const useBotStore = create(
           pendingAccounts: null,
           account: {
             ...accountData,
-            // Trust is_demo from the accounts payload — never derive from prefix
             is_virtual: accountData.is_demo ?? false,
           },
         })
@@ -170,13 +172,15 @@ const useBotStore = create(
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
             if (data.account) {
-              set({
+              // Merge heartbeat fields on top of existing account —
+              // never wipe balance/name that fetchAccount already set
+              set(s => ({
                 account: {
+                  ...s.account,
                   ...data.account,
-                  // Preserve is_virtual from DB — don't re-derive from prefix
-                  is_virtual: state.account?.is_virtual ?? false,
+                  is_virtual: s.account?.is_virtual ?? false,
                 }
-              })
+              }))
             }
             if (typeof data.bot_running === 'boolean') {
               set({ botRunning: data.bot_running })
@@ -190,7 +194,6 @@ const useBotStore = create(
               id:         Date.now() + Math.random(),
               receivedAt: new Date().toLocaleTimeString(),
             }
-            // ── update flat list AND per-symbol map ──
             const sym = data.symbol || data.signal?.symbol
             set(s => ({
               signals:   [entry, ...s.signals].slice(0, 100),
@@ -238,10 +241,10 @@ const useBotStore = create(
         if (!accountId) return
         try {
           const { data } = await axios.get(`${API}/api/account/${accountId}`)
+          // Full replace from live Deriv data — this is the source of truth
           set({
             account: {
               ...data,
-              // Backend returns is_virtual correctly — trust it
               is_virtual: data.is_virtual ?? false,
             }
           })
@@ -302,10 +305,10 @@ const useBotStore = create(
       partialize: (s) => ({
         broker:        s.broker,
         accountId:     s.accountId,
+        userId:        s.userId,
         account:       s.account,
         botRunning:    s.botRunning,
         derivAccounts: s.derivAccounts,
-        // intentionally NOT persisting signalMap — always fresh on load
       }),
     }
   )

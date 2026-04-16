@@ -1,12 +1,18 @@
+import { useState } from 'react'
 import useBotStore from '../store/botStore'
 
 const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 export default function AccountSelector({ accounts, onSelect }) {
-  const { login } = useBotStore()
+  const { login, setUserId } = useBotStore()
+  const [selecting, setSelecting] = useState(null)
+  const [error, setError]         = useState('')
 
   async function handleSelect(acc) {
-    // Tell backend which account is active for this user
+    setSelecting(acc.account_id)
+    setError('')
+
+    // 1. Tell backend which account is active
     if (acc.user_id) {
       try {
         await fetch(`${API}/auth/set-active-account`, {
@@ -22,21 +28,36 @@ export default function AccountSelector({ accounts, onSelect }) {
       }
     }
 
+    // 2. Fetch live balance from Deriv via backend
+    let liveData = null
+    try {
+      const res = await fetch(`${API}/api/account/${acc.account_id}`)
+      if (res.ok) liveData = await res.json()
+    } catch (e) {
+      console.warn('[AccountSelector] live balance fetch failed:', e)
+    }
+
+    // 3. Persist userId so Login modal can use it for MT5 linking
+    if (acc.user_id) setUserId(acc.user_id)
+
+    // 4. Login with live data if available, fallback to OAuth payload
     login('deriv', acc.account_id, {
       account_id: acc.account_id,
-      balance:    acc.balance,
-      currency:   acc.currency,
-      equity:     acc.balance,
+      balance:    liveData?.balance   ?? acc.balance,
+      currency:   liveData?.currency  ?? acc.currency,
+      name:       liveData?.name      ?? acc.name ?? '',
+      equity:     liveData?.balance   ?? acc.balance,
       profit:     0,
-      email:      acc.email  || '',
-      user_id:    acc.user_id || '',
+      email:      acc.email           ?? '',
+      user_id:    acc.user_id         ?? '',
+      is_demo:    liveData?.is_virtual ?? acc.is_demo ?? true,
     })
+
     onSelect()
   }
 
-  // Separate real vs demo for cleaner display
-  const real = accounts.filter(a => a.type !== 'demo')
-  const demo = accounts.filter(a => a.type === 'demo')
+  const real   = accounts.filter(a => a.type !== 'demo')
+  const demo   = accounts.filter(a => a.type === 'demo')
   const sorted = [...real, ...demo]
 
   return (
@@ -45,7 +66,7 @@ export default function AccountSelector({ accounts, onSelect }) {
 
         <div style={styles.brand}>
           <span style={styles.brandDot} />
-          <span style={styles.brandName}>Vestro</span>
+          <span style={styles.brandName}>Vestro Capital</span>
         </div>
 
         {accounts[0]?.email && (
@@ -54,44 +75,67 @@ export default function AccountSelector({ accounts, onSelect }) {
 
         <p style={styles.sub}>Select an account to trade with</p>
 
+        {error && <div style={styles.error}>{error}</div>}
+
         <div style={styles.list}>
-          {sorted.map(acc => (
-            <button
-              key={acc.account_id}
-              style={styles.item}
-              onClick={() => handleSelect(acc)}
-            >
-              <div style={styles.itemLeft}>
-                <span style={{
-                  ...styles.badge,
-                  background: acc.type === 'demo' ? '#1e3a5f' : '#14532d',
-                  color:      acc.type === 'demo' ? '#60a5fa' : '#4ade80',
-                }}>
-                  {acc.type === 'demo' ? 'DEMO' : 'REAL'}
-                </span>
-                <span style={styles.accountId}>{acc.account_id}</span>
-              </div>
-              <div style={styles.itemRight}>
-                <span style={styles.balance}>
-                  {Number(acc.balance).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })} {acc.currency}
-                </span>
-                <span style={styles.arrow}>→</span>
-              </div>
-            </button>
-          ))}
+          {sorted.map(acc => {
+            const isLoading = selecting === acc.account_id
+            return (
+              <button
+                key={acc.account_id}
+                style={{
+                  ...styles.item,
+                  opacity:       isLoading ? 0.6 : 1,
+                  pointerEvents: selecting  ? 'none' : 'auto',
+                  borderColor:   isLoading ? '#3b82f6' : '#2a3f5f',
+                }}
+                onClick={() => handleSelect(acc)}
+              >
+                <div style={styles.itemLeft}>
+                  <span style={{
+                    ...styles.badge,
+                    background: acc.type === 'demo' ? '#1e3a5f' : '#14532d',
+                    color:      acc.type === 'demo' ? '#60a5fa' : '#4ade80',
+                  }}>
+                    {acc.type === 'demo' ? 'DEMO' : 'REAL'}
+                  </span>
+                  <div style={styles.itemMeta}>
+                    <span style={styles.accountId}>{acc.account_id}</span>
+                    {acc.name && <span style={styles.accountName}>{acc.name}</span>}
+                  </div>
+                </div>
+
+                <div style={styles.itemRight}>
+                  {isLoading ? (
+                    <span style={styles.loadingDot}>●</span>
+                  ) : (
+                    <>
+                      <span style={styles.balance}>
+                        {Number(acc.balance).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })} {acc.currency}
+                      </span>
+                      <span style={styles.arrow}>→</span>
+                    </>
+                  )}
+                </div>
+              </button>
+            )
+          })}
         </div>
 
         <button
           style={styles.addAccount}
-          onClick={() => {
-            window.location.href = `${API}/auth/google`
-          }}
+          onClick={() => { window.location.href = `${API}/auth/google` }}
         >
           + Connect another account
         </button>
+
+        <div style={styles.divider} />
+        <p style={styles.fine}>
+          Your Deriv credentials are encrypted and never stored in plain text.
+        </p>
 
       </div>
     </div>
@@ -99,109 +143,26 @@ export default function AccountSelector({ accounts, onSelect }) {
 }
 
 const styles = {
-  outer: {
-    minHeight: '100dvh',
-    background: '#030712',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '24px 16px',
-  },
-  card: {
-    background: '#0f1623',
-    border: '1px solid #1e2d45',
-    borderRadius: 16,
-    padding: '40px 36px',
-    width: '100%',
-    maxWidth: 420,
-  },
-  brand: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 4,
-  },
-  brandDot: {
-    width: 10,
-    height: 10,
-    borderRadius: '50%',
-    background: '#3b82f6',
-    display: 'inline-block',
-  },
-  brandName: {
-    color: '#f1f5f9',
-    fontSize: 22,
-    fontWeight: 600,
-    letterSpacing: '-0.5px',
-  },
-  email: {
-    color: '#3b82f6',
-    fontSize: 13,
-    margin: '0 0 4px',
-    fontFamily: 'monospace',
-  },
-  sub: {
-    color: '#64748b',
-    fontSize: 14,
-    margin: '0 0 24px',
-  },
-  list: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-  },
-  item: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    background: '#1e2d45',
-    border: '1px solid #2a3f5f',
-    borderRadius: 10,
-    padding: '14px 16px',
-    cursor: 'pointer',
-    width: '100%',
-    transition: 'border-color 0.15s',
-  },
-  itemLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-  },
-  badge: {
-    fontSize: 10,
-    fontWeight: 700,
-    padding: '3px 8px',
-    borderRadius: 4,
-    letterSpacing: '0.5px',
-  },
-  accountId: {
-    color: '#f1f5f9',
-    fontSize: 14,
-    fontWeight: 500,
-  },
-  itemRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-  },
-  balance: {
-    color: '#94a3b8',
-    fontSize: 13,
-    fontFamily: 'monospace',
-  },
-  arrow: {
-    color: '#3b82f6',
-    fontSize: 16,
-  },
-  addAccount: {
-    width: '100%',
-    marginTop: 16,
-    background: 'transparent',
-    border: '1px dashed #2a3f5f',
-    borderRadius: 10,
-    color: '#475569',
-    fontSize: 13,
-    padding: '12px 0',
-    cursor: 'pointer',
-  },
+  outer:       { minHeight: '100dvh', background: '#030712', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
+  card:        { background: '#0f1623', border: '1px solid #1e2d45', borderRadius: 16, padding: '40px 36px', width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column' },
+  brand:       { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 },
+  brandDot:    { width: 10, height: 10, borderRadius: '50%', background: '#3b82f6', display: 'inline-block' },
+  brandName:   { color: '#f1f5f9', fontSize: 22, fontWeight: 600, letterSpacing: '-0.5px' },
+  email:       { color: '#3b82f6', fontSize: 13, margin: '0 0 4px', fontFamily: 'monospace' },
+  sub:         { color: '#64748b', fontSize: 14, margin: '0 0 24px' },
+  error:       { color: '#f87171', fontSize: 13, background: '#1f1217', border: '1px solid #7f1d1d', borderRadius: 6, padding: '10px 14px', marginBottom: 16, lineHeight: 1.5 },
+  list:        { display: 'flex', flexDirection: 'column', gap: 10 },
+  item:        { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#1e2d45', border: '1px solid #2a3f5f', borderRadius: 10, padding: '14px 16px', cursor: 'pointer', width: '100%', transition: 'border-color 0.15s' },
+  itemLeft:    { display: 'flex', alignItems: 'center', gap: 10 },
+  itemMeta:    { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 },
+  badge:       { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, letterSpacing: '0.5px', flexShrink: 0 },
+  accountId:   { color: '#f1f5f9', fontSize: 14, fontWeight: 500 },
+  accountName: { color: '#475569', fontSize: 11 },
+  itemRight:   { display: 'flex', alignItems: 'center', gap: 10 },
+  balance:     { color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' },
+  arrow:       { color: '#3b82f6', fontSize: 16 },
+  loadingDot:  { color: '#3b82f6', fontSize: 10, animation: 'pulse 1s infinite' },
+  addAccount:  { width: '100%', marginTop: 16, background: 'transparent', border: '1px dashed #2a3f5f', borderRadius: 10, color: '#475569', fontSize: 13, padding: '12px 0', cursor: 'pointer' },
+  divider:     { height: 1, background: '#1e2d45', margin: '20px 0 12px' },
+  fine:        { color: '#334155', fontSize: 11, textAlign: 'center', lineHeight: 1.6, margin: 0 },
 }
