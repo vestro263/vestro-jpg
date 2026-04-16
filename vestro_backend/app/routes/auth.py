@@ -133,7 +133,8 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     params  = dict(request.query_params)
     user_id = params.get("state", "")
 
-    print(f"[deriv_callback] params: {params}")
+    print("==== DERIV CALLBACK START ====")
+    print("[params]:", params)
 
     user = None
     if user_id:
@@ -142,28 +143,35 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     accounts = []
     i = 1
+
     while f"acct{i}" in params:
         acct  = params[f"acct{i}"]
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
-        # Skip wallet accounts silently
+        print(f"[processing] acct{i}: {acct}")
+
+        # 🔴 Skip wallet accounts (but log them)
         if _is_wallet(acct):
-            print(f"[deriv_callback] skipping wallet account {acct}")
+            print(f"[skip] wallet account: {acct}")
             i += 1
             continue
 
+        # 🔌 Fetch account info from Deriv
         try:
             info = await get_account_info(DERIV_APP_ID, token)
+            print(f"[info] {acct}: {info}")
         except Exception as e:
-            print(f"[deriv_callback] get_account_info failed for {acct}: {e}")
+            print(f"[ERROR] get_account_info failed for {acct}: {e}")
             i += 1
             continue
 
+        # 🔎 Upsert credentials
         result = await db.execute(
             select(Credentials).where(Credentials.account_id == acct)
         )
         cred = result.scalar_one_or_none()
+
         if not cred:
             cred = Credentials()
             db.add(cred)
@@ -178,12 +186,15 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         cred.api_token       = encrypt(token)
         cred.server          = encrypt("")
         cred.meta_account_id = ""
+
         if user:
             cred.google_user_id = user.id
+
         await db.flush()
 
-        # Include ALL non-wallet accounts in the selector
+        # ✅ IMPORTANT: include BOTH loginid + account_id
         accounts.append({
+            "loginid":    acct,   # 🔥 REQUIRED for frontend
             "account_id": acct,
             "balance":    info.get("balance", 0),
             "currency":   cur,
@@ -199,20 +210,32 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    # No accounts at all — generic error
+    print("[FINAL accounts]:", accounts)
+
+    # ❌ No usable accounts → send error
     if not accounts:
         uid = user.id if user else ""
+        print("[ERROR] No valid accounts found")
         return RedirectResponse(
             f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}"
         )
 
+    # ✅ Send accounts to frontend
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-    uid    = user.id             if user else ""
+
+    uid    = user.id if user else ""
     active = user.active_account if user else ""
-    return RedirectResponse(
-        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+
+    redirect_url = (
+        f"{FRONTEND_URL}"
+        f"?accounts={accounts_json}"
+        f"&user_id={uid}"
+        f"&active_account={active}"
     )
 
+    print("[REDIRECT]:", redirect_url)
+
+    return RedirectResponse(redirect_url)
 
 # ── STEP 4 — Set active account (DB-persisted) ───────────────
 
