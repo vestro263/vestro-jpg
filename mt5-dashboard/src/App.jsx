@@ -50,22 +50,7 @@ export default function App() {
     // Always clean the URL immediately
     window.history.replaceState({}, '', '/')
 
-    if (error) {
-      const derivDemoUrl = params.get('deriv_demo_url')
-      if (derivDemoUrl) {
-        useBotStore.getState().setDemoUrl(decodeURIComponent(derivDemoUrl))
-      }
 
-      useBotStore.getState().setAuthError(
-        error === 'google_auth_failed'    ? 'Google sign-in failed. Please try again.' :
-        error === 'google_token_failed'   ? 'Google authentication failed. Please try again.' :
-        error === 'no_deriv_accounts'     ? 'No Deriv accounts found. Please connect one.' :
-        error === 'demo_account_required' ? 'Vestro requires a Deriv demo account. Please create one and reconnect.' :
-        'Something went wrong. Please try again.'
-      )
-      setAuthChecked(true)
-      return
-    }
 
     if (accountsParam) {
       // Fresh OAuth callback — parse accounts and show selector
