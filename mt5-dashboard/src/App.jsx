@@ -33,11 +33,12 @@ const PAGES = {
 
 export default function App() {
   const {
-    accountId, activePage,
-    pendingAccounts, setPendingAccounts, setDerivAccounts,
+    isLoggedIn,           // ← read directly from store, NEVER derive as !!accountId
+    activePage,
+    pendingAccounts,
+    setPendingAccounts,
   } = useBotStore()
 
-  const isLoggedIn  = !!accountId
   const isMobile    = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -46,7 +47,7 @@ export default function App() {
     const accountsParam = params.get('accounts')
     const error         = params.get('error')
 
-    // Always clean the URL
+    // Always clean the URL immediately
     window.history.replaceState({}, '', '/')
 
     if (error) {
@@ -56,10 +57,10 @@ export default function App() {
       }
 
       useBotStore.getState().setAuthError(
-        error === 'google_auth_failed'     ? 'Google sign-in failed. Please try again.' :
-        error === 'google_token_failed'    ? 'Google authentication failed. Please try again.' :
-        error === 'no_deriv_accounts'      ? 'No Deriv accounts found. Please connect one.' :
-        error === 'demo_account_required'  ? 'Vestro requires a Deriv demo account. Please create one and reconnect.' :
+        error === 'google_auth_failed'    ? 'Google sign-in failed. Please try again.' :
+        error === 'google_token_failed'   ? 'Google authentication failed. Please try again.' :
+        error === 'no_deriv_accounts'     ? 'No Deriv accounts found. Please connect one.' :
+        error === 'demo_account_required' ? 'Vestro requires a Deriv demo account. Please create one and reconnect.' :
         'Something went wrong. Please try again.'
       )
       setAuthChecked(true)
@@ -67,24 +68,33 @@ export default function App() {
     }
 
     if (accountsParam) {
-      // OAuth callback — backend already saved to DB, just show selector
+      // Fresh OAuth callback — parse accounts and show selector
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
         if (Array.isArray(accounts) && accounts.length) {
-          setPendingAccounts(accounts)  // ← fixed: was setDerivAccounts
+          // Always use setPendingAccounts here — NOT setDerivAccounts.
+          // setDerivAccounts also sets pendingAccounts but additionally
+          // persists derivAccounts; for an OAuth redirect we only need
+          // the selector to appear, so we set pending only and let login()
+          // persist what matters.
+          useBotStore.getState().setPendingAccounts(accounts)
         }
-      } catch {}
+      } catch (e) {
+        console.warn('[App] failed to parse accounts param:', e)
+      }
       setAuthChecked(true)
       return
     }
 
     if (isLoggedIn) {
+      // Already authenticated from persisted store — go straight to dashboard
       setAuthChecked(true)
       return
     }
 
-    // Check if we have a persisted user_id — verify it's still valid
-    const savedUserId = useBotStore.getState().account?.user_id
+    // Not logged in and no OAuth callback — check if we have a saved userId
+    // that's still valid, so we can skip the Login page and show the selector.
+    const savedUserId = useBotStore.getState().userId
     if (savedUserId) {
       fetch(`${API}/auth/check/${savedUserId}`)
         .then(r => r.json())
@@ -92,7 +102,7 @@ export default function App() {
           if (data.found && data.accounts?.length) {
             const saved = useBotStore.getState().derivAccounts
             if (saved?.length) {
-              setPendingAccounts(saved)
+              useBotStore.getState().setPendingAccounts(saved)
             }
           }
         })
@@ -102,7 +112,10 @@ export default function App() {
     }
 
     setAuthChecked(true)
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // ↑ intentionally empty deps — this runs once on mount to handle the
+  //   OAuth redirect and any persisted-session restore. Re-running it on
+  //   isLoggedIn changes would cause loops.
 
   useEffect(() => {
     if (isLoggedIn && !useBotStore.getState().connected) {
@@ -111,8 +124,10 @@ export default function App() {
     }
   }, [isLoggedIn])
 
+  // Render nothing until we've resolved the auth state (avoids flicker)
   if (!authChecked) return null
 
+  // OAuth just returned accounts — show selector before anything else
   if (pendingAccounts?.length) {
     return (
       <AccountSelector
@@ -122,8 +137,10 @@ export default function App() {
     )
   }
 
+  // Not authenticated — show login
   if (!isLoggedIn) return <Login />
 
+  // Authenticated — render the dashboard
   const Page = PAGES[activePage] ?? Dashboard
 
   if (isMobile) {

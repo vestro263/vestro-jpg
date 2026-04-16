@@ -34,7 +34,7 @@ const useBotStore = create(
       setActivePage:  (page) => set({ activePage: page }),
 
       // ── auth ──────────────────────────────────────────────
-      isLoggedIn:      false,
+      isLoggedIn:      false,   // ← source of truth, always set explicitly
       broker:          null,
       accountId:       null,
       userId:          null,
@@ -57,12 +57,12 @@ const useBotStore = create(
       // ── login ─────────────────────────────────────────────
       login: (broker, accountId, accountData) => {
         set({
-          isLoggedIn:      true,
+          isLoggedIn:      true,       // ← always set explicitly
           broker,
           accountId,
           authError:       null,
           demoUrl:         null,
-          pendingAccounts: null,
+          pendingAccounts: null,        // ← clear selector immediately inside store
           account: {
             ...accountData,
             is_virtual: accountData.is_demo ?? false,
@@ -172,8 +172,6 @@ const useBotStore = create(
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
             if (data.account) {
-              // Merge heartbeat fields on top of existing account —
-              // never wipe balance/name that fetchAccount already set
               set(s => ({
                 account: {
                   ...s.account,
@@ -241,7 +239,6 @@ const useBotStore = create(
         if (!accountId) return
         try {
           const { data } = await axios.get(`${API}/api/account/${accountId}`)
-          // Full replace from live Deriv data — this is the source of truth
           set({
             account: {
               ...data,
@@ -303,6 +300,7 @@ const useBotStore = create(
     {
       name: 'vestro-auth',
       partialize: (s) => ({
+        isLoggedIn:    s.isLoggedIn,   // ← persist this so page refresh works
         broker:        s.broker,
         accountId:     s.accountId,
         userId:        s.userId,

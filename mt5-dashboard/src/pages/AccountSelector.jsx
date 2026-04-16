@@ -40,7 +40,8 @@ export default function AccountSelector({ accounts, onSelect }) {
     // 3. Persist userId so Login modal can use it for MT5 linking
     if (acc.user_id) setUserId(acc.user_id)
 
-    // 4. Login with live data if available, fallback to OAuth payload
+    // 4. login() sets isLoggedIn=true AND clears pendingAccounts atomically
+    //    inside the store — so App re-renders once with the correct final state.
     login('deriv', acc.account_id, {
       account_id: acc.account_id,
       balance:    liveData?.balance   ?? acc.balance,
@@ -53,7 +54,10 @@ export default function AccountSelector({ accounts, onSelect }) {
       is_demo:    liveData?.is_virtual ?? acc.is_demo ?? true,
     })
 
-    onSelect()
+    // 5. Defer onSelect by one tick so Zustand flushes its update and React
+    //    re-renders with isLoggedIn=true before the selector unmounts.
+    //    Without this, App can briefly see isLoggedIn=false → flash <Login />.
+    setTimeout(() => onSelect(), 0)
   }
 
   const real   = accounts.filter(a => a.type !== 'demo')
