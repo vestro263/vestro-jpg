@@ -50,7 +50,6 @@ export default function App() {
     window.history.replaceState({}, '', '/')
 
     if (error) {
-      // Pull the demo URL if backend sent one
       const derivDemoUrl = params.get('deriv_demo_url')
       if (derivDemoUrl) {
         useBotStore.getState().setDemoUrl(decodeURIComponent(derivDemoUrl))
@@ -72,7 +71,7 @@ export default function App() {
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
         if (Array.isArray(accounts) && accounts.length) {
-          setDerivAccounts(accounts)
+          setPendingAccounts(accounts)  // ← fixed: was setDerivAccounts
         }
       } catch {}
       setAuthChecked(true)

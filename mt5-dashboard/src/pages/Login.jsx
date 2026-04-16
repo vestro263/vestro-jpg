@@ -6,7 +6,10 @@ const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL ?? 'https://vestro-ui.onr
 
 export default function Login() {
   const { authError, demoUrl } = useBotStore()
-  const userId = useBotStore(s => s.account?.user_id || s.userId || '')
+  const storeUserId = useBotStore(s => s.account?.user_id || s.userId || '')
+
+const params = new URLSearchParams(window.location.search)
+const userId = params.get('user_id') || storeUserId || localStorage.getItem('user_id') || ''
 
   const [loading,    setLoading]    = useState(false)
   const [showModal,  setShowModal]  = useState(false)
