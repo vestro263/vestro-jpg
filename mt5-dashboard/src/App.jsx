@@ -14,94 +14,92 @@ const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 function useIsMobile(bp = 768) {
   const [m, setM] = useState(() => window.innerWidth < bp)
+
   useEffect(() => {
     const h = () => setM(window.innerWidth < bp)
     window.addEventListener('resize', h)
     return () => window.removeEventListener('resize', h)
   }, [bp])
+
   return m
 }
 
 const PAGES = {
-  dashboard:  Dashboard,
+  dashboard: Dashboard,
   valuations: Valuation,
-  signals:    Signals,
-  positions:  Positions,
-  journal:    Journal,
-  stats:      Performance,
+  signals: Signals,
+  positions: Positions,
+  journal: Journal,
+  stats: Performance,
 }
 
 export default function App() {
   const {
-    isLoggedIn,           // ← read directly from store, NEVER derive as !!accountId
+    isLoggedIn,
     activePage,
     pendingAccounts,
     setPendingAccounts,
   } = useBotStore()
 
-  const isMobile    = useIsMobile()
+  const isMobile = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
 
+  // 🔐 Handle OAuth + session restore
   useEffect(() => {
-    const params        = new URLSearchParams(window.location.search)
+    const params = new URLSearchParams(window.location.search)
     const accountsParam = params.get('accounts')
-    const error         = params.get('error')
-
-    // Always clean the URL immediately
-    window.history.replaceState({}, '', '/')
-
-
+    const error = params.get('error')
 
     if (accountsParam) {
-      // Fresh OAuth callback — parse accounts and show selector
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
+
         if (Array.isArray(accounts) && accounts.length) {
-          // Always use setPendingAccounts here — NOT setDerivAccounts.
-          // setDerivAccounts also sets pendingAccounts but additionally
-          // persists derivAccounts; for an OAuth redirect we only need
-          // the selector to appear, so we set pending only and let login()
-          // persist what matters.
+          // Store accounts → show selector
           useBotStore.getState().setPendingAccounts(accounts)
         }
       } catch (e) {
-        console.warn('[App] failed to parse accounts param:', e)
+        console.warn('[App] Failed to parse accounts:', e)
       }
+
+      // Clean URL AFTER parsing
+      window.history.replaceState({}, '', '/')
+
       setAuthChecked(true)
       return
     }
 
+    if (error) {
+      console.warn('[OAuth Error]', error)
+      window.history.replaceState({}, '', '/')
+      setAuthChecked(true)
+      return
+    }
+
+    // Already logged in (persisted session)
     if (isLoggedIn) {
-      // Already authenticated from persisted store — go straight to dashboard
       setAuthChecked(true)
       return
     }
 
-    // Not logged in and no OAuth callback — check if we have a saved userId
-    // that's still valid, so we can skip the Login page and show the selector.
-    const savedUserId = useBotStore.getState().userId
-    if (savedUserId) {
-      fetch(`${API}/auth/check/${savedUserId}`)
-        .then(r => r.json())
-        .then(data => {
-          if (data.found && data.accounts?.length) {
-            const saved = useBotStore.getState().derivAccounts
-            if (saved?.length) {
-              useBotStore.getState().setPendingAccounts(saved)
-            }
-          }
-        })
-        .catch(() => {})
-        .finally(() => setAuthChecked(true))
-      return
+    // Try restoring saved account
+    const savedAccount = localStorage.getItem('account')
+
+    if (savedAccount) {
+      try {
+        const parsed = JSON.parse(savedAccount)
+
+        // Restore session silently
+        useBotStore.getState().login(parsed)
+      } catch (e) {
+        console.warn('[Restore] Failed:', e)
+      }
     }
 
     setAuthChecked(true)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  // ↑ intentionally empty deps — this runs once on mount to handle the
-  //   OAuth redirect and any persisted-session restore. Re-running it on
-  //   isLoggedIn changes would cause loops.
+  }, []) // run once
 
+  // 🔌 Connect WebSocket after login
   useEffect(() => {
     if (isLoggedIn && !useBotStore.getState().connected) {
       useBotStore.getState().connect()
@@ -109,30 +107,47 @@ export default function App() {
     }
   }, [isLoggedIn])
 
-  // Render nothing until we've resolved the auth state (avoids flicker)
+  // ⛔ Prevent flicker
   if (!authChecked) return null
 
-  // OAuth just returned accounts — show selector before anything else
+  // 🟡 Show account selector (after OAuth)
   if (pendingAccounts?.length) {
     return (
       <AccountSelector
         accounts={pendingAccounts}
-        onSelect={() => setPendingAccounts(null)}
+        onSelect={(account) => {
+          useBotStore.getState().login(account)
+          setPendingAccounts(null)
+        }}
       />
     )
   }
 
-  // Not authenticated — show login
+  // 🔴 Not logged in
   if (!isLoggedIn) return <Login />
 
-  // Authenticated — render the dashboard
+  // 🟢 Logged in → render app
   const Page = PAGES[activePage] ?? Dashboard
 
   if (isMobile) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh', background: '#030712' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: '100dvh',
+          background: '#030712',
+        }}
+      >
         <Sidebar />
-        <main style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))' }}>
+        <main
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            paddingBottom: 'calc(52px + env(safe-area-inset-bottom, 0px))',
+          }}
+        >
           <Page />
         </main>
       </div>
