@@ -6,11 +6,10 @@ Identity model:
   Credentials.google_user_id = internal User.id FK                     (login identity)
   Credentials.is_demo        = derived once on save, trusted forever   (never recomputed)
 
-Demo-only policy:
-  Vestro only operates on Deriv VRTC demo accounts.
+Flow:
+  Google OAuth → Deriv OAuth → account selector → dashboard
+  All non-wallet accounts are passed to the frontend selector.
   Wallet accounts (VRW, RW) are silently skipped.
-  Real accounts (CR, MF, etc.) are rejected at the OAuth callback.
-  If no VRTC account is found, the user is redirected to create one on Deriv.
 """
 
 import json
@@ -40,7 +39,6 @@ GOOGLE_REDIRECT       = f"{BACKEND_URL}/auth/google/callback"
 
 DEMO_PREFIX           = "VRTC"
 WALLET_PREFIXES       = ("VRW", "RW")
-DERIV_CREATE_DEMO_URL = "https://hub.deriv.com/tradershub/home"
 
 
 def _is_wallet(account_id: str) -> bool:
@@ -120,8 +118,6 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
-    # Always go through Deriv OAuth to get fresh tokens.
-    # This ensures newly created demo accounts are always picked up.
     deriv_url = (
         f"https://oauth.deriv.com/oauth2/authorize"
         f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
@@ -157,8 +153,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             i += 1
             continue
 
-        # Accept ALL non-wallet account types (real + demo)
-        # so the token is saved and link-demo-account can match MT5 logins
         try:
             info = await get_account_info(DERIV_APP_ID, token)
         except Exception as e:
@@ -188,30 +182,28 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             cred.google_user_id = user.id
         await db.flush()
 
-        if is_demo_acct:
-            accounts.append({
-                "account_id": acct,
-                "balance":    info.get("balance", 0),
-                "currency":   cur,
-                "name":       info.get("name", ""),
-                "type":       "demo",
-                "is_demo":    True,
-                "broker":     "deriv",
-                "user_id":    user.id    if user else "",
-                "email":      user.email if user else "",
-            })
+        # Include ALL non-wallet accounts in the selector
+        accounts.append({
+            "account_id": acct,
+            "balance":    info.get("balance", 0),
+            "currency":   cur,
+            "name":       info.get("name", ""),
+            "type":       "demo" if is_demo_acct else "real",
+            "is_demo":    is_demo_acct,
+            "broker":     "deriv",
+            "user_id":    user.id    if user else "",
+            "email":      user.email if user else "",
+        })
 
         i += 1
 
     await db.commit()
 
-    # No VRTC demo account found — redirect with context for the link flow
+    # No accounts at all — generic error
     if not accounts:
         uid = user.id if user else ""
         return RedirectResponse(
-            f"{FRONTEND_URL}?error=demo_account_required"
-            f"&deriv_demo_url={DERIV_CREATE_DEMO_URL}"
-            f"&user_id={uid}"
+            f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}"
         )
 
     accounts_json = urllib.parse.quote(json.dumps(accounts))
@@ -231,12 +223,6 @@ class SetActiveAccount(BaseModel):
 
 @router.post("/auth/set-active-account")
 async def set_active_account(body: SetActiveAccount, db: AsyncSession = Depends(get_db)):
-    if not _is_demo(body.deriv_account):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only demo accounts can be set as active. Got: {body.deriv_account}",
-        )
-
     result = await db.execute(select(User).where(User.id == body.user_id))
     user   = result.scalar_one_or_none()
     if not user:
@@ -278,10 +264,7 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         return {"found": False}
 
     result = await db.execute(
-        select(Credentials).where(
-            Credentials.google_user_id == user.id,
-            Credentials.is_demo == True,              # noqa: E712
-        )
+        select(Credentials).where(Credentials.google_user_id == user.id)
     )
     creds = result.scalars().all()
 
@@ -294,8 +277,8 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         "accounts": [
             {
                 "account_id": c.account_id,
-                "type":       "demo",
-                "is_demo":    True,
+                "type":       "demo" if c.is_demo else "real",
+                "is_demo":    c.is_demo,
                 "broker":     c.broker,
             }
             for c in creds
@@ -307,8 +290,8 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
 # ── STEP 6 — Link demo account via MT5 login ID ──────────────
 
 class LinkDemoAccount(BaseModel):
-    mt5_login_id: str   # numeric string e.g. "6072772"
-    user_id:      str   # passed from frontend — no cookie needed
+    mt5_login_id: str
+    user_id:      str
 
 
 @router.post("/auth/link-demo-account")
@@ -321,7 +304,6 @@ async def link_demo_account(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Get all credentials linked to this user (demo + real — we saved all in step 3)
     result = await db.execute(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
@@ -351,9 +333,8 @@ async def link_demo_account(
             detail="MT5 login not found in your Deriv accounts. Double-check the Login ID.",
         )
 
-    # Mark as demo and link to user
-    matched_cred.is_demo         = True
-    matched_cred.google_user_id  = user.id
+    matched_cred.is_demo        = True
+    matched_cred.google_user_id = user.id
 
     if not user.active_account:
         user.active_account = matched_cred.account_id
