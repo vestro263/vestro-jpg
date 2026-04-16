@@ -645,6 +645,37 @@ def get_account():
 def get_positions():
     return _positions_cache
 
+@router.get("/account/{account_id}")
+async def get_account_by_id(account_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Credentials).where(Credentials.account_id == account_id)
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    api_token = decrypt(cred.password)
+
+    async with websockets.connect(
+        f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
+    ) as ws:
+        await ws.send(json.dumps({"authorize": api_token}))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+    if "error" in resp:
+        raise HTTPException(status_code=401, detail=resp["error"]["message"])
+
+    auth = resp["authorize"]
+    return {
+        "account_id": cred.account_id,
+        "balance":    float(auth.get("balance", 0)),
+        "currency":   auth.get("currency", "USD"),
+        "name":       auth.get("fullname", ""),
+        "email":      auth.get("email", ""),
+        "is_virtual": cred.is_demo if cred.is_demo is not None else (auth.get("is_virtual", 0) == 1),
+        "broker":     "deriv",
+    }
+
 @router.get("/accounts")
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Credentials))
