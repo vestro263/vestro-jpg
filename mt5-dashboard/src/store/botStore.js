@@ -268,9 +268,9 @@ const useBotStore = create(
               currency:   data.currency   ?? current.currency,
               name:       data.name       || current.name,
               email:      data.email      || current.email,
-              // Backend returns is_virtual — keep our stored is_demo in sync
+              // Backend returns is_virtual — preserve both flags from store
               is_virtual: data.is_virtual ?? current.is_virtual,
-              is_demo:    data.is_virtual ?? current.is_demo,
+              is_demo:    current.is_demo  ?? data.is_virtual ?? false,
             }
           })
         } catch {}
