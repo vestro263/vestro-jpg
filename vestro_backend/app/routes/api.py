@@ -591,6 +591,28 @@ _account_cache   = {}
 _positions_cache: list = []
 _bot_running     = False
 
+@router.get("/debug/linked-accounts/{account_id}")
+async def debug_linked_accounts(account_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Credentials).where(Credentials.account_id == account_id)
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    api_token = decrypt(cred.password)
+
+    async with websockets.connect(
+        f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
+    ) as ws:
+        await ws.send(json.dumps({"authorize": api_token}))
+        auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+        await ws.send(json.dumps({"account_list": 1}))
+        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+    return {"authorize": auth, "account_list": resp}
+
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
