@@ -144,6 +144,26 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
                 break
 
 
+async def get_linked_accounts(app_id: str, token: str) -> list[dict]:
+    import websockets, json
+    uri = f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"authorize": token}))
+        auth = json.loads(await ws.recv())
+        if auth.get("error"):
+            raise Exception(auth["error"]["message"])
+
+        await ws.send(json.dumps({"account_list": 1}))
+        resp = json.loads(await ws.recv())
+        if resp.get("error"):
+            raise Exception(resp["error"]["message"])
+
+        return [
+            {"account_id": acc["loginid"], "token": token}
+            for acc in resp.get("account_list", [])
+            if not acc["loginid"].startswith(("VRW", "RW"))
+        ]
+
 async def get_mt5_login_list(app_id: str, token: str) -> list[dict]:
     """
     Returns all MT5 accounts linked to the given Deriv token.

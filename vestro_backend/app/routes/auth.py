@@ -19,8 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Credentials, User
 from ..services.credential_store import encrypt, decrypt
-from ..services.deriv_ws import get_account_info, get_mt5_login_list
-
+from ..services.deriv_ws import get_account_info, get_mt5_login_list, get_linked_accounts
 router = APIRouter()
 
 DERIV_APP_ID          = os.environ["DERIV_APP_ID"]
