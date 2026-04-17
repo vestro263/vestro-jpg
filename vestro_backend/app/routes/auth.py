@@ -2,7 +2,6 @@
 routes/auth.py
 ==============
 Flow: Google OAuth → Deriv OAuth → account selector → dashboard
-All non-wallet accounts linked to the user's email are shown in the selector.
 """
 
 import json
@@ -19,21 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Credentials, User
 from ..services.credential_store import encrypt, decrypt
-from ..services.deriv_ws import get_account_info, get_mt5_login_list, get_linked_accounts
+from ..services.deriv_ws import get_account_info, get_mt5_login_list
+
 router = APIRouter()
 
-DERIV_APP_ID          = os.environ["DERIV_APP_ID"]
-FRONTEND_URL          = os.environ.get("FRONTEND_URL",         "https://vestro-ui.onrender.com")
-BACKEND_URL           = os.environ.get("BACKEND_URL",          "https://vestro-jpg.onrender.com")
-GOOGLE_CLIENT_ID      = os.environ.get("GOOGLE_CLIENT_ID",     "")
-GOOGLE_CLIENT_SECRET  = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT       = f"{BACKEND_URL}/auth/google/callback"
-
-WALLET_PREFIXES = ("VRW", "RW")
-
-
-def _is_wallet(account_id: str) -> bool:
-    return account_id.startswith(WALLET_PREFIXES)
+DERIV_APP_ID         = os.environ["DERIV_APP_ID"]
+FRONTEND_URL         = os.environ.get("FRONTEND_URL",         "https://vestro-ui.onrender.com")
+BACKEND_URL          = os.environ.get("BACKEND_URL",          "https://vestro-jpg.onrender.com")
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID",     "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT      = f"{BACKEND_URL}/auth/google/callback"
 
 
 # ── STEP 1 — Start Google login ───────────────────────────────
@@ -134,63 +128,21 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
-        if _is_wallet(acct):
-            print(f"[wallet] {acct} — fetching linked accounts via account_list")
-            try:
-                linked = await get_linked_accounts(DERIV_APP_ID, token)
-                for la in linked:
-                    la_acct  = la["account_id"]
-                    la_token = la.get("token", token)
-                    try:
-                        info    = await get_account_info(DERIV_APP_ID, la_token)
-                        is_demo = bool(info.get("is_virtual", False))
-
-                        result = await db.execute(
-                            select(Credentials).where(Credentials.account_id == la_acct)
-                        )
-                        cred = result.scalar_one_or_none()
-                        if not cred:
-                            cred = Credentials()
-                            db.add(cred)
-
-                        cred.account_id      = la_acct
-                        cred.is_demo         = is_demo
-                        cred.broker          = "deriv"
-                        cred.login           = encrypt(la_acct)
-                        cred.password        = encrypt(la_token)
-                        cred.api_token       = encrypt(la_token)
-                        cred.server          = encrypt("")
-                        cred.meta_account_id = ""
-                        if user:
-                            cred.google_user_id = user.id
-
-                        await db.flush()
-
-                        accounts.append({
-                            "account_id": la_acct,
-                            "loginid":    la_acct,
-                            "balance":    info.get("balance", 0),
-                            "currency":   info.get("currency", "USD"),
-                            "name":       info.get("name", ""),
-                            "type":       "demo" if is_demo else "real",
-                            "is_demo":    is_demo,
-                            "broker":     "deriv",
-                            "user_id":    user.id    if user else "",
-                            "email":      user.email if user else "",
-                        })
-                    except Exception as e:
-                        print(f"[ERROR] get_account_info for linked {la_acct}: {e}")
-            except Exception as e:
-                print(f"[ERROR] get_linked_accounts for wallet {acct}: {e}")
-            i += 1
-            continue
-
-        # ── non-wallet account ────────────────────────────────
+        # ── ALL accounts handled the same way (wallets included) ──
+        # Wallet accounts (VRW/RW) are valid trading accounts on Deriv's
+        # options/multipliers platform. We store them directly instead of
+        # trying to unwrap linked sub-accounts, which have no usable tokens.
         try:
             info = await get_account_info(DERIV_APP_ID, token)
             print(f"[info] {acct}:", info)
         except Exception as e:
             print(f"[ERROR] get_account_info {acct}: {e}")
+            i += 1
+            continue
+
+        # Skip accounts that returned an auth error
+        if info.get("status") == "error":
+            print(f"[SKIP] {acct}: {info.get('message')}")
             i += 1
             continue
 
@@ -221,13 +173,13 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             "account_id": acct,
             "loginid":    acct,
             "balance":    info.get("balance", 0),
-            "currency":   cur,
+            "currency":   info.get("currency", cur),
             "name":       info.get("name", ""),
+            "email":      info.get("email", user.email if user else ""),
             "type":       "demo" if is_demo else "real",
             "is_demo":    is_demo,
             "broker":     "deriv",
             "user_id":    user.id    if user else "",
-            "email":      user.email if user else "",
         })
 
         i += 1
@@ -244,6 +196,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     return RedirectResponse(
         f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
     )
+
 
 # ── STEP 4 — Set active account ───────────────────────────────
 
@@ -285,7 +238,6 @@ async def get_active_account(user_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ── STEP 5 — Auth check (session restore) ────────────────────
-# Returns ALL accounts linked to this user — not just demo
 
 @router.get("/auth/check/{user_id}")
 async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
@@ -294,7 +246,6 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     if not user:
         return {"found": False}
 
-    # ← removed is_demo filter — return ALL linked accounts
     result = await db.execute(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
