@@ -78,7 +78,6 @@ _CACHE_FILE = pathlib.Path("/tmp/vestro_price_cache.pkl")
 async def _fetch_prices() -> None:
     global _price_cache, _price_cache_time
 
-    # Serve from disk if fresh and non-empty
     if _CACHE_FILE.exists():
         try:
             saved = pickle.loads(_CACHE_FILE.read_bytes())
@@ -131,7 +130,7 @@ async def _fetch_prices() -> None:
         pass
 
 # ─────────────────────────────────────────────────────────────
-# OVERVIEWS — Alpha Vantage (metadata: name, sector, market cap)
+# OVERVIEWS — Alpha Vantage
 # ─────────────────────────────────────────────────────────────
 
 async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
@@ -154,7 +153,7 @@ async def _fetch_overviews_av(client: httpx.AsyncClient) -> None:
                 _overview_cache[symbol] = data
         except Exception:
             pass
-        await asyncio.sleep(62)  # AV free tier: 5 req/min
+        await asyncio.sleep(62)
 
     _overview_cache_time = datetime.now(timezone.utc)
 
@@ -170,7 +169,6 @@ async def _run_overview_fetch():
 
 # ─────────────────────────────────────────────────────────────
 # SCORING
-# closes[-1] = most recent bar; uses full history
 # ─────────────────────────────────────────────────────────────
 
 def _score(closes: list, volumes: list) -> dict:
@@ -458,7 +456,7 @@ async def list_signals(
     return signals[:limit]
 
 # ─────────────────────────────────────────────────────────────
-# WEBSOCKET — /ws/stream  (consumed by useValuationEngine.js)
+# WEBSOCKET — /ws/stream
 # ─────────────────────────────────────────────────────────────
 
 class StreamManager:
@@ -591,6 +589,52 @@ _account_cache   = {}
 _positions_cache: list = []
 _bot_running     = False
 
+# ─────────────────────────────────────────────────────────────
+# ACTIVE ACCOUNT — in-memory store (keyed by user_id)
+# ─────────────────────────────────────────────────────────────
+
+_active_accounts: dict[str, str] = {}  # user_id → deriv_account_id
+
+
+class SetActiveAccountRequest(BaseModel):
+    user_id:       str
+    deriv_account: str
+
+
+@router.post("/set-active-account")
+async def set_active_account(payload: SetActiveAccountRequest):
+    """
+    Stores the user's chosen Deriv account in memory so the backend
+    knows which account to use for bot operations and journal queries.
+    Called by AccountSelector immediately after the user picks an account.
+    """
+    if not payload.user_id or not payload.deriv_account:
+        raise HTTPException(status_code=400, detail="user_id and deriv_account are required")
+
+    _active_accounts[payload.user_id] = payload.deriv_account
+    return {
+        "status":         "ok",
+        "user_id":        payload.user_id,
+        "active_account": payload.deriv_account,
+    }
+
+
+@router.get("/active-account/{user_id}")
+async def get_active_account(user_id: str):
+    """
+    Returns the currently active Deriv account for a given user.
+    Returns 404 if the user hasn't selected one yet (e.g. fresh session).
+    """
+    account_id = _active_accounts.get(user_id)
+    if not account_id:
+        raise HTTPException(status_code=404, detail="No active account set for this user")
+    return {"user_id": user_id, "active_account": account_id}
+
+
+# ─────────────────────────────────────────────────────────────
+# DEBUG
+# ─────────────────────────────────────────────────────────────
+
 @router.get("/debug/linked-accounts/{account_id}")
 async def debug_linked_accounts(account_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -706,7 +750,6 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
     accounts = []
 
     for cred in creds:
-        # Skip rows that were never properly linked to a Deriv account
         if not cred.account_id:
             continue
 
@@ -726,21 +769,18 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
 
             auth = resp["authorize"]
 
-            # Balance comes from the live call — it changes
             balance = 0.0
             try:
                 balance = float(auth.get("balance", 0.0))
             except Exception:
                 pass
 
-            # is_demo comes from the DB — it never changes after account creation
-            # Fallback to live value only if DB column was not backfilled yet
             is_demo = cred.is_demo if cred.is_demo is not None else (
                 auth.get("is_virtual", 0) == 1
             )
 
             accounts.append({
-                "account_id": cred.account_id,        # trust DB, not live response
+                "account_id": cred.account_id,
                 "balance":    balance,
                 "currency":   auth.get("currency", "USD"),
                 "name":       auth.get("fullname", ""),
@@ -757,6 +797,7 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
             continue
 
     return accounts
+
 # ─────────────────────────────────────────────────────────────
 # BOT CONTROL
 # ─────────────────────────────────────────────────────────────
@@ -801,7 +842,7 @@ def bot_status():
     return {"running": _bot_running}
 
 # ─────────────────────────────────────────────────────────────
-# JOURNAL  —  replace @router.get("/journal") in routes/api.py
+# JOURNAL
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/journal")
@@ -815,9 +856,6 @@ async def get_journal(
 ):
     from sqlalchemy import text
 
-    # ─────────────────────────────
-    # 1. Resolve accounts ONCE
-    # ─────────────────────────────
     account_ids = set()
 
     if account_id:
@@ -830,11 +868,8 @@ async def get_journal(
             account_ids.add(r.account_id)
 
     if not account_ids:
-        return []  # HARD STOP (no fallback junk)
+        return []
 
-    # ─────────────────────────────
-    # 2. Query signal logs
-    # ─────────────────────────────
     params = {"limit": limit}
     placeholders = []
 
@@ -843,9 +878,7 @@ async def get_journal(
         params[key] = acc
         placeholders.append(f":{key}")
 
-    where = f"""
-        account_id IN ({','.join(placeholders)})
-    """
+    where = f"account_id IN ({','.join(placeholders)})"
 
     if symbol:
         where += " AND symbol = :symbol"

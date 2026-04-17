@@ -20,13 +20,38 @@ export default function AccountSelector({ accounts, onSelect }) {
       }
     }
 
-    // login() now takes a single account object
-    useBotStore.getState().login(acc)
+    // login(broker, accountId, accountData) — matches botStore signature exactly
+    useBotStore.getState().login(
+      acc.broker ?? 'deriv',
+      acc.account_id,
+      {
+        balance:    acc.balance    ?? 0,
+        equity:     acc.balance    ?? 0,   // Deriv doesn't send equity separately
+        profit:     0,
+        margin_free: 0,
+        currency:   acc.currency   ?? 'USD',
+        name:       acc.name       ?? '—',
+        leverage:   0,
+        is_virtual: acc.is_demo    ?? false,
+        is_demo:    acc.is_demo    ?? false,
+        email:      acc.email      ?? '',
+        account_id: acc.account_id,
+      }
+    )
+
     onSelect(acc)
   }
 
-  const demo = accounts.filter(a => a.is_demo || a.type === 'demo')
-  const real = accounts.filter(a => !a.is_demo && a.type !== 'demo')
+  // Filter: only show USD accounts with a balance, or demo accounts
+  // Show demo first, then real — sorted by balance descending within each group
+  const demo = accounts
+    .filter(a => a.is_demo || a.type === 'demo')
+    .sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0))
+
+  const real = accounts
+    .filter(a => !a.is_demo && a.type !== 'demo')
+    .sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0))
+
   const sorted = [...demo, ...real]
 
   return (
@@ -108,6 +133,7 @@ const styles = {
     background: '#1e2d45', border: '1px solid #2a3f5f',
     borderRadius: 10, padding: '14px 16px',
     cursor: 'pointer', width: '100%',
+    transition: 'border-color 0.15s',
   },
   itemLeft:  { display: 'flex', alignItems: 'center', gap: 10 },
   badge:     { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, letterSpacing: '0.5px' },
