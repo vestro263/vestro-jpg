@@ -150,17 +150,22 @@ async def get_linked_accounts(app_id: str, token: str) -> list[dict]:
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"authorize": token}))
         auth = json.loads(await ws.recv())
+        print("[get_linked_accounts] authorize response:", json.dumps(auth, indent=2))
         if auth.get("error"):
             raise Exception(auth["error"]["message"])
 
         await ws.send(json.dumps({"account_list": 1}))
         resp = json.loads(await ws.recv())
+        print("[get_linked_accounts] account_list response:", json.dumps(resp, indent=2))
         if resp.get("error"):
             raise Exception(resp["error"]["message"])
 
+        all_accounts = resp.get("account_list", [])
+        print("[get_linked_accounts] all accounts:", [a["loginid"] for a in all_accounts])
+
         return [
             {"account_id": acc["loginid"], "token": token}
-            for acc in resp.get("account_list", [])
+            for acc in all_accounts
             if not acc["loginid"].startswith(("VRW", "RW"))
         ]
 
