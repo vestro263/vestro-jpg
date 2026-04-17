@@ -67,18 +67,17 @@ const useBotStore = create(
           demoUrl:         null,
           pendingAccounts: null,
           account: {
-            balance:    accountData.balance    ?? 0,
-            equity:     accountData.balance    ?? 0,
-            profit:     0,
-            margin_free: accountData.balance   ?? 0,
-            currency:   accountData.currency   ?? 'USD',
-            name:       accountData.name       ?? '—',
-            leverage:   0,
-            // Normalise — API returns is_virtual, OAuth returns is_demo
-            is_virtual: accountData.is_virtual ?? accountData.is_demo ?? false,
-            is_demo:    accountData.is_demo    ?? accountData.is_virtual ?? false,
-            email:      accountData.email      ?? '',
-            account_id: accountId,
+            balance:     accountData.balance    ?? 0,
+            equity:      accountData.balance    ?? 0,
+            profit:      0,
+            margin_free: accountData.balance    ?? 0,
+            currency:    accountData.currency   ?? 'USD',
+            name:        accountData.name       ?? '—',
+            leverage:    0,
+            is_virtual:  accountData.is_virtual ?? accountData.is_demo ?? false,
+            is_demo:     accountData.is_demo    ?? accountData.is_virtual ?? false,
+            email:       accountData.email      ?? '',
+            account_id:  accountId,
           },
         })
         get().connect()
@@ -95,7 +94,6 @@ const useBotStore = create(
         const ws = get().ws
         if (ws) ws.close(1000)
 
-        // Clear polling
         if (_pollIntervalId) {
           clearInterval(_pollIntervalId)
           _pollIntervalId = null
@@ -189,6 +187,7 @@ const useBotStore = create(
           try { data = JSON.parse(e.data) } catch { return }
           const state = get()
 
+          // ── heartbeat ────────────────────────────────────
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
             if (data.account) {
@@ -196,7 +195,6 @@ const useBotStore = create(
                 account: {
                   ...s.account,
                   ...data.account,
-                  // Never let heartbeat overwrite is_virtual/is_demo
                   is_virtual: s.account?.is_virtual ?? false,
                   is_demo:    s.account?.is_demo    ?? false,
                 }
@@ -208,6 +206,10 @@ const useBotStore = create(
             return
           }
 
+          // ── signal ───────────────────────────────────────
+          // The strategy fetches a fresh balance from Deriv on every cycle
+          // and includes it in the broadcast payload as `data.balance`.
+          // This is the most accurate balance source — use it directly.
           if (data.type === 'signal') {
             const entry = {
               ...data,
@@ -220,10 +222,15 @@ const useBotStore = create(
               signalMap: sym
                 ? { ...s.signalMap, [sym]: entry }
                 : s.signalMap,
+              // Update balance if bot included it — it has the live Deriv value
+              account: (data.balance != null)
+                ? { ...s.account, balance: data.balance, equity: data.balance }
+                : s.account,
             }))
             return
           }
 
+          // ── contract update ───────────────────────────────
           if (data.type === 'contract_update') {
             const update   = { ...data, id: data.contract_id, time: new Date().toLocaleTimeString() }
             const existing = state.tradeFeed.findIndex(t => t.contract_id === data.contract_id)
@@ -240,6 +247,7 @@ const useBotStore = create(
             return
           }
 
+          // ── trade / tp1_hit ───────────────────────────────
           if (data.type === 'tp1_hit' || data.trade) {
             const item = {
               ...data,
@@ -263,12 +271,11 @@ const useBotStore = create(
           const { data } = await axios.get(`${API}/api/account/${accountId}`)
           set({
             account: {
-              ...current,          // preserve is_demo, name, email etc from login
+              ...current,
               balance:    data.balance    ?? current.balance,
               currency:   data.currency   ?? current.currency,
               name:       data.name       || current.name,
               email:      data.email      || current.email,
-              // Backend returns is_virtual — preserve both flags from store
               is_virtual: data.is_virtual ?? current.is_virtual,
               is_demo:    current.is_demo  ?? data.is_virtual ?? false,
             }
@@ -314,7 +321,6 @@ const useBotStore = create(
       },
 
       // ── polling ───────────────────────────────────────────
-      // Uses module-level ref to prevent interval leaks across re-renders
       startPolling: () => {
         if (_pollIntervalId) {
           clearInterval(_pollIntervalId)
@@ -324,7 +330,7 @@ const useBotStore = create(
           get().fetchAccount()
           get().fetchPositions()
           get().syncBotStatus()
-        }, 5000)   // 5s — was 3s, reduced Deriv WS pressure
+        }, 5000)
       },
     }),
 
