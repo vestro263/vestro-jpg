@@ -9,6 +9,9 @@ let reconnectAttempts = 0
 const MAX_RECONNECT = 10
 const backoffDelay  = (n) => Math.min(1000 * 2 ** n, 30000)
 
+// Module-level interval ref — never goes into Zustand state, never serialized
+let _pollIntervalId = null
+
 const useBotStore = create(
   persist(
     (set, get) => ({
@@ -34,7 +37,7 @@ const useBotStore = create(
       setActivePage:  (page) => set({ activePage: page }),
 
       // ── auth ──────────────────────────────────────────────
-      isLoggedIn:      false,   // ← source of truth, always set explicitly
+      isLoggedIn:      false,
       broker:          null,
       accountId:       null,
       userId:          null,
@@ -57,15 +60,25 @@ const useBotStore = create(
       // ── login ─────────────────────────────────────────────
       login: (broker, accountId, accountData) => {
         set({
-          isLoggedIn:      true,       // ← always set explicitly
+          isLoggedIn:      true,
           broker,
           accountId,
           authError:       null,
           demoUrl:         null,
-          pendingAccounts: null,        // ← clear selector immediately inside store
+          pendingAccounts: null,
           account: {
-            ...accountData,
-            is_virtual: accountData.is_demo ?? false,
+            balance:    accountData.balance    ?? 0,
+            equity:     accountData.balance    ?? 0,
+            profit:     0,
+            margin_free: accountData.balance   ?? 0,
+            currency:   accountData.currency   ?? 'USD',
+            name:       accountData.name       ?? '—',
+            leverage:   0,
+            // Normalise — API returns is_virtual, OAuth returns is_demo
+            is_virtual: accountData.is_virtual ?? accountData.is_demo ?? false,
+            is_demo:    accountData.is_demo    ?? accountData.is_virtual ?? false,
+            email:      accountData.email      ?? '',
+            account_id: accountId,
           },
         })
         get().connect()
@@ -81,6 +94,13 @@ const useBotStore = create(
       logout: () => {
         const ws = get().ws
         if (ws) ws.close(1000)
+
+        // Clear polling
+        if (_pollIntervalId) {
+          clearInterval(_pollIntervalId)
+          _pollIntervalId = null
+        }
+
         set({
           isLoggedIn:      false,
           broker:          null,
@@ -176,7 +196,9 @@ const useBotStore = create(
                 account: {
                   ...s.account,
                   ...data.account,
+                  // Never let heartbeat overwrite is_virtual/is_demo
                   is_virtual: s.account?.is_virtual ?? false,
+                  is_demo:    s.account?.is_demo    ?? false,
                 }
               }))
             }
@@ -235,14 +257,20 @@ const useBotStore = create(
 
       // ── data fetchers ─────────────────────────────────────
       fetchAccount: async () => {
-        const { accountId } = get()
+        const { accountId, account: current } = get()
         if (!accountId) return
         try {
           const { data } = await axios.get(`${API}/api/account/${accountId}`)
           set({
             account: {
-              ...data,
-              is_virtual: data.is_virtual ?? false,
+              ...current,          // preserve is_demo, name, email etc from login
+              balance:    data.balance    ?? current.balance,
+              currency:   data.currency   ?? current.currency,
+              name:       data.name       || current.name,
+              email:      data.email      || current.email,
+              // Backend returns is_virtual — keep our stored is_demo in sync
+              is_virtual: data.is_virtual ?? current.is_virtual,
+              is_demo:    data.is_virtual ?? current.is_demo,
             }
           })
         } catch {}
@@ -286,21 +314,24 @@ const useBotStore = create(
       },
 
       // ── polling ───────────────────────────────────────────
+      // Uses module-level ref to prevent interval leaks across re-renders
       startPolling: () => {
-        if (get()._pollInterval) clearInterval(get()._pollInterval)
-        const id = setInterval(() => {
-          get().fetchPositions()
+        if (_pollIntervalId) {
+          clearInterval(_pollIntervalId)
+          _pollIntervalId = null
+        }
+        _pollIntervalId = setInterval(() => {
           get().fetchAccount()
+          get().fetchPositions()
           get().syncBotStatus()
-        }, 3000)
-        set({ _pollInterval: id })
+        }, 5000)   // 5s — was 3s, reduced Deriv WS pressure
       },
     }),
 
     {
       name: 'vestro-auth',
       partialize: (s) => ({
-        isLoggedIn:    s.isLoggedIn,   // ← persist this so page refresh works
+        isLoggedIn:    s.isLoggedIn,
         broker:        s.broker,
         accountId:     s.accountId,
         userId:        s.userId,

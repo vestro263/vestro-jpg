@@ -1,4 +1,5 @@
 import json
+import asyncio
 import websockets
 
 _WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
@@ -8,7 +9,6 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _authorized_ws(app_id: str, api_token: str):
-    """Async context manager: yields an authorized WebSocket."""
     url = _WS_URL.format(app_id=app_id)
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": api_token}))
@@ -23,16 +23,28 @@ async def get_account_info(app_id: str, api_token: str) -> dict:
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": api_token}))
         auth = json.loads(await ws.recv())
-        if "error" in auth:                          # FIX: was p_resp (undefined)
+        if "error" in auth:
             return {
                 "status":  "error",
-                "message": auth["error"]["message"]  # FIX: was p_resp
+                "message": auth["error"]["message"],
             }
         a = auth["authorize"]
 
-        await ws.send(json.dumps({"balance": 1}))
-        bal_resp = json.loads(await ws.recv())
-        balance = bal_resp["balance"]["balance"] if "balance" in bal_resp else a.get("balance", 0)
+        # Use get_financial_assessment as a no-op ping, then call balance
+        # separately — but the authorize response already contains balance.
+        # Just use it directly; it's accurate at auth time.
+        balance = float(a.get("balance", 0))
+
+        # For a fresher balance, call balance: 1 and read the SECOND message
+        # (first is the subscription confirm, second is the actual data).
+        # We do this with a short timeout so slow accounts don't block.
+        try:
+            await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
+            bal_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if "balance" in bal_resp and "error" not in bal_resp:
+                balance = float(bal_resp["balance"]["balance"])
+        except Exception:
+            pass  # fall back to authorize balance
 
         return {
             "account_id":  a.get("loginid", ""),
@@ -145,7 +157,6 @@ async def watch_contract(app_id: str, api_token: str, contract_id: int, callback
 
 
 async def get_linked_accounts(app_id: str, token: str) -> list[dict]:
-    import websockets, json
     uri = f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"authorize": token}))
@@ -169,13 +180,8 @@ async def get_linked_accounts(app_id: str, token: str) -> list[dict]:
             if not acc["loginid"].startswith(("VRW", "RW"))
         ]
 
-async def get_mt5_login_list(app_id: str, token: str) -> list[dict]:
-    """
-    Returns all MT5 accounts linked to the given Deriv token.
-    Each item has: login, server, balance, currency, account_type, landing_company_short
-    """
-    import json
 
+async def get_mt5_login_list(app_id: str, token: str) -> list[dict]:
     url = f"wss://ws.derivws.com/websockets/v3?app_id={app_id}"
     async with websockets.connect(url) as ws:
         await ws.send(json.dumps({"authorize": token}))
