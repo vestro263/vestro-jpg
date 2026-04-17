@@ -1,15 +1,8 @@
 """
 routes/auth.py
 ==============
-Identity model:
-  Credentials.account_id     = Deriv loginid e.g. VRTC9999            (clean, queryable)
-  Credentials.google_user_id = internal User.id FK                     (login identity)
-  Credentials.is_demo        = derived once on save, trusted forever   (never recomputed)
-
-Flow:
-  Google OAuth → Deriv OAuth → account selector → dashboard
-  All non-wallet accounts are passed to the frontend selector.
-  Wallet accounts (VRW, RW) are silently skipped.
+Flow: Google OAuth → Deriv OAuth → account selector → dashboard
+All non-wallet accounts linked to the user's email are shown in the selector.
 """
 
 import json
@@ -37,16 +30,11 @@ GOOGLE_CLIENT_ID      = os.environ.get("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET  = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT       = f"{BACKEND_URL}/auth/google/callback"
 
-DEMO_PREFIX           = "VRTC"
-WALLET_PREFIXES       = ("VRW", "RW")
+WALLET_PREFIXES = ("VRW", "RW")
 
 
 def _is_wallet(account_id: str) -> bool:
     return account_id.startswith(WALLET_PREFIXES)
-
-
-def _is_demo(account_id: str) -> bool:
-    return account_id.startswith(DEMO_PREFIX)
 
 
 # ── STEP 1 — Start Google login ───────────────────────────────
@@ -106,7 +94,6 @@ async def google_callback(
     if not email:
         return RedirectResponse(f"{FRONTEND_URL}?error=no_email")
 
-    # Upsert User by email
     result = await db.execute(select(User).where(User.email == email))
     user   = result.scalar_one_or_none()
     if not user:
@@ -133,8 +120,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     params  = dict(request.query_params)
     user_id = params.get("state", "")
 
-    print("==== DERIV CALLBACK START ====")
-    print("[params]:", params)
+    print("==== DERIV CALLBACK ====", params)
 
     user = None
     if user_id:
@@ -149,58 +135,50 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         token = params[f"token{i}"]
         cur   = params.get(f"cur{i}", "USD")
 
-        print(f"[processing] acct{i}: {acct}")
-
-        # 🔴 Skip wallet accounts (but log them)
         if _is_wallet(acct):
-            print(f"[skip] wallet account: {acct}")
+            print(f"[skip wallet] {acct}")
             i += 1
             continue
 
-        # 🔌 Fetch account info from Deriv
         try:
             info = await get_account_info(DERIV_APP_ID, token)
-            print(f"[info] {acct}: {info}")
+            print(f"[info] {acct}:", info)
         except Exception as e:
-            print(f"[ERROR] get_account_info failed for {acct}: {e}")
+            print(f"[ERROR] get_account_info {acct}: {e}")
             i += 1
             continue
 
-        # 🔎 Upsert credentials
         result = await db.execute(
             select(Credentials).where(Credentials.account_id == acct)
         )
         cred = result.scalar_one_or_none()
-
         if not cred:
             cred = Credentials()
             db.add(cred)
 
-        is_demo_acct = bool(info.get("is_virtual", False))
+        is_demo = bool(info.get("is_virtual", False))
 
         cred.account_id      = acct
-        cred.is_demo         = is_demo_acct
+        cred.is_demo         = is_demo
         cred.broker          = "deriv"
         cred.login           = encrypt(acct)
         cred.password        = encrypt(token)
         cred.api_token       = encrypt(token)
         cred.server          = encrypt("")
         cred.meta_account_id = ""
-
         if user:
             cred.google_user_id = user.id
 
         await db.flush()
 
-        # ✅ IMPORTANT: include BOTH loginid + account_id
         accounts.append({
-            "loginid":    acct,   # 🔥 REQUIRED for frontend
             "account_id": acct,
+            "loginid":    acct,
             "balance":    info.get("balance", 0),
             "currency":   cur,
             "name":       info.get("name", ""),
-            "type":       "demo" if is_demo_acct else "real",
-            "is_demo":    is_demo_acct,
+            "type":       "demo" if is_demo else "real",
+            "is_demo":    is_demo,
             "broker":     "deriv",
             "user_id":    user.id    if user else "",
             "email":      user.email if user else "",
@@ -210,34 +188,19 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    print("[FINAL accounts]:", accounts)
-
-    # ❌ No usable accounts → send error
     if not accounts:
         uid = user.id if user else ""
-        print("[ERROR] No valid accounts found")
-        return RedirectResponse(
-            f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}"
-        )
+        return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}")
 
-    # ✅ Send accounts to frontend
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-
-    uid    = user.id if user else ""
+    uid    = user.id             if user else ""
     active = user.active_account if user else ""
-
-    redirect_url = (
-        f"{FRONTEND_URL}"
-        f"?accounts={accounts_json}"
-        f"&user_id={uid}"
-        f"&active_account={active}"
+    return RedirectResponse(
+        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
     )
 
-    print("[REDIRECT]:", redirect_url)
 
-    return RedirectResponse(redirect_url)
-
-# ── STEP 4 — Set active account (DB-persisted) ───────────────
+# ── STEP 4 — Set active account ───────────────────────────────
 
 class SetActiveAccount(BaseModel):
     deriv_account: str
@@ -250,7 +213,6 @@ async def set_active_account(body: SetActiveAccount, db: AsyncSession = Depends(
     user   = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
     user.active_account = body.deriv_account
     await db.commit()
     return {"status": "ok", "active": body.deriv_account}
@@ -277,7 +239,8 @@ async def get_active_account(user_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-# ── STEP 5 — Auth check on app load ──────────────────────────
+# ── STEP 5 — Auth check (session restore) ────────────────────
+# Returns ALL accounts linked to this user — not just demo
 
 @router.get("/auth/check/{user_id}")
 async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
@@ -286,6 +249,7 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     if not user:
         return {"found": False}
 
+    # ← removed is_demo filter — return ALL linked accounts
     result = await db.execute(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
@@ -300,9 +264,10 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
         "accounts": [
             {
                 "account_id": c.account_id,
+                "loginid":    c.account_id,
                 "type":       "demo" if c.is_demo else "real",
                 "is_demo":    c.is_demo,
-                "broker":     c.broker,
+                "broker":     c.broker or "deriv",
             }
             for c in creds
             if c.account_id
@@ -310,7 +275,7 @@ async def check_auth(user_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-# ── STEP 6 — Link demo account via MT5 login ID ──────────────
+# ── STEP 6 — Link MT5 account ─────────────────────────────────
 
 class LinkDemoAccount(BaseModel):
     mt5_login_id: str
@@ -318,10 +283,7 @@ class LinkDemoAccount(BaseModel):
 
 
 @router.post("/auth/link-demo-account")
-async def link_demo_account(
-    body: LinkDemoAccount,
-    db:   AsyncSession = Depends(get_db),
-):
+async def link_demo_account(body: LinkDemoAccount, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == body.user_id))
     user   = result.scalar_one_or_none()
     if not user:
@@ -331,12 +293,8 @@ async def link_demo_account(
         select(Credentials).where(Credentials.google_user_id == user.id)
     )
     creds = result.scalars().all()
-
     if not creds:
-        raise HTTPException(
-            status_code=404,
-            detail="No Deriv accounts found. Please sign in again.",
-        )
+        raise HTTPException(status_code=404, detail="No Deriv accounts found. Please sign in again.")
 
     matched_cred = None
     for cred in creds:
@@ -351,21 +309,11 @@ async def link_demo_account(
             continue
 
     if not matched_cred:
-        raise HTTPException(
-            status_code=404,
-            detail="MT5 login not found in your Deriv accounts. Double-check the Login ID.",
-        )
+        raise HTTPException(status_code=404, detail="MT5 login not found. Double-check the Login ID.")
 
-    matched_cred.is_demo        = True
     matched_cred.google_user_id = user.id
-
     if not user.active_account:
         user.active_account = matched_cred.account_id
 
     await db.commit()
-
-    return {
-        "status":     "ok",
-        "account_id": matched_cred.account_id,
-        "active":     user.active_account,
-    }
+    return {"status": "ok", "account_id": matched_cred.account_id, "active": user.active_account}
