@@ -1,58 +1,8 @@
 """
-calibration_train.py  (upgraded — was calibration_trainer.py)
-===============================================================
-Adds probability calibration (Platt Scaling and Isotonic Regression) on top
-of the existing GradientBoostingClassifier + threshold-sweep pipeline.
-
-Changes vs original calibration_trainer.py
--------------------------------------------
-1. PLATT SCALING + ISOTONIC REGRESSION
-   After training the base GBM, we fit two calibrated wrappers:
-     • CalibratedClassifierCV(method="sigmoid") — Platt Scaling
-     • CalibratedClassifierCV(method="isotonic") — Isotonic Regression
-   Both are evaluated on the hold-out set using Brier Score (lower is
-   better) and Expected Calibration Error (ECE).  The better-calibrated
-   model is stored.  This replaces the raw GBM for probability output.
-
-   Why: GBMs are well-known to produce overconfident probabilities near
-   0 and 1.  Calibrated probabilities mean confidence_min thresholds
-   in the strategy become semantically meaningful ("60% confidence" truly
-   reflects the model's historical win rate at that probability level).
-
-2. CALIBRATED MODEL PERSISTENCE
-   The winning calibrated model is saved with joblib alongside the
-   CalibrationConfig DB row.  calibration_loader.py loads it at runtime.
-   Model path: ml/models/{symbol}_calibrated.pkl
-
-3. THRESHOLD SWEEP ON CALIBRATED PROBABILITIES
-   _find_optimal_threshold now operates on calibrated predict_proba[:,1]
-   instead of raw model.predict().  This means confidence_min in the
-   strategy is now a probability threshold (0.0–1.0), not an arbitrary
-   decision boundary.
-
-4. CANDLE FEATURE ENRICHMENT
-   Calls enrich_rows_batch() before building the feature matrix so the
-   expanded CANDLE_FEATURE_NAMES features are included in training.
-   Falls back gracefully if the API call fails.
-
-5. UNCHANGED INTERFACE
-   run_trainer(), train_symbol(), write_calibration() keep the same
-   signatures so signal_engine.py requires zero changes.
-
-Integration with calibration_loader.py
-----------------------------------------
-Add to calibration_loader.py:
-
-    import joblib
-    from pathlib import Path
-
-    MODEL_DIR = Path(__file__).parent / "models"
-
-    def load_calibrated_model(symbol: str):
-        path = MODEL_DIR / f"{symbol}_calibrated.pkl"
-        if path.exists():
-            return joblib.load(path)
-        return None
+calibration_trainer.py
+=======================
+Trains calibrated ML models for each symbol using all labeled rows
+(not just executed trades — removes cold-start deadlock).
 """
 
 from __future__ import annotations
@@ -66,7 +16,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import (
     brier_score_loss,
@@ -74,27 +24,22 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import train_test_split
 from sqlalchemy import delete, select
 
 from app.database import AsyncSessionLocal
 from .signal_log_model import SignalLog, CalibrationConfig
-from .feature_engineering import enrich_rows_batch, CANDLE_FEATURE_NAMES
 
 logger = logging.getLogger(__name__)
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
 MODEL_DIR = Path(__file__).parent / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 
-# ── Training config ───────────────────────────────────────────────────────────
 MIN_SAMPLES        = 200
 TEST_SIZE          = 0.20
 RANDOM_SEED        = 42
 TARGET_HOLD_RATE   = 0.15
 HOLD_TIGHTEN_STEPS = 20
 
-# ── Feature sets  (unchanged from original) ───────────────────────────────────
 FEATURES_V75 = [
     "rsi", "adx", "atr", "ema_50", "ema_200",
     "macd_hist", "tss_score", "checklist", "confidence",
@@ -139,10 +84,16 @@ SYMBOL_STRATEGY_MAP = {
 
 
 # =============================================================================
-# Data loading  (unchanged)
+# Data loading — ALL labeled rows, not just executed trades
 # =============================================================================
 
 async def _load_rows(symbol: str) -> list[dict]:
+    """
+    Load ALL labeled signal rows for a symbol.
+    Removed executed==True filter — that filter caused a cold-start deadlock
+    where the model never trained because it never traded, and it never traded
+    because the model had no data. Now we train on all labeled observations.
+    """
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(SignalLog)
@@ -150,25 +101,21 @@ async def _load_rows(symbol: str) -> list[dict]:
                 SignalLog.symbol    == symbol,
                 SignalLog.label_15m != None,
                 SignalLog.signal    != "HOLD",
-                SignalLog.executed  == True,   # ← only rows you actually traded
             )
             .order_by(SignalLog.captured_at)
         )
         rows = result.scalars().all()
+    logger.info(f"[calibration_trainer] {symbol}: loaded {len(rows)} labeled rows")
     return [
         {col.name: getattr(r, col.name) for col in SignalLog.__table__.columns}
         for r in rows
     ]
 
+
 def _build_feature_matrix(
     rows:         list[dict],
     feature_cols: list[str],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Convert DB rows → (X, y).
-    Class-0 (neutral/timeout) rows are dropped (binary WIN/LOSS classifier).
-    Missing values imputed with column median.
-    """
     X_raw, y_raw = [], []
     n_dropped_class0  = 0
     n_dropped_missing = 0
@@ -193,7 +140,8 @@ def _build_feature_matrix(
 
     unique, counts = np.unique(y, return_counts=True)
     logger.info(
-        f"[calibration_train] class distribution: {dict(zip(unique.tolist(), counts.tolist()))} | "
+        f"[calibration_trainer] class distribution: "
+        f"{dict(zip(unique.tolist(), counts.tolist()))} | "
         f"dropped {n_dropped_class0} neutral, {n_dropped_missing} missing-feature rows"
     )
 
@@ -206,7 +154,7 @@ def _build_feature_matrix(
 
 
 # =============================================================================
-# Probability calibration  (new)
+# Probability calibration
 # =============================================================================
 
 def _expected_calibration_error(
@@ -214,54 +162,33 @@ def _expected_calibration_error(
     y_prob: np.ndarray,
     n_bins: int = 10,
 ) -> float:
-    """
-    ECE: weighted average of |predicted probability - actual frequency| per bin.
-    Lower is better.  0.0 = perfectly calibrated.
-
-    y_true must be binary (0/1) for this standard ECE formula.
-    We evaluate it on the WIN class (+1) after converting -1 → 0.
-    """
-    y_bin   = (y_true == 1).astype(int)
-    bins    = np.linspace(0.0, 1.0, n_bins + 1)
-    ece     = 0.0
-    n       = len(y_true)
-
+    y_bin = (y_true == 1).astype(int)
+    bins  = np.linspace(0.0, 1.0, n_bins + 1)
+    ece   = 0.0
+    n     = len(y_true)
     for i in range(n_bins):
-        mask  = (y_prob >= bins[i]) & (y_prob < bins[i + 1])
+        mask = (y_prob >= bins[i]) & (y_prob < bins[i + 1])
         if mask.sum() == 0:
             continue
-        acc   = y_bin[mask].mean()
-        conf  = y_prob[mask].mean()
-        ece  += mask.sum() / n * abs(conf - acc)
-
+        acc  = y_bin[mask].mean()
+        conf = y_prob[mask].mean()
+        ece += mask.sum() / n * abs(conf - acc)
     return float(ece)
 
 
 def _fit_calibrated_model(
-    base_model:  GradientBoostingClassifier,
-    X_train:     np.ndarray,
-    y_train:     np.ndarray,
-    X_test:      np.ndarray,
-    y_test:      np.ndarray,
+    base_model: GradientBoostingClassifier,
+    X_train:    np.ndarray,
+    y_train:    np.ndarray,
+    X_test:     np.ndarray,
+    y_test:     np.ndarray,
 ) -> tuple[object, str, float, float]:
-    """
-    Fit Platt Scaling and Isotonic Regression wrappers on the base model.
-    Compare both using Brier Score + ECE.  Return the winner.
+    n_cal  = max(50, int(len(X_train) * 0.20))
+    X_base = X_train[:-n_cal]
+    y_base = y_train[:-n_cal]
+    X_cal  = X_train[-n_cal:]
+    y_cal  = y_train[-n_cal:]
 
-    Returns (calibrated_model, method_name, brier_score, ece).
-
-    NOTE: CalibratedClassifierCV with cv="prefit" calibrates the already-
-    fitted base model using the provided training data as calibration data.
-    We use a SEPARATE calibration split (not the test set) to avoid optimism.
-    """
-    # Use 20% of training data as calibration set
-    n_cal     = max(50, int(len(X_train) * 0.20))
-    X_base    = X_train[:-n_cal]
-    y_base    = y_train[:-n_cal]
-    X_cal     = X_train[-n_cal:]
-    y_cal     = y_train[-n_cal:]
-
-    # Re-fit base model on the reduced training set so it hasn't seen X_cal
     classes, counts = np.unique(y_base, return_counts=True)
     total           = len(y_base)
     w_map           = {c: total / (len(classes) * cnt) for c, cnt in zip(classes, counts)}
@@ -287,13 +214,9 @@ def _fit_calibrated_model(
             )
             cal.fit(X_cal, y_cal)
 
-            # Evaluate on test set
-            # Get probability for class +1 (WIN)
             classes_list = list(cal.classes_)
             win_idx      = classes_list.index(1) if 1 in classes_list else -1
-
             if win_idx < 0:
-                logger.warning(f"[calibration_train] {method}: WIN class not in calibrated model")
                 continue
 
             proba   = cal.predict_proba(X_test)[:, win_idx]
@@ -301,53 +224,46 @@ def _fit_calibrated_model(
             ece_val = _expected_calibration_error(y_test, proba)
 
             logger.info(
-                f"[calibration_train] calibration method={method} "
+                f"[calibration_trainer] method={method} "
                 f"brier={brier:.4f} ece={ece_val:.4f}"
             )
             results[method] = (cal, brier, ece_val)
 
         except Exception as exc:
-            logger.warning(f"[calibration_train] {method} calibration failed: {exc}")
+            logger.warning(f"[calibration_trainer] {method} failed: {exc}")
 
     if not results:
-        logger.warning("[calibration_train] all calibration methods failed — using raw base model")
+        logger.warning("[calibration_trainer] all calibration methods failed — using raw base model")
         return base_model, "none", 1.0, 1.0
 
-    # Pick winner: lowest Brier Score (ECE used as tiebreaker)
     best_method = min(results, key=lambda m: (results[m][1], results[m][2]))
     best_model, best_brier, best_ece = results[best_method]
     logger.info(
-        f"[calibration_train] selected method={best_method} "
+        f"[calibration_trainer] selected method={best_method} "
         f"brier={best_brier:.4f} ece={best_ece:.4f}"
     )
     return best_model, best_method, best_brier, best_ece
 
 
 # =============================================================================
-# Threshold extraction on calibrated probabilities  (upgraded)
+# Threshold sweep
 # =============================================================================
 
 def _find_optimal_threshold(
     model,
-    X_test:          np.ndarray,
-    y_test:          np.ndarray,
-    feature_idx:     int,
-    feature_values:  np.ndarray,
-    direction:       str = "above",
-    n_steps:         int = 40,
+    X_test:         np.ndarray,
+    y_test:         np.ndarray,
+    feature_idx:    int,
+    feature_values: np.ndarray,
+    direction:      str = "above",
+    n_steps:        int = 40,
 ) -> float | None:
-    """
-    Sweep one feature's value range and find the cut-point that maximises
-    binary F1 on WIN class.  Uses calibrated model's predict() output.
-    """
     best_thresh, best_f1 = None, -1.0
-
     thresholds = np.linspace(
         np.nanpercentile(feature_values, 5),
         np.nanpercentile(feature_values, 95),
         n_steps,
     )
-
     for thresh in thresholds:
         mask = feature_values >= thresh if direction == "above" else feature_values <= thresh
         if mask.sum() < 10:
@@ -359,15 +275,14 @@ def _find_optimal_threshold(
         score = float(f1_score(y_subset, preds, zero_division=0, average="binary", pos_label=1))
         if score > best_f1:
             best_f1, best_thresh = score, thresh
-
     return round(float(best_thresh), 4) if best_thresh is not None else None
 
 
 # =============================================================================
-# Hold budget enforcement  (unchanged logic)
+# Hold budget enforcement
 # =============================================================================
 
-def _hold_rate_on_holdout(model, X_test: np.ndarray, calibration: dict, feature_cols: list[str]) -> float:
+def _hold_rate_on_holdout(model, X_test, calibration, feature_cols) -> float:
     if len(X_test) == 0:
         return 0.0
     preds = model.predict(X_test)
@@ -376,8 +291,10 @@ def _hold_rate_on_holdout(model, X_test: np.ndarray, calibration: dict, feature_
 
 def _enforce_hold_budget(model, X_test, y_test, calibration, feature_cols) -> dict:
     hold_rate = _hold_rate_on_holdout(model, X_test, calibration, feature_cols)
-    logger.info(f"[calibration_train] initial hold rate: {hold_rate:.1%} (target ≤ {TARGET_HOLD_RATE:.0%})")
-
+    logger.info(
+        f"[calibration_trainer] initial hold rate: "
+        f"{hold_rate:.1%} (target ≤ {TARGET_HOLD_RATE:.0%})"
+    )
     if hold_rate <= TARGET_HOLD_RATE:
         return calibration
 
@@ -397,65 +314,58 @@ def _enforce_hold_budget(model, X_test, y_test, calibration, feature_cols) -> di
 
         hold_rate = _hold_rate_on_holdout(model, X_test, calibration, feature_cols)
         if hold_rate <= TARGET_HOLD_RATE:
-            logger.info(f"[calibration_train] hold budget achieved after {step+1} steps")
+            logger.info(f"[calibration_trainer] hold budget achieved after {step+1} steps")
             break
     else:
-        logger.warning(f"[calibration_train] hold budget not achieved — final rate={hold_rate:.1%}")
+        logger.warning(f"[calibration_trainer] hold budget not achieved — final rate={hold_rate:.1%}")
 
     return calibration
 
 
 # =============================================================================
-# Trainer  (upgraded with candle enrichment + calibration)
+# Train one symbol
 # =============================================================================
 
 async def train_symbol(
-    symbol:       str,
+    symbol:        str,
     strategy_name: str,
-    api_token:    str = "",
+    api_token:     str = "",
 ) -> dict | None:
-    """
-    Train + calibrate one model for a symbol.
-    Returns calibration dict or None if insufficient data.
-    """
-    logger.info(f"[calibration_train] loading rows for {symbol}...")
+    logger.info(f"[calibration_trainer] loading rows for {symbol}...")
     rows = await _load_rows(symbol)
 
     if len(rows) < MIN_SAMPLES:
-        logger.info(f"[calibration_train] {symbol}: {len(rows)} rows < {MIN_SAMPLES} — skipping")
+        logger.info(
+            f"[calibration_trainer] {symbol}: {len(rows)} rows < {MIN_SAMPLES} — skipping"
+        )
         return None
 
-    # ── Enrich with candle features if API token available ────────────────
-    if api_token:
-        try:
-            rows = await enrich_rows_batch(rows, symbol, api_token)
-            logger.info(f"[calibration_train] {symbol}: rows enriched with candle features")
-        except Exception as exc:
-            logger.warning(f"[calibration_train] {symbol}: candle enrichment failed ({exc}) — continuing with native features")
-
-    base_feature_cols   = STRATEGY_FEATURES.get(strategy_name, FEATURES_V75)
-    candle_cols         = [c for c in CANDLE_FEATURE_NAMES if c not in base_feature_cols]
-    all_feature_cols    = base_feature_cols + candle_cols
-
-    X, y = _build_feature_matrix(rows, all_feature_cols)
+    feature_cols = STRATEGY_FEATURES.get(strategy_name, FEATURES_V75)
+    X, y = _build_feature_matrix(rows, feature_cols)
 
     if len(X) < MIN_SAMPLES:
-        logger.info(f"[calibration_train] {symbol}: too few usable rows after filtering")
+        logger.info(f"[calibration_trainer] {symbol}: too few usable rows after filtering")
         return None
 
     unique_classes = np.unique(y)
     if len(unique_classes) < 2:
-        logger.warning(f"[calibration_train] {symbol}: only one class {unique_classes.tolist()} — cannot train")
+        logger.warning(
+            f"[calibration_trainer] {symbol}: "
+            f"only one class {unique_classes.tolist()} — cannot train"
+        )
         return None
 
-    logger.info(f"[calibration_train] {symbol}: {len(X)} samples, features={len(all_feature_cols)}")
+    logger.info(
+        f"[calibration_trainer] {symbol}: "
+        f"{len(X)} samples, features={len(feature_cols)}"
+    )
 
-    # ── Train / test split (chronological — no stratify shuffle) ──────────
-    split_idx  = int(len(X) * (1 - TEST_SIZE))
+    # Chronological split — no shuffle
+    split_idx       = int(len(X) * (1 - TEST_SIZE))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
 
-    # ── Base GBM with sample weights ──────────────────────────────────────
+    # Base GBM
     classes, counts = np.unique(y_train, return_counts=True)
     total           = len(y_train)
     w_map           = {c: total / (len(classes) * cnt) for c, cnt in zip(classes, counts)}
@@ -471,52 +381,58 @@ async def train_symbol(
     )
     base_model.fit(X_train, y_train, sample_weight=sample_weights)
 
-    # ── Probability calibration ───────────────────────────────────────────
+    # Calibrate
     calibrated_model, cal_method, brier, ece = _fit_calibrated_model(
         base_model, X_train, y_train, X_test, y_test
     )
 
-    # ── Evaluate calibrated model ─────────────────────────────────────────
+    # Evaluate
     y_pred    = calibrated_model.predict(X_test)
     precision = round(float(precision_score(y_test, y_pred, average="macro", zero_division=0)), 4)
     recall    = round(float(recall_score(   y_test, y_pred, average="macro", zero_division=0)), 4)
     f1        = round(float(f1_score(       y_test, y_pred, average="macro", zero_division=0)), 4)
 
     f1_per_class = {
-        int(cls): round(float(f1_score(y_test, y_pred, labels=[cls], average="macro", zero_division=0)), 4)
+        int(cls): round(float(f1_score(
+            y_test, y_pred, labels=[cls], average="macro", zero_division=0
+        )), 4)
         for cls in unique_classes
     }
     importances = {
         feat: round(float(imp), 4)
-        for feat, imp in zip(all_feature_cols, base_model.feature_importances_)
+        for feat, imp in zip(feature_cols, base_model.feature_importances_)
     }
 
     logger.info(
-        f"[calibration_train] {symbol}: precision={precision} recall={recall} f1={f1} "
-        f"per_class={f1_per_class} calibration={cal_method} brier={brier:.4f} ece={ece:.4f}"
+        f"[calibration_trainer] {symbol}: "
+        f"precision={precision} recall={recall} f1={f1} "
+        f"per_class={f1_per_class} "
+        f"calibration={cal_method} brier={brier:.4f} ece={ece:.4f}"
     )
 
-    # ── Save calibrated model to disk ─────────────────────────────────────
+    # Save model
     model_path = MODEL_DIR / f"{symbol}_calibrated.pkl"
     joblib.dump(calibrated_model, model_path)
-    logger.info(f"[calibration_train] {symbol}: calibrated model saved → {model_path}")
+    logger.info(f"[calibration_trainer] {symbol}: model saved → {model_path}")
 
-    # ── Extract per-feature thresholds ────────────────────────────────────
-    feat_idx = {f: i for i, f in enumerate(all_feature_cols)}
+    # Extract thresholds
+    feat_idx = {f: i for i, f in enumerate(feature_cols)}
 
     def thresh(feat, direction="above"):
         if feat not in feat_idx:
             return None
         idx  = feat_idx[feat]
         vals = X_test[:, idx]
-        return _find_optimal_threshold(calibrated_model, X_test, y_test, idx, vals, direction)
+        return _find_optimal_threshold(
+            calibrated_model, X_test, y_test, idx, vals, direction
+        )
 
     calibration = {
         "symbol":   symbol,
         "strategy": strategy_name,
-        "rsi_buy_max":    thresh("rsi",       direction="below"),
-        "rsi_sell_min":   thresh("rsi",       direction="above"),
-        "adx_min":        thresh("adx",       direction="above"),
+        "rsi_buy_max":    thresh("rsi",        direction="below"),
+        "rsi_sell_min":   thresh("rsi",        direction="above"),
+        "adx_min":        thresh("adx",        direction="above"),
         "tss_min":        int(thresh("tss_score",  direction="above") or 2),
         "checklist_min":  int(thresh("checklist",  direction="above") or 3),
         "confidence_min": thresh("confidence", direction="above"),
@@ -529,48 +445,75 @@ async def train_symbol(
         "feature_importance_json": json.dumps(importances),
     }
 
+    # Fill missing with hard-coded defaults
     defaults = HARD_CODED_DEFAULTS.get(symbol, {})
     for key, default_val in defaults.items():
         if calibration.get(key) is None and default_val is not None:
             calibration[key] = default_val
 
-    calibration = _enforce_hold_budget(calibrated_model, X_test, y_test, calibration, all_feature_cols)
+    calibration = _enforce_hold_budget(
+        calibrated_model, X_test, y_test, calibration, feature_cols
+    )
     return calibration
 
 
+# =============================================================================
+# Write to DB — only columns that exist in CalibrationConfig
+# =============================================================================
+
 async def write_calibration(calibration: dict) -> None:
-    """Upsert one CalibrationConfig row. Unchanged interface."""
     symbol = calibration["symbol"]
+
+    # Only pass keys that are actual columns in CalibrationConfig
+    # rsi_buy_min and rsi_sell_max are NOT in the DB model — exclude them
+    allowed_columns = {
+        "symbol", "strategy",
+        "rsi_buy_max", "rsi_sell_min",
+        "adx_min", "tss_min", "checklist_min", "confidence_min",
+        "spike_min", "recovery_min",
+        "n_samples", "precision", "recall", "f1",
+        "feature_importance_json",
+    }
+
+    row_data = {k: v for k, v in calibration.items() if k in allowed_columns}
+
     async with AsyncSessionLocal() as db:
         await db.execute(
             delete(CalibrationConfig).where(CalibrationConfig.symbol == symbol)
         )
-        row = CalibrationConfig(**{
-            k: v for k, v in calibration.items()
-            if k in CalibrationConfig.__table__.columns.keys()
-        })
+        row = CalibrationConfig(**row_data)
         db.add(row)
         await db.commit()
-    logger.info(f"[calibration_train] wrote CalibrationConfig for {symbol}")
+
+    logger.info(
+        f"[calibration_trainer] wrote CalibrationConfig for {symbol} | "
+        f"precision={calibration.get('precision')} "
+        f"f1={calibration.get('f1')} "
+        f"n_samples={calibration.get('n_samples')}"
+    )
 
 
 # =============================================================================
-# Scheduler entry point  (unchanged interface)
+# Scheduler entry point
 # =============================================================================
 
 async def run_trainer(api_token: str = "") -> None:
     """
     Train models for all known symbols.
-    Called from signal_engine.run_signal_loop() on a schedule.
-    Pass api_token to enable candle feature enrichment.
+    Called from scheduler or signal_engine on a schedule.
     """
+    logger.info("[calibration_trainer] starting training run...")
     for symbol, strategy_name in SYMBOL_STRATEGY_MAP.items():
         try:
             calibration = await train_symbol(symbol, strategy_name, api_token=api_token)
             if calibration:
                 await write_calibration(calibration)
+            else:
+                logger.info(f"[calibration_trainer] {symbol}: no calibration produced")
         except Exception as exc:
-            logger.error(f"[calibration_train] failed for {symbol}: {exc}")
+            logger.error(f"[calibration_trainer] failed for {symbol}: {exc}", exc_info=True)
+
+    logger.info("[calibration_trainer] training run complete")
 
 
 if __name__ == "__main__":
