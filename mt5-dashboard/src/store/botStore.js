@@ -9,7 +9,6 @@ let reconnectAttempts = 0
 const MAX_RECONNECT = 10
 const backoffDelay  = (n) => Math.min(1000 * 2 ** n, 30000)
 
-// Module-level interval ref — never goes into Zustand state, never serialized
 let _pollIntervalId = null
 
 const useBotStore = create(
@@ -82,6 +81,9 @@ const useBotStore = create(
         })
         get().connect()
         get().startPolling()
+
+        // Immediately fetch live balance — don't trust the OAuth payload value
+        get().fetchAccount()
 
         fetch(`${API}/api/bot/status`)
           .then(r => r.json())
@@ -187,7 +189,6 @@ const useBotStore = create(
           try { data = JSON.parse(e.data) } catch { return }
           const state = get()
 
-          // ── heartbeat ────────────────────────────────────
           if (data.type === 'heartbeat') {
             set({ connected: true, wsError: null })
             if (data.account) {
@@ -206,10 +207,6 @@ const useBotStore = create(
             return
           }
 
-          // ── signal ───────────────────────────────────────
-          // The strategy fetches a fresh balance from Deriv on every cycle
-          // and includes it in the broadcast payload as `data.balance`.
-          // This is the most accurate balance source — use it directly.
           if (data.type === 'signal') {
             const entry = {
               ...data,
@@ -222,7 +219,6 @@ const useBotStore = create(
               signalMap: sym
                 ? { ...s.signalMap, [sym]: entry }
                 : s.signalMap,
-              // Update balance if bot included it — it has the live Deriv value
               account: (data.balance != null)
                 ? { ...s.account, balance: data.balance, equity: data.balance }
                 : s.account,
@@ -230,7 +226,6 @@ const useBotStore = create(
             return
           }
 
-          // ── contract update ───────────────────────────────
           if (data.type === 'contract_update') {
             const update   = { ...data, id: data.contract_id, time: new Date().toLocaleTimeString() }
             const existing = state.tradeFeed.findIndex(t => t.contract_id === data.contract_id)
@@ -247,7 +242,6 @@ const useBotStore = create(
             return
           }
 
-          // ── trade / tp1_hit ───────────────────────────────
           if (data.type === 'tp1_hit' || data.trade) {
             const item = {
               ...data,
@@ -341,12 +335,21 @@ const useBotStore = create(
         broker:        s.broker,
         accountId:     s.accountId,
         userId:        s.userId,
-        account:       s.account,
         botRunning:    s.botRunning,
         derivAccounts: s.derivAccounts,
+        // account excluded — always fetched live on reconnect
       }),
     }
   )
 )
+
+// On page reload, if already logged in, fetch live balance immediately
+useBotStore.persist.onFinishHydration(() => {
+  const { isLoggedIn, accountId } = useBotStore.getState()
+  if (isLoggedIn && accountId) {
+    useBotStore.getState().fetchAccount()
+    useBotStore.getState().startPolling()
+  }
+})
 
 export default useBotStore
