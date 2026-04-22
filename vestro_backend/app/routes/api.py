@@ -718,26 +718,43 @@ async def get_account_by_id(account_id: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Account not found")
 
     api_token = decrypt(cred.password)
+    app_id = os.getenv('DERIV_APP_ID', '1089')
 
     async with websockets.connect(
-        f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
+        f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
     ) as ws:
+        # Step 1 — authorize
         await ws.send(json.dumps({"authorize": api_token}))
-        resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+        auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+        if "error" in auth_resp:
+            raise HTTPException(status_code=401, detail=auth_resp["error"]["message"])
+        auth = auth_resp["authorize"]
 
-    if "error" in resp:
-        raise HTTPException(status_code=401, detail=resp["error"]["message"])
+        # Step 2 — request live balance, keep connection open to drain response
+        await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
+        balance = float(auth.get("balance", 0))
+        deadline = asyncio.get_event_loop().time() + 5
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=3)
+                msg = json.loads(raw)
+                print(f"[account/{account_id}] ws msg:", msg)  # ← temp debug
+                if "balance" in msg and "error" not in msg:
+                    balance = float(msg["balance"]["balance"])
+                    break
+            except asyncio.TimeoutError:
+                break
 
-    auth = resp["authorize"]
     return {
         "account_id": cred.account_id,
-        "balance":    float(auth.get("balance", 0)),
+        "balance":    balance,
         "currency":   auth.get("currency", "USD"),
         "name":       auth.get("fullname", ""),
         "email":      auth.get("email", ""),
         "is_virtual": cred.is_demo if cred.is_demo is not None else (auth.get("is_virtual", 0) == 1),
         "broker":     "deriv",
     }
+
 @router.get("/accounts")
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Credentials))
