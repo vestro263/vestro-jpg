@@ -1,36 +1,13 @@
 """
 signal_engine.py  (upgraded)
 =============================
-Orchestrates the full Vestro ML pipeline loop.
-
-Changes vs original
---------------------
-1. RETRAIN PIPELINE REPLACES run_validator
-   run_validator() only ran walk-forward validation and wrote CalibrationConfig.
-   run_retrain_pipeline() does the full sequence:
-     feature_engineering → class_balancer → regime_detector →
-     walk_forward_validate → calibrate → save versioned model → write DB
-   Cadence unchanged: every 120 loops (~60 minutes at 30s sleep).
-
-2. API TOKEN PASSED TO ML TASKS
-   run_retrain_pipeline() needs the Deriv token to fetch candles for feature
-   enrichment.  Token is decrypted once per boot and passed to all tasks.
-   run_labeler() already accepted the token — no change there.
-
-3. REGIME CACHE (module-level, read by strategies)
-   _current_regimes: dict[symbol → RegimeLabel string] is refreshed every
-   10 loops alongside the labeler run.  Strategies read it via:
-       from app.signal_engine import get_current_regime
-   This is fire-and-forget — failure leaves the previous regime cached.
-
-4. GRACEFUL TASK REFERENCE MANAGEMENT
-   All background tasks are stored in _background_tasks set so the GC
-   can't cancel them mid-run (asyncio best practice for fire-and-forget).
-
-5. CREDENTIAL LOOKUP USES account_id + is_demo
-   Replaced c.user_id.startswith("VRTC") — crashed on NULL user_id rows —
-   with c.is_demo which is written on every credential save and never NULL.
-   Runner is booted with cred.account_id (clean, unencrypted Deriv loginid).
+Key changes:
+1. Trades on ALL linked demo accounts, not just the first one found.
+   Each user gets their own StrategyRunner instance so profits land
+   on every connected account simultaneously.
+2. Runner keyed by account_id — if a new account connects mid-session
+   it gets its own runner on the next loop iteration.
+3. Everything else unchanged.
 """
 
 import asyncio
@@ -61,12 +38,19 @@ _BOT_STATE_FILE = pathlib.Path("/tmp/vestro_bot_running.txt")
 MIN_STAKE = 0.35
 MAX_STAKE = 10.0
 
-# ── Module-level regime cache (written by _refresh_regimes, read by strategies)
-# Maps symbol string → RegimeLabel string, e.g. {"R_75": "TREND", "CRASH500": "RANGE"}
-_current_regimes: dict[str, str] = {}
+_current_regimes:  dict[str, str]            = {}
+_background_tasks: set[asyncio.Task]         = set()
 
-# ── Task reference set — prevents fire-and-forget tasks being GC'd mid-run ───
-_background_tasks: set[asyncio.Task] = set()
+# ── Per-account runner registry ───────────────────────────────────────────────
+# Maps account_id → asyncio.Task
+_runner_tasks: dict[str, asyncio.Task] = {}
+
+# ── Per-account decrypted token cache ────────────────────────────────────────
+# Maps account_id → decrypted api token
+_token_cache: dict[str, str] = {}
+
+# ── Primary token for ML tasks (labeler, regime, retrain) ────────────────────
+_primary_api_token: str | None = None
 
 
 def _is_bot_running() -> bool:
@@ -77,35 +61,26 @@ def _is_bot_running() -> bool:
 
 
 def _fire_task(coro, name: str) -> asyncio.Task:
-    """
-    Schedule a coroutine as a fire-and-forget task.
-    Stores the reference in _background_tasks so the GC can't cancel it.
-    Automatically removes it from the set when done.
-    """
     task = asyncio.create_task(coro, name=name)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task
 
 
+def _runner_is_alive(account_id: str) -> bool:
+    task = _runner_tasks.get(account_id)
+    return task is not None and not task.done()
+
+
 # =============================================================================
-# Regime refresh  (called every 10 loops alongside labeler)
+# Regime refresh
 # =============================================================================
 
 async def _refresh_regimes(api_token: str) -> None:
-    """
-    Fetch recent candles for each active symbol, run statistical regime
-    detection, and update _current_regimes cache.
-
-    Statistical detection is used here (no fit required) so this runs fast
-    at signal-fire cadence without needing the clustering model.
-    """
     from ml.feature_engineering import fetch_candles, build_feature_df, GRANULARITY
     from ml.regime_detector     import detect_current_regime
 
-    symbol_map = {"R_75": "R_75", "R_25": "R_25", "CRASH500": "CRASH500"}
-
-    for symbol in symbol_map:
+    for symbol in ("R_75", "R_25", "CRASH500"):
         try:
             candles   = await fetch_candles(
                 symbol      = symbol,
@@ -126,7 +101,6 @@ async def _refresh_regimes(api_token: str) -> None:
                     f"{prev} → {regime.value}"
                 )
         except Exception as exc:
-            # Non-fatal — leave previous regime cached
             print(f"[signal_engine] regime refresh failed for {symbol}: {exc}")
 
 
@@ -137,7 +111,9 @@ async def _refresh_regimes(api_token: str) -> None:
 async def broadcast_to_frontend(data: dict):
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{BACKEND_URL}/api/signal/broadcast", json=data, timeout=5)
+            await client.post(
+                f"{BACKEND_URL}/api/signal/broadcast", json=data, timeout=5
+            )
         except Exception as e:
             print(f"[signal_engine] broadcast error: {e}")
 
@@ -191,25 +167,35 @@ async def mark_signal_executed(signal_log_id: str) -> None:
         print(f"[signal_engine] mark_executed error: {e}")
 
 
-_strategy_runner_task: asyncio.Task | None = None
+# =============================================================================
+# Boot one runner per account
+# =============================================================================
 
-
-def _runner_is_alive() -> bool:
-    return _strategy_runner_task is not None and not _strategy_runner_task.done()
-
-
-async def _boot_strategy_runner(api_token: str, account_id: str) -> None:
-    global _strategy_runner_task
+async def _boot_runner_for_account(account_id: str, api_token: str) -> None:
+    """Boot a StrategyRunner for a single account and register the task."""
     balance = await fetch_deriv_balance(api_token)
-    runner  = StrategyRunner(
+
+    # Each runner gets its own execute_trade closure bound to its account_id
+    async def _execute(symbol, action, amount, broker="deriv", **_):
+        return await execute_trade(
+            symbol     = symbol,
+            action     = action,
+            amount     = amount,
+            broker     = broker,
+            account_id = account_id,
+        )
+
+    runner = StrategyRunner(
         api_token        = api_token,
         balance          = balance,
         broadcast_fn     = broadcast_to_frontend,
-        execute_trade_fn = execute_trade,
+        execute_trade_fn = _execute,
         is_prop          = False,
         account_id       = account_id,
     )
-    _strategy_runner_task = asyncio.create_task(runner.start(), name="strategy-runner")
+
+    task = asyncio.create_task(runner.start(), name=f"strategy-runner-{account_id}")
+    _runner_tasks[account_id] = task
     print(
         f"[signal_engine] StrategyRunner booted — "
         f"balance={balance} account_id={account_id} ✓"
@@ -224,9 +210,8 @@ async def run_signal_loop():
     print("[signal_engine] starting...")
     await asyncio.sleep(5)
 
-    _loop_count = 0
-    deriv_cred  = None
-    _api_token  = None   # cached decrypted token — decrypt once, reuse
+    _loop_count         = 0
+    _calibration_booted = False
 
     while True:
         try:
@@ -236,41 +221,53 @@ async def run_signal_loop():
 
             print(f"[signal_engine] credentials found: {len(creds)}")
 
-            # ── Select demo account ───────────────────────────────────────
-            # is_demo is written on every credential save — never NULL,
-            # never derived from a string prefix at runtime.
-            # account_id is the clean unencrypted Deriv loginid.
-            deriv_cred = next(
-                (
-                    c for c in creds
-                    if c.broker == "deriv"
-                    and c.is_demo
-                    and c.account_id          # skip any rows not yet backfilled
-                ),
-                None,
-            )
+            # ── Collect ALL demo credentials across all users ─────────────
+            demo_creds = [
+                c for c in creds
+                if c.broker == "deriv"
+                and c.is_demo
+                and c.account_id
+            ]
 
-            if deriv_cred:
-                # Decrypt once and cache to avoid repeated crypto overhead
-                if _api_token is None:
-                    _api_token = decrypt(deriv_cred.password)
-
-                if not _runner_is_alive():
-                    print(
-                        f"[signal_engine] booting strategy runner "
-                        f"account_id={deriv_cred.account_id}..."
-                    )
-                    await _boot_strategy_runner(_api_token, deriv_cred.account_id)
-                    _fire_task(start_reload_loop(), name="calibration-reload")
-            else:
+            if not demo_creds:
                 print(
-                    f"[signal_engine] no demo credential found — "
-                    f"checked {len(creds)} row(s). "
-                    f"Runner will not boot until a demo account is linked."
+                    f"[signal_engine] no demo credentials found — "
+                    f"runner will not boot until a demo account is linked."
                 )
+            else:
+                for cred in demo_creds:
+                    account_id = cred.account_id
 
-            if _runner_is_alive():
-                print("[signal_engine] runner alive — execution delegated to strategies")
+                    # Decrypt token once and cache it
+                    if account_id not in _token_cache:
+                        _token_cache[account_id] = decrypt(cred.password)
+
+                    api_token = _token_cache[account_id]
+
+                    # Set primary token for ML tasks (use first demo found)
+                    if _primary_api_token is None:
+                        import sys
+                        # Hack to set module-level from inside loop
+                        globals()["_primary_api_token"] = api_token
+
+                    # Boot runner if not already running for this account
+                    if not _runner_is_alive(account_id):
+                        print(
+                            f"[signal_engine] booting runner for "
+                            f"account_id={account_id}..."
+                        )
+                        await _boot_runner_for_account(account_id, api_token)
+
+                    else:
+                        print(
+                            f"[signal_engine] runner alive — "
+                            f"account_id={account_id} execution delegated to strategies"
+                        )
+
+                # Boot calibration reload loop once
+                if not _calibration_booted and _primary_api_token:
+                    _fire_task(start_reload_loop(), name="calibration-reload")
+                    _calibration_booted = True
 
         except Exception as e:
             print(f"[signal_engine] loop error: {e}")
@@ -279,22 +276,23 @@ async def run_signal_loop():
 
         finally:
             _loop_count += 1
+            primary_token = globals().get("_primary_api_token")
 
-            # ── Every 10 loops (~5 min): label outcomes + refresh regimes ──
-            if _loop_count % 10 == 0 and _api_token:
+            # Every 10 loops (~5 min): label outcomes + refresh regimes
+            if _loop_count % 10 == 0 and primary_token:
                 _fire_task(
-                    run_labeler(_api_token),
+                    run_labeler(primary_token),
                     name=f"outcome-labeler-{_loop_count}",
                 )
                 _fire_task(
-                    _refresh_regimes(_api_token),
+                    _refresh_regimes(primary_token),
                     name=f"regime-refresh-{_loop_count}",
                 )
 
-            # ── Every 120 loops (~60 min): full retrain pipeline ─────────
-            if _loop_count % 120 == 0 and _api_token:
+            # Every 120 loops (~60 min): full retrain pipeline
+            if _loop_count % 120 == 0 and primary_token:
                 _fire_task(
-                    run_retrain_pipeline(api_token=_api_token),
+                    run_retrain_pipeline(api_token=primary_token),
                     name=f"retrain-pipeline-{_loop_count}",
                 )
 

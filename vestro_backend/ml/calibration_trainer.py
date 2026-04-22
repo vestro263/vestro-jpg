@@ -89,10 +89,8 @@ SYMBOL_STRATEGY_MAP = {
 
 async def _load_rows(symbol: str) -> list[dict]:
     """
-    Load ALL labeled signal rows for a symbol.
-    Removed executed==True filter — that filter caused a cold-start deadlock
-    where the model never trained because it never traded, and it never traded
-    because the model had no data. Now we train on all labeled observations.
+    Load only executed + closed trades with real WIN/LOSS outcomes.
+    897 real trades beats 62k noisy signals every time for precision.
     """
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -101,30 +99,40 @@ async def _load_rows(symbol: str) -> list[dict]:
                 SignalLog.symbol    == symbol,
                 SignalLog.label_15m != None,
                 SignalLog.signal    != "HOLD",
+                SignalLog.executed  == True,
+                SignalLog.outcome.in_(["WIN", "LOSS"]),
             )
             .order_by(SignalLog.captured_at)
         )
         rows = result.scalars().all()
-    logger.info(f"[calibration_trainer] {symbol}: loaded {len(rows)} labeled rows")
+
+    total = len(rows)
+    wins  = sum(1 for r in rows if r.outcome == "WIN")
+    losses= total - wins
+    logger.info(
+        f"[calibration_trainer] {symbol}: "
+        f"loaded {total} executed+closed rows | "
+        f"WIN={wins} LOSS={losses} "
+        f"win_rate={round(wins/total*100,1) if total else 0}%"
+    )
     return [
         {col.name: getattr(r, col.name) for col in SignalLog.__table__.columns}
         for r in rows
     ]
-
 
 def _build_feature_matrix(
     rows:         list[dict],
     feature_cols: list[str],
 ) -> tuple[np.ndarray, np.ndarray]:
     X_raw, y_raw = [], []
-    n_dropped_class0  = 0
     n_dropped_missing = 0
 
     for r in rows:
         label = r.get("label_15m")
-        if label == 0:
-            n_dropped_class0 += 1
+        if label is None:
             continue
+        # Keep both WIN(+1) and LOSS(-1) — no neutral filtering needed
+        # since _load_rows only returns executed+closed trades
         x = [r.get(f) for f in feature_cols]
         if sum(1 for v in x if v is None) > len(feature_cols) // 2:
             n_dropped_missing += 1
@@ -142,7 +150,7 @@ def _build_feature_matrix(
     logger.info(
         f"[calibration_trainer] class distribution: "
         f"{dict(zip(unique.tolist(), counts.tolist()))} | "
-        f"dropped {n_dropped_class0} neutral, {n_dropped_missing} missing-feature rows"
+        f"dropped {n_dropped_missing} missing-feature rows"
     )
 
     for col_idx in range(X.shape[1]):
@@ -151,7 +159,6 @@ def _build_feature_matrix(
         X[np.isnan(col), col_idx] = median
 
     return X, y
-
 
 # =============================================================================
 # Probability calibration
