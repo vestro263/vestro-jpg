@@ -4,7 +4,6 @@ const API = import.meta.env.VITE_API_URL ?? 'https://vestro-jpg.onrender.com'
 
 export default function AccountSelector({ accounts, onSelect }) {
   async function handleSelect(acc) {
-    // Persist active account to backend
     if (acc.user_id) {
       try {
         await fetch(`${API}/auth/set-active-account`, {
@@ -20,35 +19,39 @@ export default function AccountSelector({ accounts, onSelect }) {
       }
     }
 
-    // login(broker, accountId, accountData) — matches botStore signature exactly
     useBotStore.getState().login(
       acc.broker ?? 'deriv',
       acc.account_id,
       {
-        balance:    acc.balance    ?? 0,
-        equity:     acc.balance    ?? 0,   // Deriv doesn't send equity separately
-        profit:     0,
+        balance:     acc.balance    ?? 0,
+        equity:      acc.balance    ?? 0,
+        profit:      0,
         margin_free: 0,
-        currency:   acc.currency   ?? 'USD',
-        name:       acc.name       ?? '—',
-        leverage:   0,
-        is_virtual: acc.is_demo    ?? false,
-        is_demo:    acc.is_demo    ?? false,
-        email:      acc.email      ?? '',
-        account_id: acc.account_id,
+        currency:    acc.currency   ?? 'USD',
+        name:        acc.name       ?? '—',
+        leverage:    0,
+        is_virtual:  acc.is_demo    ?? false,
+        is_demo:     acc.is_demo    ?? false,
+        email:       acc.email      ?? '',
+        account_id:  acc.account_id,
       }
     )
 
     onSelect(acc)
   }
 
-  // Filter: only show USD accounts with a balance, or demo accounts
-  // Show demo first, then real — sorted by balance descending within each group
-  const demo = accounts
+  // Filter out wallet accounts — they have no tradeable balance
+  const tradeable = accounts.filter(a =>
+    !a.account_id?.startsWith('VRW') &&
+    !a.account_id?.startsWith('RW') &&
+    !a.account_id?.startsWith('VDW')
+  )
+
+  const demo = tradeable
     .filter(a => a.is_demo || a.type === 'demo')
     .sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0))
 
-  const real = accounts
+  const real = tradeable
     .filter(a => !a.is_demo && a.type !== 'demo')
     .sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0))
 
@@ -97,6 +100,10 @@ export default function AccountSelector({ accounts, onSelect }) {
               </div>
             </button>
           ))}
+
+          {sorted.length === 0 && (
+            <div style={styles.empty}>No tradeable accounts found</div>
+          )}
         </div>
 
         <button
@@ -141,6 +148,10 @@ const styles = {
   itemRight: { display: 'flex', alignItems: 'center', gap: 10 },
   balance:   { color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' },
   arrow:     { color: '#3b82f6', fontSize: 16 },
+  empty: {
+    padding: '24px 0', textAlign: 'center',
+    color: '#4b5563', fontSize: 13,
+  },
   addAccount: {
     width: '100%', marginTop: 16,
     background: 'transparent', border: '1px dashed #2a3f5f',
