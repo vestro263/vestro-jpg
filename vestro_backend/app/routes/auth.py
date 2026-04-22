@@ -120,31 +120,96 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         result = await db.execute(select(User).where(User.id == user_id))
         user   = result.scalar_one_or_none()
 
-    accounts = []
+    # Collect all tokens Deriv sent back (usually just the VRW wallet)
+    raw_tokens = {}
     i = 1
-
     while f"acct{i}" in params:
-        acct  = params[f"acct{i}"]
-        token = params[f"token{i}"]
-        cur   = params.get(f"cur{i}", "USD")
+        raw_tokens[params[f"acct{i}"]] = {
+            "token": params[f"token{i}"],
+            "cur":   params.get(f"cur{i}", "USD"),
+        }
+        i += 1
 
-        # ── ALL accounts handled the same way (wallets included) ──
-        # Wallet accounts (VRW/RW) are valid trading accounts on Deriv's
-        # options/multipliers platform. We store them directly instead of
-        # trying to unwrap linked sub-accounts, which have no usable tokens.
+    if not raw_tokens:
+        uid = user.id if user else ""
+        return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}")
+
+    # Use the first token to fetch ALL linked accounts via account_list
+    import websockets as _ws
+    import asyncio
+
+    first_token = next(iter(raw_tokens.values()))["token"]
+    all_linked  = []
+
+    try:
+        async with _ws.connect(
+            f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
+        ) as ws:
+            await ws.send(json.dumps({"authorize": first_token}))
+            auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            if "error" not in auth_resp:
+                await ws.send(json.dumps({"account_list": 1}))
+                list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+                all_linked = list_resp.get("account_list", [])
+                print("[deriv_callback] account_list:", [a["loginid"] for a in all_linked])
+    except Exception as e:
+        print(f"[deriv_callback] account_list failed: {e}")
+
+    # Build a map of loginid → token from what Deriv gave us
+    # For linked accounts we don't have individual tokens — use the wallet token
+    # The wallet token is valid for all linked accounts on the same user
+    token_map = {acct: data["token"] for acct, data in raw_tokens.items()}
+
+    # If account_list worked, use those accounts; otherwise fall back to raw
+    if all_linked:
+        accounts_to_save = [
+            {
+                "account_id": a["loginid"],
+                "token":      token_map.get(a["loginid"], first_token),
+                "is_virtual": a.get("is_virtual", 0) == 1,
+                "currency":   a.get("currency", "USD"),
+            }
+            for a in all_linked
+            # Skip wallet accounts — not tradeable
+            if not a["loginid"].startswith(("VRW", "RW", "VDW"))
+        ]
+    else:
+        # Fallback: just use what Deriv sent, minus wallets
+        accounts_to_save = [
+            {
+                "account_id": acct,
+                "token":      data["token"],
+                "is_virtual": acct.startswith("VRT"),
+                "currency":   data["cur"],
+            }
+            for acct, data in raw_tokens.items()
+            if not acct.startswith(("VRW", "RW", "VDW"))
+        ]
+
+    print("[deriv_callback] saving accounts:", [a["account_id"] for a in accounts_to_save])
+
+    accounts = []
+    for entry in accounts_to_save:
+        acct     = entry["account_id"]
+        token    = entry["token"]
+        is_demo  = entry["is_virtual"]
+        currency = entry["currency"]
+
+        # Fetch live balance
         try:
             info = await get_account_info(DERIV_APP_ID, token)
-            print(f"[info] {acct}:", info)
+            if info.get("status") == "error":
+                print(f"[SKIP] {acct}: {info.get('message')}")
+                continue
         except Exception as e:
             print(f"[ERROR] get_account_info {acct}: {e}")
-            i += 1
-            continue
-
-        # Skip accounts that returned an auth error
-        if info.get("status") == "error":
-            print(f"[SKIP] {acct}: {info.get('message')}")
-            i += 1
-            continue
+            info = {
+                "balance":    0,
+                "currency":   currency,
+                "name":       "",
+                "email":      user.email if user else "",
+                "is_virtual": is_demo,
+            }
 
         result = await db.execute(
             select(Credentials).where(Credentials.account_id == acct)
@@ -153,8 +218,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         if not cred:
             cred = Credentials()
             db.add(cred)
-
-        is_demo = bool(info.get("is_virtual", False))
 
         cred.account_id      = acct
         cred.is_demo         = is_demo
@@ -173,16 +236,14 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             "account_id": acct,
             "loginid":    acct,
             "balance":    info.get("balance", 0),
-            "currency":   info.get("currency", cur),
+            "currency":   info.get("currency", currency),
             "name":       info.get("name", ""),
             "email":      info.get("email", user.email if user else ""),
             "type":       "demo" if is_demo else "real",
             "is_demo":    is_demo,
             "broker":     "deriv",
-            "user_id":    user.id    if user else "",
+            "user_id":    user.id if user else "",
         })
-
-        i += 1
 
     await db.commit()
 
@@ -196,7 +257,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     return RedirectResponse(
         f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
     )
-
 
 # ── STEP 4 — Set active account ───────────────────────────────
 
