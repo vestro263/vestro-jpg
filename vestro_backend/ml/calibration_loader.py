@@ -1,15 +1,16 @@
 """
 calibration_loader.py
 =====================
-Loads CalibrationConfig rows from DB and exposes them as a live dict.
-Fixed: rsi_buy_min and rsi_sell_max are not DB columns — use defaults only.
+Loads CalibrationConfig from DB and exposes live thresholds.
+Supports per-regime model loading.
+Fixed: rsi_buy_min and rsi_sell_max are not DB columns.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -34,8 +35,6 @@ _MODEL_DIR = Path(__file__).parent / "models"
 class Thresholds:
     symbol: str
 
-    # RSI — rsi_buy_min and rsi_sell_max are NOT in CalibrationConfig DB
-    # They are defaults only, never read from DB
     rsi_buy_min:    Optional[float] = 30.0
     rsi_buy_max:    Optional[float] = 45.0
     rsi_sell_min:   Optional[float] = 55.0
@@ -142,12 +141,12 @@ _DEFAULTS: dict[str, Thresholds] = {
 # Cache
 # =============================================================================
 
-_cache:        dict[str, Thresholds] = {}
-_last_loaded:  Optional[datetime]    = None
+_cache:       dict[str, Thresholds] = {}
+_last_loaded: Optional[datetime]    = None
 
 
 # =============================================================================
-# DB loader — only reads columns that exist in CalibrationConfig
+# DB loader
 # =============================================================================
 
 async def _load_from_db() -> None:
@@ -159,7 +158,6 @@ async def _load_from_db() -> None:
             rows   = result.scalars().all()
 
         for row in rows:
-            # Preserve live regime so a DB reload doesn't reset it mid-session
             existing_regime = _cache.get(
                 row.symbol, Thresholds(symbol=row.symbol)
             ).current_regime
@@ -167,22 +165,17 @@ async def _load_from_db() -> None:
             default = _DEFAULTS.get(row.symbol, Thresholds(symbol=row.symbol))
 
             _cache[row.symbol] = Thresholds(
-                symbol = row.symbol,
-
-                # rsi_buy_min / rsi_sell_max NOT in DB — always use defaults
-                rsi_buy_min  = default.rsi_buy_min,
-                rsi_sell_max = default.rsi_sell_max,
-
-                # These ARE in DB
-                rsi_buy_max   = row.rsi_buy_max    if row.rsi_buy_max   is not None else default.rsi_buy_max,
-                rsi_sell_min  = row.rsi_sell_min   if row.rsi_sell_min  is not None else default.rsi_sell_min,
-                adx_min       = row.adx_min        if row.adx_min       is not None else default.adx_min,
-                tss_min       = row.tss_min        if row.tss_min       is not None else default.tss_min,
-                checklist_min = row.checklist_min  if row.checklist_min is not None else default.checklist_min,
-                confidence_min= row.confidence_min if row.confidence_min is not None else default.confidence_min,
-                spike_min     = row.spike_min      if row.spike_min     is not None else default.spike_min,
-                recovery_min  = row.recovery_min   if row.recovery_min  is not None else default.recovery_min,
-
+                symbol         = row.symbol,
+                rsi_buy_min    = default.rsi_buy_min,
+                rsi_sell_max   = default.rsi_sell_max,
+                rsi_buy_max    = row.rsi_buy_max    if row.rsi_buy_max   is not None else default.rsi_buy_max,
+                rsi_sell_min   = row.rsi_sell_min   if row.rsi_sell_min  is not None else default.rsi_sell_min,
+                adx_min        = row.adx_min        if row.adx_min       is not None else default.adx_min,
+                tss_min        = row.tss_min        if row.tss_min       is not None else default.tss_min,
+                checklist_min  = row.checklist_min  if row.checklist_min is not None else default.checklist_min,
+                confidence_min = row.confidence_min if row.confidence_min is not None else default.confidence_min,
+                spike_min      = row.spike_min      if row.spike_min     is not None else default.spike_min,
+                recovery_min   = row.recovery_min   if row.recovery_min  is not None else default.recovery_min,
                 current_regime = existing_regime,
                 n_samples      = row.n_samples,
                 f1             = row.f1,
@@ -192,9 +185,7 @@ async def _load_from_db() -> None:
             logger.info(_cache[row.symbol].summary())
 
         _last_loaded = datetime.now(timezone.utc)
-        logger.info(
-            f"[calibration_loader] loaded {len(rows)} configs from DB"
-        )
+        logger.info(f"[calibration_loader] loaded {len(rows)} configs from DB")
 
     except Exception as exc:
         logger.error(f"[calibration_loader] DB load failed: {exc}", exc_info=True)
@@ -234,17 +225,39 @@ def set_cached_regime(symbol: str, regime_str: str) -> None:
     logger.info(f"[calibration_loader] regime set {symbol} → {regime_str}")
 
 
-def load_calibrated_model(symbol: str):
-    path = _MODEL_DIR / f"{symbol}_calibrated.pkl"
-    if not path.exists():
-        logger.debug(f"[calibration_loader] no model found for {symbol} at {path}")
+def load_calibrated_model(symbol: str, regime: str = None):
+    """
+    Load regime-specific model if available, fall back to base model.
+    regime-specific path: models/{symbol}_{regime}_calibrated.pkl
+    base path:            models/{symbol}_calibrated.pkl
+    """
+    # Try regime-specific model first
+    if regime and regime != "UNKNOWN":
+        regime_path = _MODEL_DIR / f"{symbol}_{regime}_calibrated.pkl"
+        if regime_path.exists():
+            try:
+                model = joblib.load(regime_path)
+                logger.info(
+                    f"[calibration_loader] loaded {symbol}/{regime} model"
+                )
+                return model
+            except Exception as exc:
+                logger.error(
+                    f"[calibration_loader] regime model load failed "
+                    f"{symbol}/{regime}: {exc}"
+                )
+
+    # Fall back to base model
+    base_path = _MODEL_DIR / f"{symbol}_calibrated.pkl"
+    if not base_path.exists():
+        logger.debug(f"[calibration_loader] no model found for {symbol}")
         return None
     try:
-        model = joblib.load(path)
-        logger.info(f"[calibration_loader] loaded calibrated model for {symbol}")
+        model = joblib.load(base_path)
+        logger.info(f"[calibration_loader] loaded base model for {symbol}")
         return model
     except Exception as exc:
-        logger.error(f"[calibration_loader] model load failed for {symbol}: {exc}")
+        logger.error(f"[calibration_loader] base model load failed for {symbol}: {exc}")
         return None
 
 

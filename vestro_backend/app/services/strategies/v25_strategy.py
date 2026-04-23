@@ -503,6 +503,37 @@ class V25Strategy(BaseStrategy):
         tss        = result.get("tss", 0)
         confidence = result.get("confidence", 0.0)
 
+        # Use regime-specific ML model for confidence if available
+        from ml.calibration_loader import load_calibrated_model
+        if result["signal"] != "HOLD":
+            try:
+                regime_model = load_calibrated_model(self.SYMBOL, regime)
+                if regime_model:
+                    feature_vector = [
+                        indicators.get("rsi") or 50,
+                        indicators.get("adx") or 25,
+                        indicators.get("atr") or 0,
+                        indicators.get("ema_50") or 0,
+                        indicators.get("ema_200") or 0,
+                        indicators.get("macd_hist") or 0,
+                        tss,
+                        result.get("checklist") or 0,
+                        confidence,
+                    ]
+                    proba = regime_model.predict_proba([feature_vector])[0]
+                    classes = list(regime_model.classes_)
+                    win_idx = classes.index(1) if 1 in classes else -1
+                    if win_idx >= 0:
+                        ml_conf = float(proba[win_idx])
+                        self.logger.info(
+                            f"[{self.NAME}] regime model: "
+                            f"formula={confidence:.3f} → ml={ml_conf:.3f} regime={regime}"
+                        )
+                        confidence = ml_conf
+            except Exception as e:
+                self.logger.warning(f"[{self.NAME}] regime model inference failed: {e}")
+
+
         risk    = _RiskManager(self.balance, self.is_prop)
         sl_mult = getattr(t, "sl_atr_mult", 1.2)   # [V25-DIFF-2]
         sl_pips = atr_val * sl_mult
@@ -568,6 +599,7 @@ class V25Strategy(BaseStrategy):
                     checklist   = result.get("checklist"),
                     atr_zone    = atr_zone,
                     confidence  = confidence,
+                    regime=regime,
                     captured_at = datetime.utcnow(),
                 )
                 async with AsyncSessionLocal() as db:

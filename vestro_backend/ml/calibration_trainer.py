@@ -1,8 +1,9 @@
 """
 calibration_trainer.py
 =======================
-Trains calibrated ML models for each symbol using all labeled rows
-(not just executed trades — removes cold-start deadlock).
+Trains calibrated ML models for each symbol.
+- Base model: all executed+closed trades
+- Per-regime models: executed+closed trades filtered by regime
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ MODEL_DIR = Path(__file__).parent / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 
 MIN_SAMPLES        = 200
+MIN_REGIME_SAMPLES = 50
 TEST_SIZE          = 0.20
 RANDOM_SEED        = 42
 TARGET_HOLD_RATE   = 0.15
@@ -82,16 +84,15 @@ SYMBOL_STRATEGY_MAP = {
     "CRASH500": "Crash500",
 }
 
+REGIMES = ["TREND", "RANGE", "HIGH_VOL", "CRASH"]
+
 
 # =============================================================================
-# Data loading — ALL labeled rows, not just executed trades
+# Data loading
 # =============================================================================
 
 async def _load_rows(symbol: str) -> list[dict]:
-    """
-    Load only executed + closed trades with real WIN/LOSS outcomes.
-    897 real trades beats 62k noisy signals every time for precision.
-    """
+    """Load all executed+closed trades for base model training."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(SignalLog)
@@ -106,19 +107,49 @@ async def _load_rows(symbol: str) -> list[dict]:
         )
         rows = result.scalars().all()
 
-    total = len(rows)
-    wins  = sum(1 for r in rows if r.outcome == "WIN")
-    losses= total - wins
+    wins   = sum(1 for r in rows if r.outcome == "WIN")
+    losses = len(rows) - wins
     logger.info(
         f"[calibration_trainer] {symbol}: "
-        f"loaded {total} executed+closed rows | "
+        f"loaded {len(rows)} executed+closed rows | "
         f"WIN={wins} LOSS={losses} "
-        f"win_rate={round(wins/total*100,1) if total else 0}%"
+        f"win_rate={round(wins/len(rows)*100,1) if rows else 0}%"
     )
     return [
-        {col.name: getattr(r, col.name) for col in SignalLog.__table__.columns}
+        {k: v for k, v in r.__dict__.items() if not k.startswith("_")}
         for r in rows
     ]
+
+
+async def _load_rows_for_regime(symbol: str, regime: str) -> list[dict]:
+    """Load executed+closed trades for a specific regime."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SignalLog)
+            .where(
+                SignalLog.symbol    == symbol,
+                SignalLog.label_15m != None,
+                SignalLog.signal    != "HOLD",
+                SignalLog.executed  == True,
+                SignalLog.outcome.in_(["WIN", "LOSS"]),
+                SignalLog.regime    == regime,
+            )
+            .order_by(SignalLog.captured_at)
+        )
+        rows = result.scalars().all()
+
+    wins   = sum(1 for r in rows if r.outcome == "WIN")
+    losses = len(rows) - wins
+    logger.info(
+        f"[calibration_trainer] {symbol}/{regime}: "
+        f"{len(rows)} rows | WIN={wins} LOSS={losses} "
+        f"win_rate={round(wins/len(rows)*100,1) if rows else 0}%"
+    )
+    return [
+        {k: v for k, v in r.__dict__.items() if not k.startswith("_")}
+        for r in rows
+    ]
+
 
 def _build_feature_matrix(
     rows:         list[dict],
@@ -131,8 +162,6 @@ def _build_feature_matrix(
         label = r.get("label_15m")
         if label is None:
             continue
-        # Keep both WIN(+1) and LOSS(-1) — no neutral filtering needed
-        # since _load_rows only returns executed+closed trades
         x = [r.get(f) for f in feature_cols]
         if sum(1 for v in x if v is None) > len(feature_cols) // 2:
             n_dropped_missing += 1
@@ -159,6 +188,7 @@ def _build_feature_matrix(
         X[np.isnan(col), col_idx] = median
 
     return X, y
+
 
 # =============================================================================
 # Probability calibration
@@ -190,11 +220,14 @@ def _fit_calibrated_model(
     X_test:     np.ndarray,
     y_test:     np.ndarray,
 ) -> tuple[object, str, float, float]:
-    n_cal  = max(50, int(len(X_train) * 0.20))
+    n_cal  = max(30, int(len(X_train) * 0.20))
     X_base = X_train[:-n_cal]
     y_base = y_train[:-n_cal]
     X_cal  = X_train[-n_cal:]
     y_cal  = y_train[-n_cal:]
+
+    if len(X_base) < 10:
+        return base_model, "none", 1.0, 1.0
 
     classes, counts = np.unique(y_base, return_counts=True)
     total           = len(y_base)
@@ -206,7 +239,7 @@ def _fit_calibrated_model(
         max_depth        = 4,
         learning_rate    = 0.05,
         subsample        = 0.8,
-        min_samples_leaf = 20,
+        min_samples_leaf = 10,
         random_state     = RANDOM_SEED,
     )
     base_refitted.fit(X_base, y_base, sample_weight=sample_weights)
@@ -240,7 +273,6 @@ def _fit_calibrated_model(
             logger.warning(f"[calibration_trainer] {method} failed: {exc}")
 
     if not results:
-        logger.warning("[calibration_trainer] all calibration methods failed — using raw base model")
         return base_model, "none", 1.0, 1.0
 
     best_method = min(results, key=lambda m: (results[m][1], results[m][2]))
@@ -330,13 +362,12 @@ def _enforce_hold_budget(model, X_test, y_test, calibration, feature_cols) -> di
 
 
 # =============================================================================
-# Train one symbol
+# Train base model for one symbol
 # =============================================================================
 
 async def train_symbol(
     symbol:        str,
     strategy_name: str,
-    api_token:     str = "",
 ) -> dict | None:
     logger.info(f"[calibration_trainer] loading rows for {symbol}...")
     rows = await _load_rows(symbol)
@@ -362,17 +393,12 @@ async def train_symbol(
         )
         return None
 
-    logger.info(
-        f"[calibration_trainer] {symbol}: "
-        f"{len(X)} samples, features={len(feature_cols)}"
-    )
+    logger.info(f"[calibration_trainer] {symbol}: {len(X)} samples, features={len(feature_cols)}")
 
-    # Chronological split — no shuffle
     split_idx       = int(len(X) * (1 - TEST_SIZE))
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
 
-    # Base GBM
     classes, counts = np.unique(y_train, return_counts=True)
     total           = len(y_train)
     w_map           = {c: total / (len(classes) * cnt) for c, cnt in zip(classes, counts)}
@@ -388,23 +414,15 @@ async def train_symbol(
     )
     base_model.fit(X_train, y_train, sample_weight=sample_weights)
 
-    # Calibrate
     calibrated_model, cal_method, brier, ece = _fit_calibrated_model(
         base_model, X_train, y_train, X_test, y_test
     )
 
-    # Evaluate
     y_pred    = calibrated_model.predict(X_test)
     precision = round(float(precision_score(y_test, y_pred, average="macro", zero_division=0)), 4)
     recall    = round(float(recall_score(   y_test, y_pred, average="macro", zero_division=0)), 4)
     f1        = round(float(f1_score(       y_test, y_pred, average="macro", zero_division=0)), 4)
 
-    f1_per_class = {
-        int(cls): round(float(f1_score(
-            y_test, y_pred, labels=[cls], average="macro", zero_division=0
-        )), 4)
-        for cls in unique_classes
-    }
     importances = {
         feat: round(float(imp), 4)
         for feat, imp in zip(feature_cols, base_model.feature_importances_)
@@ -413,16 +431,13 @@ async def train_symbol(
     logger.info(
         f"[calibration_trainer] {symbol}: "
         f"precision={precision} recall={recall} f1={f1} "
-        f"per_class={f1_per_class} "
-        f"calibration={cal_method} brier={brier:.4f} ece={ece:.4f}"
+        f"cal={cal_method} brier={brier:.4f} ece={ece:.4f}"
     )
 
-    # Save model
     model_path = MODEL_DIR / f"{symbol}_calibrated.pkl"
     joblib.dump(calibrated_model, model_path)
-    logger.info(f"[calibration_trainer] {symbol}: model saved → {model_path}")
+    logger.info(f"[calibration_trainer] {symbol}: base model saved → {model_path}")
 
-    # Extract thresholds
     feat_idx = {f: i for i, f in enumerate(feature_cols)}
 
     def thresh(feat, direction="above"):
@@ -430,9 +445,7 @@ async def train_symbol(
             return None
         idx  = feat_idx[feat]
         vals = X_test[:, idx]
-        return _find_optimal_threshold(
-            calibrated_model, X_test, y_test, idx, vals, direction
-        )
+        return _find_optimal_threshold(calibrated_model, X_test, y_test, idx, vals, direction)
 
     calibration = {
         "symbol":   symbol,
@@ -452,7 +465,6 @@ async def train_symbol(
         "feature_importance_json": json.dumps(importances),
     }
 
-    # Fill missing with hard-coded defaults
     defaults = HARD_CODED_DEFAULTS.get(symbol, {})
     for key, default_val in defaults.items():
         if calibration.get(key) is None and default_val is not None:
@@ -465,14 +477,83 @@ async def train_symbol(
 
 
 # =============================================================================
-# Write to DB — only columns that exist in CalibrationConfig
+# Train per-regime model for one symbol+regime
+# =============================================================================
+
+async def train_symbol_regime(
+    symbol:        str,
+    strategy_name: str,
+    regime:        str,
+) -> bool:
+    """Train and save a regime-specific model. Returns True if successful."""
+    rows = await _load_rows_for_regime(symbol, regime)
+
+    if len(rows) < MIN_REGIME_SAMPLES:
+        logger.info(
+            f"[calibration_trainer] {symbol}/{regime}: "
+            f"{len(rows)} rows < {MIN_REGIME_SAMPLES} — skipping"
+        )
+        return False
+
+    feature_cols = STRATEGY_FEATURES.get(strategy_name, FEATURES_V75)
+    X, y = _build_feature_matrix(rows, feature_cols)
+
+    if len(X) < MIN_REGIME_SAMPLES or len(np.unique(y)) < 2:
+        logger.info(
+            f"[calibration_trainer] {symbol}/{regime}: "
+            f"insufficient data after filtering"
+        )
+        return False
+
+    split_idx       = int(len(X) * (1 - TEST_SIZE))
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+
+    if len(X_train) < 10 or len(X_test) < 5:
+        return False
+
+    classes, counts = np.unique(y_train, return_counts=True)
+    total           = len(y_train)
+    w_map           = {c: total / (len(classes) * cnt) for c, cnt in zip(classes, counts)}
+    sample_weights  = np.array([w_map[lbl] for lbl in y_train])
+
+    base_model = GradientBoostingClassifier(
+        n_estimators     = 200,
+        max_depth        = 4,
+        learning_rate    = 0.05,
+        subsample        = 0.8,
+        min_samples_leaf = 10,
+        random_state     = RANDOM_SEED,
+    )
+    base_model.fit(X_train, y_train, sample_weight=sample_weights)
+
+    calibrated_model, cal_method, brier, ece = _fit_calibrated_model(
+        base_model, X_train, y_train, X_test, y_test
+    )
+
+    y_pred    = calibrated_model.predict(X_test)
+    precision = round(float(precision_score(y_test, y_pred, average="macro", zero_division=0)), 4)
+    f1        = round(float(f1_score(       y_test, y_pred, average="macro", zero_division=0)), 4)
+
+    logger.info(
+        f"[calibration_trainer] {symbol}/{regime}: "
+        f"precision={precision} f1={f1} n={len(X)} "
+        f"cal={cal_method} brier={brier:.4f}"
+    )
+
+    model_path = MODEL_DIR / f"{symbol}_{regime}_calibrated.pkl"
+    joblib.dump(calibrated_model, model_path)
+    logger.info(f"[calibration_trainer] saved → {model_path}")
+    return True
+
+
+# =============================================================================
+# Write to DB
 # =============================================================================
 
 async def write_calibration(calibration: dict) -> None:
     symbol = calibration["symbol"]
 
-    # Only pass keys that are actual columns in CalibrationConfig
-    # rsi_buy_min and rsi_sell_max are NOT in the DB model — exclude them
     allowed_columns = {
         "symbol", "strategy",
         "rsi_buy_max", "rsi_sell_min",
@@ -505,20 +586,38 @@ async def write_calibration(calibration: dict) -> None:
 # =============================================================================
 
 async def run_trainer(api_token: str = "") -> None:
-    """
-    Train models for all known symbols.
-    Called from scheduler or signal_engine on a schedule.
-    """
     logger.info("[calibration_trainer] starting training run...")
+
+    # Step 1 — base models
     for symbol, strategy_name in SYMBOL_STRATEGY_MAP.items():
         try:
-            calibration = await train_symbol(symbol, strategy_name, api_token=api_token)
+            calibration = await train_symbol(symbol, strategy_name)
             if calibration:
                 await write_calibration(calibration)
             else:
-                logger.info(f"[calibration_trainer] {symbol}: no calibration produced")
+                logger.info(f"[calibration_trainer] {symbol}: no base model produced")
         except Exception as exc:
-            logger.error(f"[calibration_trainer] failed for {symbol}: {exc}", exc_info=True)
+            logger.error(
+                f"[calibration_trainer] base model failed for {symbol}: {exc}",
+                exc_info=True,
+            )
+
+    # Step 2 — per-regime models (skip Crash500 for now)
+    for symbol, strategy_name in SYMBOL_STRATEGY_MAP.items():
+        if symbol == "CRASH500":
+            continue
+        for regime in REGIMES:
+            try:
+                ok = await train_symbol_regime(symbol, strategy_name, regime)
+                if ok:
+                    logger.info(
+                        f"[calibration_trainer] regime model done: {symbol}/{regime}"
+                    )
+            except Exception as exc:
+                logger.error(
+                    f"[calibration_trainer] regime model failed {symbol}/{regime}: {exc}",
+                    exc_info=True,
+                )
 
     logger.info("[calibration_trainer] training run complete")
 

@@ -1,44 +1,9 @@
 """
 outcome_labeler.py  (upgraded)
 ================================
-Retrospectively labels every SignalLog row using the triple-barrier method.
-
-Changes vs original
---------------------
-1. ATR-SCALED BARRIERS
-   Original used fixed tp_price / sl_price columns, falling back to a flat
-   0.5% ATR-proxy.  This produced inconsistent reward/risk ratios across
-   volatility regimes — quiet sessions had tiny barriers and noisy sessions
-   had huge ones, making WIN/LOSS labels incomparable across time.
-
-   Upgrade: barriers are now set as ATR multiples (default TP=1.5×ATR,
-   SL=1.0×ATR).  If the row already has tp_price/sl_price they are used
-   as-is (backward-compatible with existing data).
-
-2. INTRA-BAR AMBIGUITY RESOLUTION
-   When both TP and SL are touched in the same bar, the original returned
-   NEUTRAL (0).  This labelled real winners as noise.
-   Upgrade: compare distance from entry to high vs. low.  Whichever is
-   closer to entry price wins — statistically the closer level is hit first.
-
-3. NEUTRAL SUPPRESSION
-   Rows where entry_price == tp_price == sl_price (bad data) are skipped.
-   Rows where the window has not yet elapsed are skipped as before.
-
-4. EXIT_PRICE ALWAYS WRITTEN
-   exit_price was previously only set on barrier hits, leaving it NULL on
-   timeout rows.  It is now always set to the last tick price in the window
-   so journal queries can compute actual P&L on every row.
-
-5. OUTCOME STRING ALIGNED TO SIGNAL
-   BUY rows where label == +1 → "WIN",  label == -1 → "LOSS"
-   SELL rows where label == +1 → "WIN" (TP hit going short), label == -1 → "LOSS"
-   This matches the direction column so journal stats are correct.
-
-Writes back (unchanged schema):
-    label_15m / label_30m / label_60m / label_90m / label_4h
-    outcome    — "WIN" | "LOSS" | "NEUTRAL"
-    exit_price — price at first barrier touch or last tick on timeout
+Added label_1d and label_3d windows for Gold (frxXAUUSD).
+Synthetic indices (R_75, R_25, CRASH500) skip these windows —
+Deriv tick history only goes ~3 days for synthetics.
 """
 
 from __future__ import annotations
@@ -59,10 +24,12 @@ from .signal_log_model import SignalLog
 logger       = logging.getLogger(__name__)
 DERIV_APP_ID = os.environ.get("DERIV_APP_ID", "")
 
-# ── ATR multipliers for barrier calculation ───────────────────────────────────
-ATR_TP_MULTIPLIER = 1.5    # take-profit = entry ± ATR × 1.5
-ATR_SL_MULTIPLIER = 1.0    # stop-loss   = entry ∓ ATR × 1.0
-ATR_FALLBACK_PCT  = 0.005  # fallback if atr column is NULL: 0.5% of entry
+ATR_TP_MULTIPLIER = 1.5
+ATR_SL_MULTIPLIER = 1.0
+ATR_FALLBACK_PCT  = 0.005
+
+# Symbols that support longer windows (real assets with deep tick history)
+SWING_SYMBOLS = {"frxXAUUSD", "frxEURUSD", "frxGBPUSD"}
 
 WINDOW_SECONDS: dict[str, int] = {
     "15m": 15 * 60,
@@ -70,12 +37,14 @@ WINDOW_SECONDS: dict[str, int] = {
     "60m": 60 * 60,
     "90m": 90 * 60,
     "4h":  4  * 60 * 60,
+    "1d":  24 * 60 * 60,   # Gold/forex only
+    "3d":  72 * 60 * 60,   # Gold/forex only
 }
 
+# Windows available per symbol type
+SYNTHETIC_WINDOWS = {"15m", "30m", "60m", "90m", "4h"}
+SWING_WINDOWS     = {"15m", "30m", "60m", "90m", "4h", "1d", "3d"}
 
-# =============================================================================
-# Deriv tick fetcher  (unchanged from original)
-# =============================================================================
 
 async def _fetch_ticks_range(
     api_token:   str,
@@ -85,20 +54,14 @@ async def _fetch_ticks_range(
     count:       int = 5000,
 ) -> list[tuple[int, float]]:
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
-
     try:
         async with websockets.connect(url, open_timeout=15) as ws:
-            # Authorize
             await ws.send(json.dumps({"authorize": api_token}))
             auth_resp = json.loads(await ws.recv())
-
             if "error" in auth_resp:
-                logger.error(
-                    f"[outcome_labeler] auth error ({symbol}): {auth_resp['error']}"
-                )
+                logger.error(f"[outcome_labeler] auth error ({symbol}): {auth_resp['error']}")
                 return []
 
-            # Request tick history
             await ws.send(json.dumps({
                 "ticks_history": symbol,
                 "start":         start_epoch,
@@ -106,34 +69,26 @@ async def _fetch_ticks_range(
                 "count":         count,
                 "style":         "ticks",
             }))
-
             data = json.loads(await ws.recv())
 
-        # Detect Deriv API errors
         if "error" in data:
-            logger.error(
-                f"[outcome_labeler] Deriv error ({symbol}): {data['error']}"
-            )
+            logger.error(f"[outcome_labeler] Deriv error ({symbol}): {data['error']}")
             return []
 
-        # Parse history safely
         history = data.get("history", {})
-        times   = history.get("times", [])
+        times   = history.get("times",  [])
         prices  = history.get("prices", [])
 
         logger.info(
             f"[outcome_labeler] {symbol} ticks={len(times)} "
             f"start={start_epoch} end={end_epoch}"
         )
-
         return [(int(t), float(p)) for t, p in zip(times, prices)]
 
     except Exception as exc:
         logger.error(f"[outcome_labeler] tick fetch error ({symbol}): {exc}")
         return []
-# =============================================================================
-# Triple-barrier labeller  (upgraded)
-# =============================================================================
+
 
 def _compute_barriers(
     entry_price: float,
@@ -142,28 +97,12 @@ def _compute_barriers(
     sl_price:    float | None,
     atr_val:     float | None,
 ) -> tuple[float, float]:
-    """
-    Resolve tp / sl prices.
-
-    Priority order:
-      1. Use tp_price / sl_price from the DB row if both are set
-         (preserves backward-compatibility with existing labeled rows)
-      2. Compute from ATR multipliers
-      3. Fallback to fixed 0.5% of entry price
-    """
     if tp_price is not None and sl_price is not None:
         return float(tp_price), float(sl_price)
-
     atr = atr_val if (atr_val is not None and atr_val > 0) else entry_price * ATR_FALLBACK_PCT
-
-    if direction == 1:   # BUY
-        tp = entry_price + ATR_TP_MULTIPLIER * atr
-        sl = entry_price - ATR_SL_MULTIPLIER * atr
-    else:                # SELL
-        tp = entry_price - ATR_TP_MULTIPLIER * atr
-        sl = entry_price + ATR_SL_MULTIPLIER * atr
-
-    return tp, sl
+    if direction == 1:
+        return entry_price + ATR_TP_MULTIPLIER * atr, entry_price - ATR_SL_MULTIPLIER * atr
+    return entry_price - ATR_TP_MULTIPLIER * atr, entry_price + ATR_SL_MULTIPLIER * atr
 
 
 def _triple_barrier_label(
@@ -175,18 +114,6 @@ def _triple_barrier_label(
     window_seconds: int,
     entry_epoch:    int,
 ) -> tuple[int, float]:
-    """
-    Walk ticks forward from entry_epoch.
-
-    Returns (label, exit_price):
-        +1 / exit_price — take-profit touched first
-        -1 / exit_price — stop-loss touched first
-         0 / last_price — time barrier expired
-
-    Intra-bar ambiguity (both barriers touched in same tick):
-        Compare distances from entry.  Closer barrier is assumed hit first.
-        This is statistically correct and avoids silently discarding real winners.
-    """
     if not ticks or entry_price is None:
         return 0, entry_price
 
@@ -198,52 +125,32 @@ def _triple_barrier_label(
             continue
         if epoch > deadline:
             break
-
         last_price = price
 
-        if direction == 1:       # BUY: TP above entry, SL below
+        if direction == 1:
             tp_hit = price >= tp_price
             sl_hit = price <= sl_price
-        else:                    # SELL: TP below entry, SL above
+        else:
             tp_hit = price <= tp_price
             sl_hit = price >= sl_price
 
         if tp_hit and sl_hit:
-            # Both levels breached in same tick — closer one wins
             tp_dist = abs(price - tp_price)
             sl_dist = abs(price - sl_price)
-            if tp_dist <= sl_dist:
-                return +1, tp_price
-            else:
-                return -1, sl_price
-
+            return (+1, tp_price) if tp_dist <= sl_dist else (-1, sl_price)
         if tp_hit:
             return +1, tp_price
         if sl_hit:
             return -1, sl_price
 
-    return 0, last_price   # timeout → NEUTRAL, last known price
+    return 0, last_price
 
 
 def _label_to_outcome(label: int) -> str:
-    if label == 1:
-        return "WIN"
-    if label == -1:
-        return "LOSS"
-    return "NEUTRAL"
+    return {1: "WIN", -1: "LOSS"}.get(label, "NEUTRAL")
 
-
-# =============================================================================
-# Main labeling routine
-# =============================================================================
 
 async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
-    """
-    Fetch unlabeled SignalLog rows and write back triple-barrier labels
-    plus outcome / exit_price for the journal.
-
-    Returns the number of rows labeled this run.
-    """
     now_dt    = datetime.utcnow()
     now_epoch = int(time.time())
     cutoff    = now_dt - timedelta(minutes=16)
@@ -252,9 +159,9 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
         result = await db.execute(
             select(SignalLog)
             .where(
-                SignalLog.label_15m  == None,        # noqa: E711
+                SignalLog.label_15m  == None,
                 SignalLog.captured_at <= cutoff,
-                SignalLog.entry_price != None,        # noqa: E711
+                SignalLog.entry_price != None,
                 SignalLog.signal      != "HOLD",
             )
             .order_by(SignalLog.captured_at)
@@ -275,9 +182,8 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 (row.captured_at - datetime(1970, 1, 1)).total_seconds()
             )
             entry_price = row.entry_price
-            direction   = row.direction   # +1 or -1
+            direction   = row.direction
 
-            # ── Resolve barriers (ATR-scaled upgrade) ─────────────────────
             tp, sl = _compute_barriers(
                 entry_price = entry_price,
                 direction   = direction,
@@ -286,7 +192,6 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 atr_val     = row.atr,
             )
 
-            # Sanity check: skip rows with degenerate barriers
             if abs(tp - entry_price) < 1e-8 or abs(sl - entry_price) < 1e-8:
                 logger.warning(
                     f"[outcome_labeler] degenerate barriers row={row.id} "
@@ -294,7 +199,11 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 )
                 continue
 
-            max_window = WINDOW_SECONDS["4h"]
+            # Determine which windows apply to this symbol
+            is_swing  = row.symbol in SWING_SYMBOLS
+            windows   = SWING_WINDOWS if is_swing else SYNTHETIC_WINDOWS
+
+            max_window = WINDOW_SECONDS["3d"] if is_swing else WINDOW_SECONDS["4h"]
             end_epoch  = min(entry_epoch + max_window + 60, now_epoch)
 
             ticks = await _fetch_ticks_range(
@@ -311,14 +220,16 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 )
                 continue
 
-            # ── Label every elapsed window ────────────────────────────────
             labels:      dict[str, int] = {}
             exit_price:  float | None   = None
             primary_lbl: int | None     = None
 
             for window_name, window_secs in WINDOW_SECONDS.items():
+                # Skip windows not applicable to this symbol
+                if window_name not in windows:
+                    continue
                 if entry_epoch + window_secs > now_epoch:
-                    continue   # window has not elapsed yet
+                    continue
 
                 lbl, ep = _triple_barrier_label(
                     ticks          = ticks,
@@ -331,32 +242,38 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
                 )
                 labels[window_name] = lbl
 
-                # first available label
                 if primary_lbl is None:
                     primary_lbl = lbl
-                    exit_price = ep
-
-                # upgrade NEUTRAL to decisive result from later window
+                    exit_price  = ep
                 if primary_lbl == 0 and lbl != 0:
                     primary_lbl = lbl
-                    exit_price = ep
+                    exit_price  = ep
 
             if not labels:
-                logger.info(
-                    f"[outcome_labeler] row={row.id} — no windows elapsed, skipping"
-                )
+                logger.info(f"[outcome_labeler] row={row.id} — no windows elapsed, skipping")
                 continue
 
-            # exit_price is always written now (even on NEUTRAL/timeout)
             outcome = _label_to_outcome(primary_lbl)
 
-            update_vals = {
+            # Build update dict — only include columns that exist
+            update_vals: dict = {
                 "labeled_at": now_dt,
-                **{f"label_{k}": v for k, v in labels.items()},
                 "outcome":    outcome,
                 "exit_price": exit_price,
             }
 
+            # Standard windows — always exist in schema
+            for w in ("15m", "30m", "60m", "90m", "4h"):
+                if w in labels:
+                    update_vals[f"label_{w}"] = labels[w]
+
+            # Swing windows — only write if columns exist (Gold)
+            for w in ("1d", "3d"):
+                if w in labels:
+                    col = f"label_{w}"
+                    # Only write if SignalLog has this column
+                    if hasattr(SignalLog, col):
+                        update_vals[col] = labels[w]
 
             async with AsyncSessionLocal() as db:
                 await db.execute(
@@ -385,10 +302,6 @@ async def label_pending_rows(api_token: str, batch_size: int = 50) -> int:
     return labeled
 
 
-# =============================================================================
-# Standalone entry point  (unchanged interface)
-# =============================================================================
-
 async def run_labeler(api_token: str) -> None:
     while True:
         n = await label_pending_rows(api_token, batch_size=50)
@@ -398,6 +311,5 @@ async def run_labeler(api_token: str) -> None:
 
 
 if __name__ == "__main__":
-    import asyncio
     token = os.environ.get("DERIV_API_TOKEN", "")
     asyncio.run(run_labeler(token))
