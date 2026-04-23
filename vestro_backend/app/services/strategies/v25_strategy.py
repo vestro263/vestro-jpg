@@ -240,42 +240,43 @@ class _PredictionEngine:
         return "extreme"
 
     def _entry_checklist(self, direction: str) -> int:
-        score   = 0
-        closes  = [c["close"] for c in self.candles]
-        rsi     = self.features.get("rsi_14",  [50])
-        macd_h  = self.features.get("macd_histogram", [0])
-        ema50   = self.features.get("ema_50",  [closes[-1]])
-        ema200  = self.features.get("ema_200", [closes[-1]])
+        score = 0
+        closes = [c["close"] for c in self.candles]
+        rsi = self.features.get("rsi_14", [50])
+        macd_h = self.features.get("macd_histogram", [0])
+        ema50 = self.features.get("ema_50", [closes[-1]])
+        ema200 = self.features.get("ema_200", [closes[-1]])
         volumes = [c["volume"] for c in self.candles]
-        last_c  = self.candles[-1]
+        last_c = self.candles[-1]
 
         body = abs(last_c["close"] - last_c["open"])
-        rng  = last_c["high"] - last_c["low"] + 1e-5
+        rng = last_c["high"] - last_c["low"] + 1e-5
 
-        # [V25-DIFF-3] RSI thresholds tighter for V25
-        rsi_buy_max    = getattr(self.thresholds, "rsi_buy_max",  50)
-        rsi_sell_min   = getattr(self.thresholds, "rsi_sell_min", 50)
+        rsi_buy_max = getattr(self.thresholds, "rsi_buy_max", 50)
+        rsi_buy_min = getattr(self.thresholds, "rsi_buy_min", None)
+        rsi_sell_min = getattr(self.thresholds, "rsi_sell_min", 50)
+        rsi_sell_max = getattr(self.thresholds, "rsi_sell_max", None)
         body_ratio_min = getattr(self.thresholds, "body_ratio_min", 0.4)
-        vol_mult       = getattr(self.thresholds, "volume_spike_mult", 1.1)
+        vol_mult = getattr(self.thresholds, "volume_spike_mult", 1.1)
 
         if direction == "buy":
-            if ema50[-1] > ema200[-1]:                                          score += 1
-            if rsi[-1] <= rsi_buy_max:                                          score += 1
-            if macd_h[-1] > 0:                                                  score += 1
-            if last_c["close"] > last_c["open"] and body / rng > body_ratio_min: score += 1
+            if ema50[-1] > ema200[-1]:                                                          score += 1
+            if rsi[-1] <= rsi_buy_max and (rsi_buy_min is None or rsi[-1] >= rsi_buy_min):     score += 1
+            if macd_h[-1] > 0:                                                                  score += 1
+            if last_c["close"] > last_c["open"] and body / rng > body_ratio_min:               score += 1
         else:
-            if ema50[-1] < ema200[-1]:                                          score += 1
-            if rsi[-1] >= rsi_sell_min:                                         score += 1
-            if macd_h[-1] < 0:                                                  score += 1
-            if last_c["close"] < last_c["open"] and body / rng > body_ratio_min: score += 1
+            if ema50[-1] < ema200[-1]:                                                          score += 1
+            if rsi[-1] >= rsi_sell_min and (rsi_sell_max is None or rsi[-1] <= rsi_sell_max):  score += 1
+            if macd_h[-1] < 0:                                                                  score += 1
+            if last_c["close"] < last_c["open"] and body / rng > body_ratio_min:               score += 1
 
         if len(volumes) > 1:
             avg_v = statistics.mean(volumes[:-1])
             if volumes[-1] > avg_v * vol_mult:
                 score += 1
 
-        score += 1   # session check
-        score += 1   # zone check
+        score += 1  # session check
+        score += 1  # zone check
         return min(score, 7)
 
     def predict(self, effective_checklist_min: int = None) -> dict:

@@ -12,17 +12,17 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 def run():
     with engine.connect() as conn:
         migrations = [
-            "ALTER TABLE signal_logs ADD COLUMN IF NOT EXISTS regime VARCHAR(20)",
-            "ALTER TABLE signal_logs ADD COLUMN IF NOT EXISTS label_1d INTEGER",
-            "ALTER TABLE signal_logs ADD COLUMN IF NOT EXISTS label_3d INTEGER",
+            "ALTER TABLE calibration_config ADD COLUMN IF NOT EXISTS rsi_buy_min FLOAT",
+            "ALTER TABLE calibration_config ADD COLUMN IF NOT EXISTS rsi_sell_max FLOAT",
         ]
         for sql in migrations:
             try:
                 conn.execute(text(sql))
+                conn.commit()
                 print(f"✅ {sql}")
             except Exception as e:
+                conn.rollback()
                 print(f"❌ {e}")
-        conn.commit()
         print("✅ Done")
 
 if __name__ == "__main__":
