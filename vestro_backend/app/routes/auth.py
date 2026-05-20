@@ -98,9 +98,11 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
+
     deriv_url = (
         f"https://oauth.deriv.com/oauth2/authorize"
         f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
+        f"&redirect_uri={BACKEND_URL}/auth/deriv/callback"
         f"&state={user.id}"
     )
     return RedirectResponse(deriv_url)
