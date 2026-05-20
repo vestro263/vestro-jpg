@@ -8,10 +8,12 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-DATABASE_URL = (DATABASE_URL
+DATABASE_URL = (
+    DATABASE_URL
     .replace("postgresql://", "postgresql+asyncpg://")
     .replace("?ssl=require", "")
-    .replace("&ssl=require", ""))
+    .replace("&ssl=require", "")
+)
 
 _connect_args = {}
 if "render.com" in DATABASE_URL:
@@ -32,8 +34,10 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+
 class Base(DeclarativeBase):
     pass
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -43,30 +47,61 @@ async def get_db():
             await session.close()
 
 
-
 async def init_db():
     async with engine.begin() as conn:
+        # Create all registered tables
         await conn.run_sync(Base.metadata.create_all)
 
         migrations = [
-            # ── Existing ─────────────────────────────────────────────────────
-            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS google_user_id VARCHAR",
-            "CREATE INDEX IF NOT EXISTS ix_cred_google_user_id ON credentials(google_user_id)",
+            # ── Credentials schema ────────────────────────────
+            """
+            ALTER TABLE credentials
+            ADD COLUMN IF NOT EXISTS google_user_id VARCHAR
+            """,
 
-            # ── New ──────────────────────────────────────────────────────────
-            "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS account_id VARCHAR",
-            "CREATE INDEX IF NOT EXISTS ix_cred_account_id ON credentials(account_id)",
+            """
+            CREATE INDEX IF NOT EXISTS ix_cred_google_user_id
+            ON credentials(google_user_id)
+            """,
 
-            # Backfill: copy legacy user_id → account_id, derive is_demo
-            # Idempotent — WHERE account_id IS NULL means it only runs on unset rows
+            """
+            ALTER TABLE credentials
+            ADD COLUMN IF NOT EXISTS account_id VARCHAR
+            """,
+
+            """
+            CREATE INDEX IF NOT EXISTS ix_cred_account_id
+            ON credentials(account_id)
+            """,
+
+            """
+            ALTER TABLE credentials
+            ADD COLUMN IF NOT EXISTS is_demo BOOLEAN DEFAULT FALSE
+            """,
+
+            # ── Safe backfill ─────────────────────────────────
             """
             UPDATE credentials
-            SET   account_id = user_id,
-                  is_demo    = (user_id LIKE 'VRT%')
+            SET account_id = login
             WHERE account_id IS NULL
-              AND user_id    IS NOT NULL
+              AND login IS NOT NULL
+            """,
+
+            """
+            UPDATE credentials
+            SET is_demo = (
+                account_id LIKE 'VRT%%'
+                OR account_id LIKE 'CR%%'
+            )
+            WHERE account_id IS NOT NULL
             """,
         ]
 
         for sql in migrations:
-            await conn.execute(text(sql))
+            try:
+                await conn.execute(text(sql))
+            except Exception as e:
+                print(f"[init_db migration warning] {e}")
+
+        await conn.commit()
+        print("✅ DB initialized")
