@@ -43,7 +43,7 @@ export default function AccountSelector({ accounts, onSelect }) {
   // Filter out wallet accounts — they have no tradeable balance
   const tradeable = accounts.filter(a =>
     !a.account_id?.startsWith('VRW') &&
-    !a.account_id?.startsWith('RW') &&
+    !a.account_id?.startsWith('RW')  &&
     !a.account_id?.startsWith('VDW')
   )
 
@@ -56,6 +56,7 @@ export default function AccountSelector({ accounts, onSelect }) {
     .sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0))
 
   const sorted = [...demo, ...real]
+  const isEmpty = sorted.length === 0
 
   return (
     <div style={styles.outer}>
@@ -70,48 +71,72 @@ export default function AccountSelector({ accounts, onSelect }) {
           <p style={styles.email}>{accounts[0].email}</p>
         )}
 
-        <p style={styles.sub}>Select an account to trade with</p>
+        <p style={styles.sub}>
+          {isEmpty ? 'No tradeable accounts found' : 'Select an account to trade with'}
+        </p>
 
-        <div style={styles.list}>
-          {sorted.map(acc => (
+        {isEmpty ? (
+          // ── Zero-accounts state ───────────────────────────────────────────────
+          <div style={styles.emptyBox}>
+            <div style={styles.emptyIcon}>⚠</div>
+            <p style={styles.emptyTitle}>No tradeable accounts detected</p>
+            <p style={styles.emptyBody}>
+              Your Deriv account only has wallet accounts (VRW/RW), which
+              aren't tradeable. You need a standard Deriv account (e.g. CR or VRTC).
+            </p>
+            <p style={styles.emptyBody}>
+              Click the button below to reconnect and authorise the correct account.
+            </p>
             <button
-              key={acc.account_id}
-              style={styles.item}
-              onClick={() => handleSelect(acc)}
+              style={styles.reconnectBtn}
+              onClick={() => { window.location.href = `${API}/auth/google` }}
             >
-              <div style={styles.itemLeft}>
-                <span style={{
-                  ...styles.badge,
-                  background: acc.is_demo ? '#1e3a5f' : '#14532d',
-                  color:      acc.is_demo ? '#60a5fa' : '#4ade80',
-                }}>
-                  {acc.is_demo ? 'DEMO' : 'REAL'}
-                </span>
-                <span style={styles.accountId}>{acc.account_id}</span>
-              </div>
-              <div style={styles.itemRight}>
-                <span style={styles.balance}>
-                  {Number(acc.balance ?? 0).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })} {acc.currency || 'USD'}
-                </span>
-                <span style={styles.arrow}>→</span>
-              </div>
+              Reconnect Deriv account
             </button>
-          ))}
+          </div>
+        ) : (
+          // ── Account list ──────────────────────────────────────────────────────
+          <div style={styles.list}>
+            {sorted.map(acc => (
+              <button
+                key={acc.account_id}
+                style={styles.item}
+                onMouseEnter={e => e.currentTarget.style.borderColor = '#3b82f6'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = '#2a3f5f'}
+                onClick={() => handleSelect(acc)}
+              >
+                <div style={styles.itemLeft}>
+                  <span style={{
+                    ...styles.badge,
+                    background: acc.is_demo ? '#1e3a5f' : '#14532d',
+                    color:      acc.is_demo ? '#60a5fa' : '#4ade80',
+                  }}>
+                    {acc.is_demo ? 'DEMO' : 'REAL'}
+                  </span>
+                  <span style={styles.accountId}>{acc.account_id}</span>
+                </div>
+                <div style={styles.itemRight}>
+                  <span style={styles.balance}>
+                    {Number(acc.balance ?? 0).toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })} {acc.currency || 'USD'}
+                  </span>
+                  <span style={styles.arrow}>→</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
 
-          {sorted.length === 0 && (
-            <div style={styles.empty}>No tradeable accounts found</div>
-          )}
-        </div>
-
-        <button
-          style={styles.addAccount}
-          onClick={() => { window.location.href = `${API}/auth/google` }}
-        >
-          + Connect another account
-        </button>
+        {!isEmpty && (
+          <button
+            style={styles.addAccount}
+            onClick={() => { window.location.href = `${API}/auth/google` }}
+          >
+            + Connect another account
+          </button>
+        )}
 
       </div>
     </div>
@@ -134,7 +159,26 @@ const styles = {
   brandName: { color: '#f1f5f9', fontSize: 22, fontWeight: 600, letterSpacing: '-0.5px' },
   email:     { color: '#3b82f6', fontSize: 13, margin: '0 0 4px', fontFamily: 'monospace' },
   sub:       { color: '#64748b', fontSize: 14, margin: '0 0 24px' },
-  list:      { display: 'flex', flexDirection: 'column', gap: 10 },
+
+  // Empty state
+  emptyBox: {
+    background: '#0a1628', border: '1px solid #1e2d45',
+    borderRadius: 12, padding: '28px 24px',
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    textAlign: 'center', gap: 10,
+  },
+  emptyIcon:  { fontSize: 28, lineHeight: 1 },
+  emptyTitle: { color: '#f1f5f9', fontSize: 15, fontWeight: 600, margin: 0 },
+  emptyBody:  { color: '#64748b', fontSize: 13, margin: 0, lineHeight: 1.6 },
+  reconnectBtn: {
+    marginTop: 8,
+    width: '100%', background: '#1d4ed8', border: 'none',
+    borderRadius: 8, color: '#fff', fontSize: 14,
+    fontWeight: 600, padding: '12px 0', cursor: 'pointer',
+  },
+
+  // Account list
+  list:    { display: 'flex', flexDirection: 'column', gap: 10 },
   item: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     background: '#1e2d45', border: '1px solid #2a3f5f',
@@ -148,10 +192,6 @@ const styles = {
   itemRight: { display: 'flex', alignItems: 'center', gap: 10 },
   balance:   { color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' },
   arrow:     { color: '#3b82f6', fontSize: 16 },
-  empty: {
-    padding: '24px 0', textAlign: 'center',
-    color: '#4b5563', fontSize: 13,
-  },
   addAccount: {
     width: '100%', marginTop: 16,
     background: 'transparent', border: '1px dashed #2a3f5f',
