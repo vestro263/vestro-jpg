@@ -23,8 +23,8 @@ from ..services.deriv_ws import get_account_info, get_mt5_login_list
 router = APIRouter()
 
 DERIV_APP_ID         = os.environ["DERIV_APP_ID"]
-FRONTEND_URL         = os.environ.get("FRONTEND_URL",         "https://vestro-ui.onrender.com")
-BACKEND_URL          = os.environ.get("BACKEND_URL",          "https://vestro-jpg.onrender.com")
+FRONTEND_URL = "https://vestro-ui.onrender.com"
+BACKEND_URL  = "https://vestro-jpg.onrender.com"
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT      = f"{BACKEND_URL}/auth/google/callback"
@@ -48,131 +48,162 @@ async def google_login(user_id: str = ""):
 
 # ── STEP 2 — Google callback ──────────────────────────────────
 
-@router.get("/auth/google/callback")
-async def google_callback(
-    code:  str = "",
-    state: str = "",
-    error: str = "",
-    db: AsyncSession = Depends(get_db),
-):
-    if error or not code:
-        return RedirectResponse(f"{FRONTEND_URL}?error=google_auth_failed")
-
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code":          code,
-                "client_id":     GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "redirect_uri":  GOOGLE_REDIRECT,
-                "grant_type":    "authorization_code",
-            },
-        )
-        token_data = token_resp.json()
-        if "error" in token_data:
-            print(f"[google_callback] token error: {token_data}")
-            return RedirectResponse(f"{FRONTEND_URL}?error=google_token_failed")
-
-        userinfo_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {token_data['access_token']}"},
-        )
-        userinfo = userinfo_resp.json()
-
-    email      = userinfo.get("email", "")
-    name       = userinfo.get("name",  "")
-    avatar_url = userinfo.get("picture", "")
-
-    if not email:
-        return RedirectResponse(f"{FRONTEND_URL}?error=no_email")
-
-    result = await db.execute(select(User).where(User.email == email))
-    user   = result.scalar_one_or_none()
-    if not user:
-        user = User(email=email, name=name, avatar_url=avatar_url)
-        db.add(user)
-    else:
-        user.name       = name
-        user.avatar_url = avatar_url
-    await db.commit()
-    await db.refresh(user)
-
-    deriv_url = (
-        f"https://oauth.deriv.com/oauth2/authorize"
-        f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
-        f"&redirect_uri={BACKEND_URL}/auth/deriv/callback"
-        f"&state={user.id}"
-    )
-    return RedirectResponse(deriv_url)
-
-
-# ── STEP 3 — Deriv OAuth callback ────────────────────────────
-
 @router.get("/auth/deriv/callback")
 async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    params  = dict(request.query_params)
-    user_id = params.get("state", "")
+    params = dict(request.query_params)
 
-    print("==== DERIV CALLBACK ====", params)
+    print("==== DERIV CALLBACK HIT ====")
+    print("params =", params)
+
+    user_id = params.get("state", "")
 
     user = None
     if user_id:
         result = await db.execute(select(User).where(User.id == user_id))
-        user   = result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
 
-    # Collect all tokens Deriv sent back (usually just the VRW wallet)
+    # ==========================================================
+    # NEW: Support BOTH OAuth styles
+    # 1) old acct1/token1 flow
+    # 2) new ?code= OAuth flow
+    # ==========================================================
+
     raw_tokens = {}
+
+    oauth_code = params.get("code")
+
+    # ----------------------------------------------------------
+    # NEW MODERN OAUTH FLOW
+    # ----------------------------------------------------------
+    if oauth_code:
+        print("[DERIV] OAuth code detected:", oauth_code)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                token_resp = await client.get(
+                    "https://oauth.deriv.com/oauth2/token",
+                    params={
+                        "app_id": DERIV_APP_ID,
+                        "code": oauth_code,
+                    },
+                )
+
+                token_data = token_resp.json()
+
+                print("[DERIV TOKEN RESPONSE]")
+                print(token_data)
+
+                if "error" in token_data:
+                    return RedirectResponse(
+                        "https://vestro-ui.onrender.com?error=deriv_token_failed"
+                    )
+
+                loginid = token_data.get("loginid")
+                access_token = token_data.get("access_token")
+
+                if loginid and access_token:
+                    raw_tokens[loginid] = {
+                        "token": access_token,
+                        "cur": token_data.get("currency", "USD"),
+                    }
+
+        except Exception as e:
+            print("[DERIV TOKEN EXCHANGE ERROR]", e)
+
+    # ----------------------------------------------------------
+    # OLD acct1/token1 FLOW
+    # ----------------------------------------------------------
     i = 1
     while f"acct{i}" in params:
         raw_tokens[params[f"acct{i}"]] = {
             "token": params[f"token{i}"],
-            "cur":   params.get(f"cur{i}", "USD"),
+            "cur": params.get(f"cur{i}", "USD"),
         }
         i += 1
 
-    # FIX: if Deriv sent nothing at all, redirect with empty accounts array
-    # so the frontend shows the selector (with "Connect account" button)
-    # instead of a hard error that bypasses the selector entirely.
+    print("[RAW TOKENS]")
+    print(raw_tokens)
+
+    # ==========================================================
+    # FALLBACK — NEVER FAIL SILENTLY
+    # ==========================================================
+
     if not raw_tokens:
-        uid            = user.id if user else ""
-        accounts_json  = urllib.parse.quote(json.dumps([]))
-        active         = user.active_account if user else ""
-        return RedirectResponse(
-            f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+        print("[WARN] No Deriv accounts/tokens returned")
+
+        uid = user.id if user else ""
+
+        final_url = (
+            f"https://vestro-ui.onrender.com"
+            f"?accounts=[]"
+            f"&user_id={uid}"
         )
 
-    # Use the first token to fetch ALL linked accounts via account_list
-    import websockets as _ws
+        print("[FINAL FALLBACK REDIRECT]")
+        print(final_url)
+
+        return RedirectResponse(final_url)
+
+    # ==========================================================
+    # FETCH LINKED ACCOUNTS
+    # ==========================================================
+
     import asyncio
+    import websockets as _ws
 
     first_token = next(iter(raw_tokens.values()))["token"]
-    all_linked  = []
+    all_linked = []
 
     try:
         async with _ws.connect(
             f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
         ) as ws:
-            await ws.send(json.dumps({"authorize": first_token}))
-            auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-            if "error" not in auth_resp:
-                await ws.send(json.dumps({"account_list": 1}))
-                list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-                all_linked = list_resp.get("account_list", [])
-                print("[deriv_callback] account_list:", [a["loginid"] for a in all_linked])
-    except Exception as e:
-        print(f"[deriv_callback] account_list failed: {e}")
 
-    # Build a map of loginid → token from what Deriv gave us
-    token_map = {acct: data["token"] for acct, data in raw_tokens.items()}
+            await ws.send(json.dumps({"authorize": first_token}))
+
+            auth_resp = json.loads(
+                await asyncio.wait_for(ws.recv(), timeout=8)
+            )
+
+            print("[AUTHORIZE RESPONSE]")
+            print(auth_resp)
+
+            if "error" not in auth_resp:
+
+                await ws.send(json.dumps({"account_list": 1}))
+
+                list_resp = json.loads(
+                    await asyncio.wait_for(ws.recv(), timeout=8)
+                )
+
+                print("[ACCOUNT LIST RESPONSE]")
+                print(list_resp)
+
+                all_linked = list_resp.get("account_list", [])
+
+    except Exception as e:
+        print("[ACCOUNT LIST ERROR]", e)
+
+    # ==========================================================
+    # TOKEN MAP
+    # ==========================================================
+
+    token_map = {
+        acct: data["token"]
+        for acct, data in raw_tokens.items()
+    }
+
+    # ==========================================================
+    # BUILD ACCOUNTS
+    # ==========================================================
 
     if all_linked:
         accounts_to_save = [
             {
                 "account_id": a["loginid"],
-                "token":      token_map.get(a["loginid"], first_token),
+                "token": token_map.get(a["loginid"], first_token),
                 "is_virtual": a.get("is_virtual", 0) == 1,
-                "currency":   a.get("currency", "USD"),
+                "currency": a.get("currency", "USD"),
             }
             for a in all_linked
             if not a["loginid"].startswith(("VRW", "RW", "VDW"))
@@ -181,63 +212,62 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         accounts_to_save = [
             {
                 "account_id": acct,
-                "token":      data["token"],
+                "token": data["token"],
                 "is_virtual": acct.startswith("VRT"),
-                "currency":   data["cur"],
+                "currency": data["cur"],
             }
             for acct, data in raw_tokens.items()
             if not acct.startswith(("VRW", "RW", "VDW"))
         ]
 
-    print("[deriv_callback] saving accounts:", [a["account_id"] for a in accounts_to_save])
+    print("[ACCOUNTS TO SAVE]")
+    print(accounts_to_save)
 
     accounts = []
+
     for entry in accounts_to_save:
-        acct     = entry["account_id"]
-        token    = entry["token"]
-        is_demo  = entry["is_virtual"]
+
+        acct = entry["account_id"]
+        token = entry["token"]
+        is_demo = entry["is_virtual"]
         currency = entry["currency"]
 
-        # FIX: never skip an account due to get_account_info errors.
-        # Use fallback data (balance=0) so the account still appears
-        # in the selector — the user can always refresh balance after login.
         try:
             info = await get_account_info(DERIV_APP_ID, token)
+
             if info.get("status") == "error":
-                print(f"[WARN] {acct}: {info.get('message')} — using fallback data")
-                info = {
-                    "balance":    0,
-                    "currency":   currency,
-                    "name":       "",
-                    "email":      user.email if user else "",
-                    "is_virtual": is_demo,
-                }
+                raise Exception(info.get("message"))
+
         except Exception as e:
-            print(f"[ERROR] get_account_info {acct}: {e} — using fallback data")
+            print(f"[ACCOUNT INFO ERROR] {acct}:", e)
+
             info = {
-                "balance":    0,
-                "currency":   currency,
-                "name":       "",
-                "email":      user.email if user else "",
+                "balance": 0,
+                "currency": currency,
+                "name": "",
+                "email": user.email if user else "",
                 "is_virtual": is_demo,
             }
 
         result = await db.execute(
             select(Credentials).where(Credentials.account_id == acct)
         )
+
         cred = result.scalar_one_or_none()
+
         if not cred:
             cred = Credentials()
             db.add(cred)
 
-        cred.account_id      = acct
-        cred.is_demo         = is_demo
-        cred.broker          = "deriv"
-        cred.login           = encrypt(acct)
-        cred.password        = encrypt(token)
-        cred.api_token       = encrypt(token)
-        cred.server          = encrypt("")
+        cred.account_id = acct
+        cred.is_demo = is_demo
+        cred.broker = "deriv"
+        cred.login = encrypt(acct)
+        cred.password = encrypt(token)
+        cred.api_token = encrypt(token)
+        cred.server = encrypt("")
         cred.meta_account_id = ""
+
         if user:
             cred.google_user_id = user.id
 
@@ -245,28 +275,39 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
         accounts.append({
             "account_id": acct,
-            "loginid":    acct,
-            "balance":    info.get("balance", 0),
-            "currency":   info.get("currency", currency),
-            "name":       info.get("name", ""),
-            "email":      info.get("email", user.email if user else ""),
-            "type":       "demo" if is_demo else "real",
-            "is_demo":    is_demo,
-            "broker":     "deriv",
-            "user_id":    user.id if user else "",
+            "loginid": acct,
+            "balance": info.get("balance", 0),
+            "currency": info.get("currency", currency),
+            "name": info.get("name", ""),
+            "email": info.get("email", user.email if user else ""),
+            "type": "demo" if is_demo else "real",
+            "is_demo": is_demo,
+            "broker": "deriv",
+            "user_id": user.id if user else "",
         })
 
     await db.commit()
 
-    # FIX: never redirect to ?error= — always redirect with accounts array
-    # (even empty) so the frontend shows the selector instead of the login page.
+    # ==========================================================
+    # FINAL FRONTEND REDIRECT
+    # ==========================================================
+
     accounts_json = urllib.parse.quote(json.dumps(accounts))
-    uid    = user.id             if user else ""
+
+    uid = user.id if user else ""
     active = user.active_account if user else ""
-    return RedirectResponse(
-        f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+
+    final_url = (
+        f"https://vestro-ui.onrender.com"
+        f"?accounts={accounts_json}"
+        f"&user_id={uid}"
+        f"&active_account={active}"
     )
 
+    print("=== FINAL REDIRECT ===")
+    print(final_url)
+
+    return RedirectResponse(final_url)
 
 # ── STEP 4 — Set active account ───────────────────────────────
 
