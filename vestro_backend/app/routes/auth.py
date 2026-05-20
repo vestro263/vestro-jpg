@@ -57,18 +57,25 @@ async def google_callback(
     print("state =", state)
     print("error =", error)
 
+    # ----------------------------------------------------------
+    # HARD FAIL → never silently continue
+    # ----------------------------------------------------------
+
     if error or not code:
         print("[GOOGLE ERROR] Missing code or auth error")
 
-        return RedirectResponse(
-            "https://vestro-ui.onrender.com?error=google_auth_failed"
+        raise HTTPException(
+            status_code=404,
+            detail="Google OAuth failed before token exchange"
         )
+
+    # ----------------------------------------------------------
+    # EXCHANGE GOOGLE TOKEN
+    # ----------------------------------------------------------
 
     try:
 
         async with httpx.AsyncClient() as client:
-
-            print("[GOOGLE] requesting token...")
 
             token_resp = await client.post(
                 "https://oauth2.googleapis.com/token",
@@ -89,13 +96,11 @@ async def google_callback(
             print(token_data)
 
             if "error" in token_data:
-                print("[GOOGLE TOKEN ERROR]")
 
-                return RedirectResponse(
-                    "https://vestro-ui.onrender.com?error=google_token_failed"
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Google token exchange failed: {token_data}"
                 )
-
-            print("[GOOGLE] requesting userinfo...")
 
             userinfo_resp = await client.get(
                 "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -116,59 +121,103 @@ async def google_callback(
         print("[GOOGLE CALLBACK EXCEPTION]")
         print(e)
 
-        return RedirectResponse(
-            "https://vestro-ui.onrender.com?error=google_callback_exception"
+        raise HTTPException(
+            status_code=404,
+            detail=f"Google callback crashed: {str(e)}"
         )
+
+    # ----------------------------------------------------------
+    # USER VALIDATION
+    # ----------------------------------------------------------
 
     email = userinfo.get("email", "")
     name = userinfo.get("name", "")
     avatar_url = userinfo.get("picture", "")
 
     if not email:
-        return RedirectResponse(
-            "https://vestro-ui.onrender.com?error=no_email"
+
+        raise HTTPException(
+            status_code=404,
+            detail="Google returned no email"
         )
 
     print("[GOOGLE USER]")
     print(email, name)
 
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
+    # ----------------------------------------------------------
+    # USER UPSERT
+    # ----------------------------------------------------------
 
-    if not user:
-        print("[GOOGLE] creating new user")
+    try:
 
-        user = User(
-            email=email,
-            name=name,
-            avatar_url=avatar_url,
+        result = await db.execute(
+            select(User).where(User.email == email)
         )
 
-        db.add(user)
+        user = result.scalar_one_or_none()
 
-    else:
-        print("[GOOGLE] updating existing user")
+        if not user:
 
-        user.name = name
-        user.avatar_url = avatar_url
+            print("[GOOGLE] creating user")
 
-    await db.commit()
-    await db.refresh(user)
+            user = User(
+                email=email,
+                name=name,
+                avatar_url=avatar_url,
+            )
+
+            db.add(user)
+
+        else:
+
+            print("[GOOGLE] updating user")
+
+            user.name = name
+            user.avatar_url = avatar_url
+
+        await db.commit()
+        await db.refresh(user)
+
+    except Exception as e:
+
+        print("[DATABASE ERROR]")
+        print(e)
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"Database error: {str(e)}"
+        )
+
+    # ----------------------------------------------------------
+    # DERIV REDIRECT
+    # ----------------------------------------------------------
 
     deriv_url = (
-        f"https://oauth.deriv.com/oauth2/authorize"
+        "https://oauth.deriv.com/oauth2/authorize"
         f"?app_id={DERIV_APP_ID}"
-        f"&l=EN"
-        f"&brand=deriv"
-        f"&redirect_uri=https://vestro-jpg.onrender.com/auth/deriv/callback"
+        "&l=EN"
+        "&brand=deriv"
+        "&scope=read+trade"
+        "&response_type=token"
+        "&redirect_uri=https://vestro-jpg.onrender.com/auth/deriv/callback"
         f"&state={user.id}"
     )
 
     print("[FINAL DERIV URL]")
     print(deriv_url)
 
-    return RedirectResponse(deriv_url)
+    # ----------------------------------------------------------
+    # HARD VALIDATION
+    # ----------------------------------------------------------
 
+    if "oauth.deriv.com" not in deriv_url:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Deriv URL malformed"
+        )
+
+    return RedirectResponse(deriv_url)
 
 # ── STEP 2 — Google callback ──────────────────────────────────
 
