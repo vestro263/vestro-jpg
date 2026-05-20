@@ -31,64 +31,61 @@ const PAGES = {
   stats:      Performance,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Read OAuth params SYNCHRONOUSLY at module load time — before any React state
+// or Zustand persist hydration runs. This guarantees the URL is read before
+// isLoggedIn from localStorage can interfere.
+// ─────────────────────────────────────────────────────────────────────────────
+const _initialParams = new URLSearchParams(window.location.search)
+const _accountsParam = _initialParams.get('accounts')   // null if not present
+const _errorParam    = _initialParams.get('error')      // null if not present
+const _urlUserId     = _initialParams.get('user_id') || ''
+const _hasOAuthReturn = _accountsParam !== null || _errorParam !== null
+
+// Clear URL immediately so refreshing doesn't re-trigger
+if (_hasOAuthReturn) {
+  window.history.replaceState({}, '', '/')
+}
+
 export default function App() {
   const { isLoggedIn, activePage, pendingAccounts, setPendingAccounts } = useBotStore()
-  const isMobile    = useIsMobile()
+  const isMobile = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
 
   useEffect(() => {
-    const params        = new URLSearchParams(window.location.search)
-    const accountsParam = params.get('accounts')
-    const error         = params.get('error')
-    const urlUserId     = params.get('user_id')     || ''
-    const activeAccount = params.get('active_account') || ''
+    // ── Case 1: OAuth redirect returned ──────────────────────────────────────
+    if (_hasOAuthReturn) {
+      if (_accountsParam !== null) {
+        let accounts = []
+        try {
+          const parsed = JSON.parse(decodeURIComponent(_accountsParam))
+          if (Array.isArray(parsed)) accounts = parsed
+        } catch (e) {
+          console.warn('[App] Failed to parse accounts param:', e)
+        }
 
-    // Always clear the URL immediately
-    window.history.replaceState({}, '', '/')
+        const resolvedUserId = _urlUserId || accounts[0]?.user_id || ''
+        if (resolvedUserId) {
+          useBotStore.getState().setUserId(resolvedUserId)
+        }
 
-    // ── Case 1: OAuth redirect returned (accounts param present, even if empty) ──
-    if (accountsParam !== null) {
-      let accounts = []
-      try {
-        const parsed = JSON.parse(decodeURIComponent(accountsParam))
-        if (Array.isArray(parsed)) accounts = parsed
-      } catch (e) {
-        console.warn('[App] Failed to parse accounts param:', e)
+        const enriched = accounts.map(a => ({
+          ...a,
+          user_id: a.user_id || resolvedUserId,
+        }))
+
+        useBotStore.getState().setPendingAccounts(enriched)
+      } else {
+        // error param — show empty selector
+        if (_urlUserId) useBotStore.getState().setUserId(_urlUserId)
+        useBotStore.getState().setPendingAccounts([])
       }
 
-      // Always use URL-level user_id first, fall back to first account's user_id
-      const resolvedUserId = urlUserId || accounts[0]?.user_id || ''
-
-      if (resolvedUserId) {
-        useBotStore.getState().setUserId(resolvedUserId)
-      }
-
-      // Enrich every account with resolved user_id
-      const enriched = accounts.map(a => ({
-        ...a,
-        user_id: a.user_id || resolvedUserId,
-      }))
-
-      // Show selector — even with zero accounts (user can then reconnect Deriv)
-      useBotStore.getState().setPendingAccounts(enriched)
       setAuthChecked(true)
       return
     }
 
-    // ── Case 2: OAuth returned an error ──────────────────────────────────────────
-    if (error) {
-      console.warn('[OAuth Error]', error)
-      const resolvedUserId = urlUserId || ''
-      if (resolvedUserId) {
-        useBotStore.getState().setUserId(resolvedUserId)
-      }
-      // Show selector with zero accounts so user sees the reconnect button
-      useBotStore.getState().setPendingAccounts([])
-      setAuthChecked(true)
-      return
-    }
-
-    // ── Case 3: Already logged in (persisted session) → skip selector ────────────
+    // ── Case 2: Already logged in (persisted session) → reconnect ────────────
     if (isLoggedIn) {
       const state = useBotStore.getState()
       if (!state.connected) {
@@ -99,7 +96,7 @@ export default function App() {
       return
     }
 
-    // ── Case 4: Try session restore via saved userId ──────────────────────────────
+    // ── Case 3: Try session restore via saved userId ──────────────────────────
     const savedUserId = useBotStore.getState().userId
     if (savedUserId) {
       fetch(`${API}/auth/check/${savedUserId}`)
@@ -120,7 +117,7 @@ export default function App() {
       return
     }
 
-    // ── Case 5: No session, no redirect → show Login ─────────────────────────────
+    // ── Case 4: No session, no redirect → show Login ──────────────────────────
     setAuthChecked(true)
   }, [])
 
