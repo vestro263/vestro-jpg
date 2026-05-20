@@ -98,7 +98,6 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
-
     deriv_url = (
         f"https://oauth.deriv.com/oauth2/authorize"
         f"?app_id={DERIV_APP_ID}&l=EN&brand=deriv"
@@ -132,9 +131,16 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         }
         i += 1
 
+    # FIX: if Deriv sent nothing at all, redirect with empty accounts array
+    # so the frontend shows the selector (with "Connect account" button)
+    # instead of a hard error that bypasses the selector entirely.
     if not raw_tokens:
-        uid = user.id if user else ""
-        return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}")
+        uid            = user.id if user else ""
+        accounts_json  = urllib.parse.quote(json.dumps([]))
+        active         = user.active_account if user else ""
+        return RedirectResponse(
+            f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+        )
 
     # Use the first token to fetch ALL linked accounts via account_list
     import websockets as _ws
@@ -158,11 +164,8 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         print(f"[deriv_callback] account_list failed: {e}")
 
     # Build a map of loginid → token from what Deriv gave us
-    # For linked accounts we don't have individual tokens — use the wallet token
-    # The wallet token is valid for all linked accounts on the same user
     token_map = {acct: data["token"] for acct, data in raw_tokens.items()}
 
-    # If account_list worked, use those accounts; otherwise fall back to raw
     if all_linked:
         accounts_to_save = [
             {
@@ -172,11 +175,9 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
                 "currency":   a.get("currency", "USD"),
             }
             for a in all_linked
-            # Skip wallet accounts — not tradeable
             if not a["loginid"].startswith(("VRW", "RW", "VDW"))
         ]
     else:
-        # Fallback: just use what Deriv sent, minus wallets
         accounts_to_save = [
             {
                 "account_id": acct,
@@ -197,14 +198,22 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         is_demo  = entry["is_virtual"]
         currency = entry["currency"]
 
-        # Fetch live balance
+        # FIX: never skip an account due to get_account_info errors.
+        # Use fallback data (balance=0) so the account still appears
+        # in the selector — the user can always refresh balance after login.
         try:
             info = await get_account_info(DERIV_APP_ID, token)
             if info.get("status") == "error":
-                print(f"[SKIP] {acct}: {info.get('message')}")
-                continue
+                print(f"[WARN] {acct}: {info.get('message')} — using fallback data")
+                info = {
+                    "balance":    0,
+                    "currency":   currency,
+                    "name":       "",
+                    "email":      user.email if user else "",
+                    "is_virtual": is_demo,
+                }
         except Exception as e:
-            print(f"[ERROR] get_account_info {acct}: {e}")
+            print(f"[ERROR] get_account_info {acct}: {e} — using fallback data")
             info = {
                 "balance":    0,
                 "currency":   currency,
@@ -249,16 +258,15 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    if not accounts:
-        uid = user.id if user else ""
-        return RedirectResponse(f"{FRONTEND_URL}?error=no_deriv_accounts&user_id={uid}")
-
+    # FIX: never redirect to ?error= — always redirect with accounts array
+    # (even empty) so the frontend shows the selector instead of the login page.
     accounts_json = urllib.parse.quote(json.dumps(accounts))
     uid    = user.id             if user else ""
     active = user.active_account if user else ""
     return RedirectResponse(
         f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
     )
+
 
 # ── STEP 4 — Set active account ───────────────────────────────
 

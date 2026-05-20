@@ -36,10 +36,35 @@ export default function App() {
   const isMobile    = useIsMobile()
   const [authChecked, setAuthChecked] = useState(false)
 
+  // ── DEBUG — remove once selector issue is resolved ────────
+  console.log('[DEBUG] App render:', {
+    pendingAccounts,
+    pendingAccountsIsArray: Array.isArray(pendingAccounts),
+    pendingAccountsLength:  Array.isArray(pendingAccounts) ? pendingAccounts.length : 'n/a',
+    isLoggedIn,
+    authChecked,
+    accountsParam: new URLSearchParams(window.location.search).get('accounts'),
+    href: window.location.href,
+    localStorageVestroAuth: (() => {
+      try { return JSON.parse(localStorage.getItem('vestro-auth')) } catch { return null }
+    })(),
+  })
+  // ── END DEBUG ─────────────────────────────────────────────
+
   useEffect(() => {
     const params        = new URLSearchParams(window.location.search)
     const accountsParam = params.get('accounts')
     const error         = params.get('error')
+
+    // ── DEBUG — log URL state at effect time ──────────────
+    console.log('[DEBUG] useEffect fired:', {
+      accountsParam,
+      error,
+      fullSearch: window.location.search,
+      isLoggedIn,
+      savedUserId: useBotStore.getState().userId,
+    })
+    // ── END DEBUG ─────────────────────────────────────────
 
     window.history.replaceState({}, '', '/')
 
@@ -47,15 +72,17 @@ export default function App() {
     if (accountsParam) {
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
-        if (Array.isArray(accounts) && accounts.length) {
-          // Save user_id immediately so session restore works on next page load
+        console.log('[DEBUG] parsed accounts from URL:', accounts)
+        if (Array.isArray(accounts)) {
           if (accounts[0]?.user_id) {
             useBotStore.getState().setUserId(accounts[0].user_id)
           }
           useBotStore.getState().setPendingAccounts(accounts)
+          console.log('[DEBUG] setPendingAccounts called with:', accounts)
         }
       } catch (e) {
         console.warn('[App] Failed to parse accounts:', e)
+        useBotStore.getState().setPendingAccounts([])
       }
       setAuthChecked(true)
       return
@@ -63,17 +90,25 @@ export default function App() {
 
     if (error) {
       console.warn('[OAuth Error]', error)
-      useBotStore.getState().setAuthError(
-        error === 'no_deriv_accounts'
-          ? 'No Deriv accounts found. Please try signing in again.'
-          : 'Authentication failed. Please try again.'
-      )
+      if (error === 'no_deriv_accounts') {
+        const userId = params.get('user_id')
+        if (userId) {
+          useBotStore.getState().setUserId(userId)
+        }
+        useBotStore.getState().setPendingAccounts([])
+        console.log('[DEBUG] error=no_deriv_accounts → setPendingAccounts([])')
+      } else {
+        useBotStore.getState().setAuthError(
+          'Authentication failed. Please try again.'
+        )
+      }
       setAuthChecked(true)
       return
     }
 
     // ── Already logged in (persisted session) → reconnect ─
     if (isLoggedIn) {
+      console.log('[DEBUG] already isLoggedIn → skipping selector, going to dashboard')
       const state = useBotStore.getState()
       if (!state.connected) {
         state.connect()
@@ -86,25 +121,28 @@ export default function App() {
     // ── Try session restore via saved userId ──────────────
     const savedUserId = useBotStore.getState().userId
     if (savedUserId) {
+      console.log('[DEBUG] attempting session restore for userId:', savedUserId)
       fetch(`${API}/auth/check/${savedUserId}`)
         .then(r => r.json())
         .then(data => {
-          if (data.found && data.accounts?.length) {
-            // Enrich with email/user_id for the selector
-            const enriched = data.accounts.map(a => ({
+          console.log('[DEBUG] auth/check response:', data)
+          if (data.found) {
+            const enriched = (data.accounts ?? []).map(a => ({
               ...a,
               user_id: data.user_id,
               email:   data.email,
               name:    data.name,
             }))
+            console.log('[DEBUG] session restore → setPendingAccounts:', enriched)
             useBotStore.getState().setPendingAccounts(enriched)
           }
         })
-        .catch(() => {})
+        .catch((e) => { console.warn('[DEBUG] auth/check failed:', e) })
         .finally(() => setAuthChecked(true))
       return
     }
 
+    console.log('[DEBUG] no accounts, no session → showing Login')
     setAuthChecked(true)
   }, [])
 
@@ -118,13 +156,13 @@ export default function App() {
 
   if (!authChecked) return null
 
-  // Show selector — after OAuth or session restore
-  if (pendingAccounts?.length) {
+  // Show selector whenever pendingAccounts is an array (even empty)
+  if (Array.isArray(pendingAccounts)) {
+    console.log('[DEBUG] rendering AccountSelector with', pendingAccounts.length, 'accounts')
     return (
       <AccountSelector
         accounts={pendingAccounts}
         onSelect={(account) => {
-          // AccountSelector already called login() — just save userId and clear selector
           useBotStore.getState().setUserId(account.user_id)
           setPendingAccounts(null)
         }}
@@ -132,8 +170,12 @@ export default function App() {
     )
   }
 
-  if (!isLoggedIn) return <Login />
+  if (!isLoggedIn) {
+    console.log('[DEBUG] rendering Login page')
+    return <Login />
+  }
 
+  console.log('[DEBUG] rendering Dashboard, activePage:', activePage)
   const Page = PAGES[activePage] ?? Dashboard
 
   if (isMobile) {
