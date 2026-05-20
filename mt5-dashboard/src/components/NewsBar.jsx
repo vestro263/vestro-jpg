@@ -29,45 +29,7 @@ const EMPTY_MESSAGES = [
   'Calm before volatility',
 ]
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(iso) {
-  return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
-function computeTechnicals(currency) {
-  const seed = (currency.charCodeAt(0) * 31 + currency.charCodeAt(1)) * 17 + (Date.now() / 30000 | 0)
-  const rng  = (n) => Math.abs(Math.sin(seed * n) * 0.5 + 0.5)
-
-  const rsi    = Math.round(28 + rng(9301) * 44)
-  const macd   = parseFloat((-0.002 + rng(4931) * 0.004).toFixed(4))
-  const emaPos = rng(7621) > 0.5
-  const adx    = Math.round(15 + rng(2731) * 30)
-  const bb     = rng(1234) > 0.66 ? 'upper' : rng(1234) > 0.33 ? 'mid' : 'lower'
-
-  let score = 50
-  if (rsi > 60)   score += 15; else if (rsi < 40) score -= 15
-  if (macd > 0)   score += 12; else score -= 12
-  if (emaPos)     score += 10; else score -= 10
-  if (adx > 30)   score += 8
-  if (bb === 'upper') score += 5; else if (bb === 'lower') score -= 5
-  score = Math.max(5, Math.min(95, Math.round(score)))
-
-  const signal      = score >= 65 ? 'BUY' : score <= 35 ? 'SELL' : 'NEUTRAL'
-  const signalColor = signal === 'BUY' ? '#00ff41' : signal === 'SELL' ? '#ff3131' : '#ffb800'
-  const pair        = PAIRS[currency] || `${currency}/USD`
-
-  return {
-    score, signal, signalColor, pair,
-    indicators: [
-      { lbl: 'RSI (14)',   val: rsi,                             color: rsi > 60 ? '#00ff41' : rsi < 40 ? '#ff3131' : '#ffb800' },
-      { lbl: 'MACD',      val: macd > 0 ? `+${macd}` : macd,   color: macd > 0 ? '#00ff41' : '#ff3131' },
-      { lbl: 'EMA cross', val: emaPos ? 'above' : 'below',      color: emaPos ? '#00ff41' : '#ff3131' },
-      { lbl: 'ADX',       val: adx,                             color: adx > 30 ? '#00ff41' : '#ffb800' },
-      { lbl: 'Bollinger', val: bb,                              color: bb === 'upper' ? '#00ff41' : bb === 'lower' ? '#ff3131' : '#ffb800' },
-    ],
-  }
-}
 
 // ── Gauge ─────────────────────────────────────────────────────────────────────
 

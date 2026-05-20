@@ -48,6 +48,10 @@ export default function App() {
       try {
         const accounts = JSON.parse(decodeURIComponent(accountsParam))
         if (Array.isArray(accounts) && accounts.length) {
+          // Save user_id immediately so session restore works on next page load
+          if (accounts[0]?.user_id) {
+            useBotStore.getState().setUserId(accounts[0].user_id)
+          }
           useBotStore.getState().setPendingAccounts(accounts)
         }
       } catch (e) {
@@ -59,6 +63,11 @@ export default function App() {
 
     if (error) {
       console.warn('[OAuth Error]', error)
+      useBotStore.getState().setAuthError(
+        error === 'no_deriv_accounts'
+          ? 'No Deriv accounts found. Please try signing in again.'
+          : 'Authentication failed. Please try again.'
+      )
       setAuthChecked(true)
       return
     }
@@ -86,6 +95,7 @@ export default function App() {
               ...a,
               user_id: data.user_id,
               email:   data.email,
+              name:    data.name,
             }))
             useBotStore.getState().setPendingAccounts(enriched)
           }
@@ -114,7 +124,9 @@ export default function App() {
       <AccountSelector
         accounts={pendingAccounts}
         onSelect={(account) => {
-          useBotStore.getState().login(account)
+          // FIX: pass broker, accountId, accountData separately — not a single object
+          useBotStore.getState().setUserId(account.user_id)
+          useBotStore.getState().login('deriv', account.account_id, account)
           setPendingAccounts(null)
         }}
       />
