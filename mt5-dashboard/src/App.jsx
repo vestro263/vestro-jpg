@@ -124,9 +124,8 @@ export default function App() {
       <AccountSelector
         accounts={pendingAccounts}
         onSelect={(account) => {
-          // FIX: pass broker, accountId, accountData separately — not a single object
+          // AccountSelector already called login() — just save userId and clear selector
           useBotStore.getState().setUserId(account.user_id)
-          useBotStore.getState().login('deriv', account.account_id, account)
           setPendingAccounts(null)
         }}
       />
