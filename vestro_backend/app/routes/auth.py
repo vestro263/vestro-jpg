@@ -45,6 +45,130 @@ async def google_login(user_id: str = ""):
     })
     return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
 
+@router.get("/auth/google/callback")
+async def google_callback(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    print("==== GOOGLE CALLBACK HIT ====")
+    print("code =", code)
+    print("state =", state)
+    print("error =", error)
+
+    if error or not code:
+        print("[GOOGLE ERROR] Missing code or auth error")
+
+        return RedirectResponse(
+            "https://vestro-ui.onrender.com?error=google_auth_failed"
+        )
+
+    try:
+
+        async with httpx.AsyncClient() as client:
+
+            print("[GOOGLE] requesting token...")
+
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": GOOGLE_REDIRECT,
+                    "grant_type": "authorization_code",
+                },
+            )
+
+            print("[GOOGLE TOKEN STATUS]", token_resp.status_code)
+
+            token_data = token_resp.json()
+
+            print("[GOOGLE TOKEN DATA]")
+            print(token_data)
+
+            if "error" in token_data:
+                print("[GOOGLE TOKEN ERROR]")
+
+                return RedirectResponse(
+                    "https://vestro-ui.onrender.com?error=google_token_failed"
+                )
+
+            print("[GOOGLE] requesting userinfo...")
+
+            userinfo_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={
+                    "Authorization": f"Bearer {token_data['access_token']}"
+                },
+            )
+
+            print("[GOOGLE USERINFO STATUS]", userinfo_resp.status_code)
+
+            userinfo = userinfo_resp.json()
+
+            print("[GOOGLE USERINFO]")
+            print(userinfo)
+
+    except Exception as e:
+
+        print("[GOOGLE CALLBACK EXCEPTION]")
+        print(e)
+
+        return RedirectResponse(
+            "https://vestro-ui.onrender.com?error=google_callback_exception"
+        )
+
+    email = userinfo.get("email", "")
+    name = userinfo.get("name", "")
+    avatar_url = userinfo.get("picture", "")
+
+    if not email:
+        return RedirectResponse(
+            "https://vestro-ui.onrender.com?error=no_email"
+        )
+
+    print("[GOOGLE USER]")
+    print(email, name)
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        print("[GOOGLE] creating new user")
+
+        user = User(
+            email=email,
+            name=name,
+            avatar_url=avatar_url,
+        )
+
+        db.add(user)
+
+    else:
+        print("[GOOGLE] updating existing user")
+
+        user.name = name
+        user.avatar_url = avatar_url
+
+    await db.commit()
+    await db.refresh(user)
+
+    deriv_url = (
+        f"https://oauth.deriv.com/oauth2/authorize"
+        f"?app_id={DERIV_APP_ID}"
+        f"&l=EN"
+        f"&brand=deriv"
+        f"&redirect_uri=https://vestro-jpg.onrender.com/auth/deriv/callback"
+        f"&state={user.id}"
+    )
+
+    print("[FINAL DERIV URL]")
+    print(deriv_url)
+
+    return RedirectResponse(deriv_url)
+
 
 # ── STEP 2 — Google callback ──────────────────────────────────
 
