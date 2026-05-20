@@ -76,23 +76,47 @@ class Firm(Base):
     signals = relationship("Signal", back_populates="firm", cascade="all, delete-orphan")
     scores  = relationship("Score",  back_populates="firm", cascade="all, delete-orphan")
 
-
 class Signal(Base):
     __tablename__ = "signals"
 
-    id          = Column(String, primary_key=True, default=gen_id)
-    firm_id     = Column(String, ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
-    type        = Column(String, nullable=False)
-    value       = Column(Float)
-    text        = Column(Text)
-    source      = Column(String)
-    captured_at = Column(DateTime, server_default=func.now(), index=True)
+    id = Column(String, primary_key=True, default=gen_id)
 
-    firm = relationship("Firm", back_populates="signals")
+    firm_id = Column(
+        String,
+        ForeignKey("firms.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    type = Column(String, nullable=False)
+    value = Column(Float)
+    text = Column(Text)
+    source = Column(String)
+
+    # FIX: removed index=True to avoid duplicate index creation
+    captured_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    firm = relationship(
+        "Firm",
+        back_populates="signals",
+    )
 
     __table_args__ = (
-        Index("ix_signals_firm_type",   "firm_id", "type"),
-        Index("ix_signals_captured_at", "captured_at"),
+        # query optimization: WHERE firm_id=? AND type=?
+        Index(
+            "ix_signals_firm_type",
+            "firm_id",
+            "type",
+        ),
+
+        # query optimization: ORDER BY / filter by captured_at
+        Index(
+            "ix_signals_captured_at",
+            "captured_at",
+        ),
     )
 
 
