@@ -49,7 +49,6 @@ async def lifespan(app: FastAPI):
     # 3. Restore bot running state after deploy/restart
     import vestro_backend.app.routes.api as api_module
     api_module._bot_running = True
-    api_module._write_bot_state(True)
     log.info("Bot auto-started on deploy")
 
     # 4. Start main signal engine loop
@@ -141,8 +140,6 @@ app.add_middleware(
 )
 
 
-
-
 # ------------------ GLOBAL ERROR HANDLER ------------------
 @app.exception_handler(Exception)
 async def debug_exception_handler(request: Request, exc: Exception):
@@ -157,7 +154,6 @@ async def debug_exception_handler(request: Request, exc: Exception):
         },
     )
 
-    # ✅ Ensure CORS headers are ALWAYS present
     origin = request.headers.get("origin")
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
@@ -182,7 +178,6 @@ async def check_ml_data(db: AsyncSession = Depends(get_db)):
         except Exception as e:
             results[table] = {"error": str(e)}
 
-    # Check labeled vs unlabeled signal_logs
     try:
         labeled = await db.execute(text(
             "SELECT COUNT(*) FROM signal_logs WHERE label_15m IS NOT NULL"
@@ -203,7 +198,6 @@ async def check_ml_data(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         results["signal_logs"]["detail_error"] = str(e)
 
-    # Check calibration config
     try:
         configs = await db.execute(text(
             "SELECT symbol, strategy, precision, f1, n_samples, trained_at FROM calibration_config"
@@ -220,7 +214,6 @@ async def check_ml_data(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/calibration/train")
 async def trigger_training():
-    import asyncio
     from ml.calibration_trainer import run_trainer
     asyncio.create_task(run_trainer())
     return {"status": "training started"}
@@ -246,10 +239,7 @@ async def run_labeler_verbose():
         if not cred:
             return {"status": "error", "detail": "no demo credential found"}
 
-        if not cred:
-            return {"status": "error", "detail": "no VRTC credential found"}
-
-        await run_labeler(decrypt(cred.password))   # await directly, no create_task
+        await run_labeler(decrypt(cred.password))
         return {"status": "done"}
 
     except Exception as e:
@@ -269,7 +259,6 @@ async def list_tables(db: AsyncSession = Depends(get_db)):
 
 @app.get("/debug/creds")
 async def check_creds(db: AsyncSession = Depends(get_db)):
-
     result = await db.execute(text("SELECT id, account_id, is_demo, broker FROM credentials"))
     rows = result.fetchall()
     return {"count": len(rows),
@@ -277,7 +266,6 @@ async def check_creds(db: AsyncSession = Depends(get_db)):
 
 @app.get("/debug/ml-detail")
 async def ml_detail(db: AsyncSession = Depends(get_db)):
-
     r1 = await db.execute(text("SELECT signal, COUNT(*) FROM signal_logs GROUP BY signal"))
     r2 = await db.execute(text("SELECT COUNT(*) FROM signal_logs WHERE entry_price IS NOT NULL"))
     r3 = await db.execute(text("SELECT COUNT(*) FROM signal_logs WHERE entry_price IS NULL"))
@@ -346,7 +334,6 @@ async def debug_crash500_spikes(db: AsyncSession = Depends(get_db)):
 
 @app.get("/debug/label-dist")
 async def label_dist(db: AsyncSession = Depends(get_db)):
-
     r = await db.execute(text("""
         SELECT label_15m, COUNT(*) 
         FROM signal_logs 
@@ -364,7 +351,7 @@ async def execution_window(
     min_confidence: float = 0.60,
     strategy: str | None = None,
     signal: str | None = None,
-    executed_only: bool = False,      # ← add this
+    executed_only: bool = False,
     limit: int = 200,
 ):
     filters = [
@@ -380,7 +367,7 @@ async def execution_window(
         filters.append("signal = :signal")
         params["signal"] = signal
     if executed_only:
-        filters.append("executed = true")   # ← only real fired trades
+        filters.append("executed = true")
 
     where = " AND ".join(filters)
 
@@ -445,7 +432,6 @@ async def mark_signal_executed(
     return {"status": "ok", "id": signal_id}
 
 
-
 class OutcomeUpdate(BaseModel):
     signal_id:  str
     exit_price: float
@@ -491,7 +477,6 @@ async def record_outcome(payload: OutcomeUpdate, db: AsyncSession = Depends(get_
 async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
     result = {}
 
-    # ── 1. How many labeled rows exist per symbol ─────────────────────────────
     try:
         r = await db.execute(text("""
             SELECT symbol, strategy,
@@ -522,7 +507,6 @@ async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         result["labeled_rows"] = {"error": str(e)}
 
-    # ── 2. Calibration models in DB ───────────────────────────────────────────
     try:
         r = await db.execute(text("""
             SELECT symbol, strategy, precision, recall, f1, n_samples,
@@ -548,8 +532,7 @@ async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         result["calibration_models"] = {"error": str(e)}
 
-    # ── 3. Walk-forward readiness check ──────────────────────────────────────
-    MIN_SAMPLES = 200  # must match walk_forward_validator.py MIN_SAMPLES
+    MIN_SAMPLES = 200
 
     readiness = {}
     for entry in result.get("labeled_rows", []):
@@ -564,7 +547,6 @@ async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
             }
     result["walk_forward_readiness"] = readiness
 
-    # ── 4. Signal outcome fill rate (journal health) ──────────────────────────
     try:
         r = await db.execute(text("""
             SELECT
@@ -588,7 +570,6 @@ async def debug_walk_forward(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         result["journal_health"] = {"error": str(e)}
 
-    # ── 5. Last labeler run estimate (newest labeled row) ─────────────────────
     try:
         r = await db.execute(text("""
             SELECT MAX(labeled_at) FROM signal_logs WHERE labeled_at IS NOT NULL
