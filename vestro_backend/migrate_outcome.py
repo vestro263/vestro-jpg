@@ -175,6 +175,25 @@ def run():
         for row in demo_accounts:
             print(f"✅ {row[0]}")
 
+            # ----------------------------------------------------
+            # Token preview
+            # ----------------------------------------------------
+
+            print("\n=== TOKEN PREVIEW ===")
+
+            tokens = conn.execute(text("""
+                    SELECT account_id, LEFT(password, 15) as preview, LENGTH(password) as length
+                    FROM credentials
+                    ORDER BY account_id
+                """)).fetchall()
+
+            for row in tokens:
+                print(
+                    f"account={row[0]} "
+                    f"token_preview={row[1]} "
+                    f"token_length={row[2]}"
+                )
+
         print("\n✅ Done")
 
 

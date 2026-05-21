@@ -611,6 +611,14 @@ async def signal_broadcast(payload: dict):
         log.error(f"[broadcast] failed: {e}", exc_info=True)
         return {"status": "error", "detail": str(e)}
 
+@app.get("/debug/env")
+async def debug_env():
+    return {
+        "DERIV_APP_ID": os.environ.get("DERIV_APP_ID", "MISSING"),
+        "DERIV_APP_ID_length": len(os.environ.get("DERIV_APP_ID", "")),
+        "ENCRYPTION_KEY_set": bool(os.environ.get("ENCRYPTION_KEY")),
+    }
+
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
