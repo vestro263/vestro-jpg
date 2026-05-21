@@ -620,33 +620,30 @@ async def debug_env():
     }
 
 
-@app.get("/debug/test-token")
-async def test_token(db: AsyncSession = Depends(get_db)):
-    import httpx
-    from app.services.credential_store import decrypt
+@app.post("/debug/set-token")
+async def set_token(payload: dict, db: AsyncSession = Depends(get_db)):
+    from app.services.credential_store import encrypt
     from app.database import AsyncSessionLocal
-    from sqlalchemy import select
-    from app.models import Credentials
 
-    results = []
+    account_id = payload.get("account_id")
+    token      = payload.get("token")
+
+    if not account_id or not token:
+        return {"error": "account_id and token required"}
+
     async with AsyncSessionLocal() as session:
-        creds = (await session.execute(select(Credentials))).scalars().all()
+        await session.execute(text("""
+            UPDATE credentials
+            SET password = :password, api_token = :token
+            WHERE account_id = :account_id
+        """), {
+            "password":   encrypt(token),
+            "token":      encrypt(token),
+            "account_id": account_id,
+        })
+        await session.commit()
 
-    for cred in creds:
-        try:
-            token = decrypt(cred.password)
-            results.append({
-                "account_id": cred.account_id,
-                "token_first_5": token[:5],
-                "token_length": len(token),
-            })
-        except Exception as e:
-            results.append({
-                "account_id": cred.account_id,
-                "error": str(e),
-            })
-
-    return results
+    return {"status": "ok", "account_id": account_id}
 
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
