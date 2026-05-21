@@ -757,10 +757,28 @@ async def get_account_by_id(
 
     api_token = decrypt(cred.password)
 
-    if is_new_platform(account_id):
-        return await fetch_deriv_rest_account(account_id, api_token)
+    try:
+        if is_new_platform(account_id):
+            return await fetch_deriv_rest_account(account_id, api_token)
+        return await fetch_deriv_legacy_account(account_id, api_token, cred.is_demo)
 
-    return await fetch_deriv_legacy_account(account_id, api_token, cred.is_demo)
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        # Token expired / Deriv rejected — return what we know from DB so UI
+        # can still display the account row without a 500.
+        log.warning("[account] %s unreachable: %s", account_id, e)
+        return {
+            "account_id": account_id,
+            "broker":     cred.broker or "deriv",
+            "currency":   "USD",
+            "balance":    None,
+            "name":       "",
+            "email":      "",
+            "is_virtual": cred.is_demo,
+            "error":      "token_invalid",
+        }
 
 
 # ─────────────────────────────────────────────────────────────
