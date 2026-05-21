@@ -209,6 +209,39 @@ async def get_account_info(
         }
 
 
+async def get_mt5_login_list(
+    app_id: str,
+    api_token: str,
+):
+
+    async with authorized_ws(app_id, api_token) as ws:
+
+        await ws.send(json.dumps({
+            "mt5_login_list": 1
+        }))
+
+        resp = json.loads(
+            await asyncio.wait_for(
+                ws.recv(),
+                timeout=10
+            )
+        )
+
+        logger.warning(
+            "[MT5 LOGIN LIST] RESPONSE:\n%s",
+            json.dumps(resp, indent=2)
+        )
+
+        if resp.get("error"):
+            raise RuntimeError(
+                resp["error"]["message"]
+            )
+
+        return resp.get(
+            "mt5_login_list",
+            []
+        )
+
 # ============================================================
 # CONTRACT TYPE
 # ============================================================
