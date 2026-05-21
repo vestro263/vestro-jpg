@@ -604,13 +604,12 @@ async def signal_broadcast(payload: dict):
     and forwards to connected WebSocket clients.
     """
     try:
-        from app.routes.stream import manager  # adjust import to match your stream.py
-        await manager.broadcast(json.dumps(payload))
+        from app.routes.stream import broadcast as ws_broadcast
+        await ws_broadcast(payload)
         return {"status": "ok"}
     except Exception as e:
         log.error(f"[broadcast] failed: {e}", exc_info=True)
         return {"status": "error", "detail": str(e)}
-
 
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
