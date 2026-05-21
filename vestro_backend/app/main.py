@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from .routes.stream import broadcast as ws_broadcast
 load_dotenv()
 
 from .database import init_db, get_db
