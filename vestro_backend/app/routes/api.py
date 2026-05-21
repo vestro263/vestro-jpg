@@ -590,42 +590,97 @@ _positions_cache: list = []
 _bot_running     = False
 
 # ─────────────────────────────────────────────────────────────
-# ACTIVE ACCOUNT — in-memory store (keyed by user_id)
+# DERIV PLATFORM HELPERS
 # ─────────────────────────────────────────────────────────────
 
-_active_accounts: dict[str, str] = {}  # user_id → deriv_account_id
+def is_new_platform(account_id: str) -> bool:
+    """DOT accounts belong to Deriv's new platform and require REST APIs."""
+    return account_id.startswith("DOT")
 
 
-class SetActiveAccountRequest(BaseModel):
-    user_id:       str
-    deriv_account: str
+async def fetch_deriv_rest_account(account_id: str, api_token: str) -> dict:
+    """Fetch account data for new Deriv platform accounts using REST API."""
+    app_id = os.getenv("DERIV_APP_ID", "1089")
 
-@router.post("/set-active-account")
-async def set_active_account(payload: SetActiveAccountRequest):
-    if not payload.user_id or not payload.deriv_account:
-        raise HTTPException(status_code=400, detail="user_id and deriv_account are required")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            "https://api.derivws.com/trading/v1/options/accounts",
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Deriv-App-ID": app_id,
+            },
+        )
 
-    if payload.deriv_account.startswith(("VRW", "RW", "VDW")):
-        raise HTTPException(status_code=400, detail="Wallet accounts cannot be used for trading")
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Deriv REST API error: {resp.text}",
+        )
 
-    _active_accounts[payload.user_id] = payload.deriv_account
+    data     = resp.json()
+    accounts = data.get("data", [])
+    acct     = next((a for a in accounts if a.get("account_id") == account_id), None)
+
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found in Deriv REST response")
+
     return {
-        "status":         "ok",
-        "user_id":        payload.user_id,
-        "active_account": payload.deriv_account,
+        "account_id": account_id,
+        "balance":    float(acct.get("balance", 0)),
+        "currency":   acct.get("currency", "USD"),
+        "name":       acct.get("name", ""),
+        "email":      acct.get("email", ""),
+        "is_virtual": acct.get("account_type") == "demo",
+        "broker":     "deriv",
     }
 
 
-@router.get("/active-account/{user_id}")
-async def get_active_account(user_id: str):
-    """
-    Returns the currently active Deriv account for a given user.
-    Returns 404 if the user hasn't selected one yet (e.g. fresh session).
-    """
-    account_id = _active_accounts.get(user_id)
-    if not account_id:
-        raise HTTPException(status_code=404, detail="No active account set for this user")
-    return {"user_id": user_id, "active_account": account_id}
+async def fetch_deriv_legacy_account(
+    account_id: str,
+    api_token: str,
+    is_demo: bool | None = None,
+) -> dict:
+    """Fetch account data using legacy Binary WebSocket API."""
+    app_id = os.getenv("DERIV_APP_ID", "1089")
+
+    async with websockets.connect(
+        f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
+    ) as ws:
+
+        # Authorize
+        await ws.send(json.dumps({"authorize": api_token}))
+        auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+        if "error" in auth_resp:
+            raise HTTPException(status_code=401, detail=auth_resp["error"]["message"])
+
+        auth = auth_resp["authorize"]
+
+        # Request live balance
+        await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
+
+        balance  = float(auth.get("balance", 0))
+        deadline = asyncio.get_event_loop().time() + 5
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=3)
+                msg = json.loads(raw)
+                if "balance" in msg and "error" not in msg:
+                    balance = float(msg["balance"]["balance"])
+                    break
+            except asyncio.TimeoutError:
+                break
+
+    return {
+        "account_id": account_id,
+        "balance":    balance,
+        "currency":   auth.get("currency", "USD"),
+        "name":       auth.get("fullname", ""),
+        "email":      auth.get("email", ""),
+        "is_virtual": is_demo if is_demo is not None else auth.get("is_virtual", 0) == 1,
+        "broker":     "deriv",
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -633,16 +688,37 @@ async def get_active_account(user_id: str):
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/debug/linked-accounts/{account_id}")
-async def debug_linked_accounts(account_id: str, db: AsyncSession = Depends(get_db)):
+async def debug_linked_accounts(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(Credentials).where(Credentials.account_id == account_id)
     )
     cred = result.scalar_one_or_none()
+
     if not cred:
         raise HTTPException(status_code=404, detail="Not found")
 
     api_token = decrypt(cred.password)
 
+    # NEW PLATFORM
+    if is_new_platform(account_id):
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://api.derivws.com/trading/v1/options/accounts",
+                headers={
+                    "Authorization": f"Bearer {api_token}",
+                    "Deriv-App-ID": os.getenv("DERIV_APP_ID", "1089"),
+                },
+            )
+        return {
+            "platform":    "new",
+            "status_code": resp.status_code,
+            "response":    resp.json(),
+        }
+
+    # LEGACY PLATFORM
     async with websockets.connect(
         f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
     ) as ws:
@@ -652,276 +728,78 @@ async def debug_linked_accounts(account_id: str, db: AsyncSession = Depends(get_
         await ws.send(json.dumps({"account_list": 1}))
         resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
 
-    return {"authorize": auth, "account_list": resp}
+    return {
+        "platform":     "legacy",
+        "authorize":    auth,
+        "account_list": resp,
+    }
 
 
-@router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await manager.connect(ws)
-    await ws.send_text(json.dumps({
-        "type":        "init",
-        "account":     _account_cache,
-        "positions":   _positions_cache,
-        "bot_running": _bot_running,
-    }))
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(ws)
-
-
-@router.post("/signal/broadcast")
-async def broadcast_signal(data: dict):
-    await manager.broadcast({"type": "signal", **data})
-    return {"status": "ok"}
-
-
-@router.post("/account/update")
-async def update_account(data: dict):
-    global _account_cache
-    _account_cache = data
-    await manager.broadcast({"type": "account", "data": data})
-    return {"status": "ok"}
-
-
-@router.post("/positions/update")
-async def update_positions(data: list):
-    global _positions_cache
-    _positions_cache = data
-    await manager.broadcast({"type": "positions", "data": data})
-    return {"status": "ok"}
-
-
-@router.post("/contract/update")
-async def contract_update(data: dict):
-    await manager.broadcast({"type": "contract_update", **data})
-    return {"status": "ok"}
-
-
-@router.get("/account")
-def get_account():
-    return _account_cache
-
-
-@router.get("/positions")
-def get_positions():
-    return _positions_cache
+# ─────────────────────────────────────────────────────────────
+# ACCOUNT BY ID
+# ─────────────────────────────────────────────────────────────
 
 @router.get("/account/{account_id}")
-async def get_account_by_id(account_id: str, db: AsyncSession = Depends(get_db)):
+async def get_account_by_id(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(Credentials).where(Credentials.account_id == account_id)
     )
     cred = result.scalar_one_or_none()
+
     if not cred:
         raise HTTPException(status_code=404, detail="Account not found")
 
     api_token = decrypt(cred.password)
-    app_id = os.getenv('DERIV_APP_ID', '1089')
 
-    async with websockets.connect(
-        f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
-    ) as ws:
-        # Step 1 — authorize
-        await ws.send(json.dumps({"authorize": api_token}))
-        auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-        if "error" in auth_resp:
-            raise HTTPException(status_code=401, detail=auth_resp["error"]["message"])
-        auth = auth_resp["authorize"]
+    if is_new_platform(account_id):
+        return await fetch_deriv_rest_account(account_id, api_token)
 
-        # Step 2 — request live balance, keep connection open to drain response
-        await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
-        balance = float(auth.get("balance", 0))
-        deadline = asyncio.get_event_loop().time() + 5
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=3)
-                msg = json.loads(raw)
-                print(f"[account/{account_id}] ws msg:", msg)  # ← temp debug
-                if "balance" in msg and "error" not in msg:
-                    balance = float(msg["balance"]["balance"])
-                    break
-            except asyncio.TimeoutError:
-                break
+    return await fetch_deriv_legacy_account(account_id, api_token, cred.is_demo)
 
-    return {
-        "account_id": cred.account_id,
-        "balance":    balance,
-        "currency":   auth.get("currency", "USD"),
-        "name":       auth.get("fullname", ""),
-        "email":      auth.get("email", ""),
-        "is_virtual": cred.is_demo if cred.is_demo is not None else (auth.get("is_virtual", 0) == 1),
-        "broker":     "deriv",
-    }
+
+# ─────────────────────────────────────────────────────────────
+# ACCOUNTS
+# ─────────────────────────────────────────────────────────────
 
 @router.get("/accounts")
 async def list_accounts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Credentials))
-    creds = result.scalars().all()
+    creds  = result.scalars().all()
 
     accounts = []
 
     for cred in creds:
+
         if not cred.account_id:
             continue
 
-        # Skip wallet accounts — they have no tradeable balance
+        # Skip wallet accounts
         if cred.account_id.startswith(("VRW", "RW", "VDW")):
             continue
 
         try:
             api_token = decrypt(cred.password)
-            app_id = os.getenv('DERIV_APP_ID', '1089')
 
-            async with websockets.connect(
-                f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
-            ) as ws:
-                await ws.send(json.dumps({"authorize": api_token}))
-                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            if is_new_platform(cred.account_id):
+                account = await fetch_deriv_rest_account(cred.account_id, api_token)
+            else:
+                account = await fetch_deriv_legacy_account(cred.account_id, api_token, cred.is_demo)
 
-                if "error" in resp:
-                    continue
-
-                auth = resp["authorize"]
-
-                # Fetch live balance instead of stale authorize value
-                await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
-                balance = float(auth.get("balance", 0.0))
-                deadline = asyncio.get_event_loop().time() + 5
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=3)
-                        msg = json.loads(raw)
-                        if "balance" in msg and "error" not in msg:
-                            balance = float(msg["balance"]["balance"])
-                            break
-                    except asyncio.TimeoutError:
-                        break
-
-            is_demo = cred.is_demo if cred.is_demo is not None else (
-                auth.get("is_virtual", 0) == 1
-            )
-
-            accounts.append({
-                "account_id": cred.account_id,
-                "balance":    balance,
-                "currency":   auth.get("currency", "USD"),
-                "name":       auth.get("fullname", ""),
-                "email":      auth.get("email", ""),
-                "type":       "demo" if is_demo else "real",
-                "is_demo":    is_demo,
-                "broker":     "deriv",
-            })
+            account["type"] = "demo" if account["is_virtual"] else "real"
+            accounts.append(account)
 
         except asyncio.TimeoutError:
             print(f"[accounts] timeout for cred_id={cred.id}")
             continue
+
         except Exception as e:
             print(f"[accounts] failed for cred_id={cred.id}: {e}")
             continue
 
     return accounts
-
-# ─────────────────────────────────────────────────────────────
-# BOT CONTROL
-# ─────────────────────────────────────────────────────────────
-
-_BOT_STATE_FILE = "/tmp/vestro_bot_running.txt"
-
-
-def _read_bot_state() -> bool:
-    try:
-        return open(_BOT_STATE_FILE).read().strip() == "1"
-    except Exception:
-        return False
-
-
-def _write_bot_state(running: bool):
-    try:
-        open(_BOT_STATE_FILE, "w").write("1" if running else "0")
-    except Exception:
-        pass
-
-
-@router.post("/bot/start")
-def start_bot():
-    global _bot_running
-    _bot_running = True
-    _write_bot_state(True)
-    return {"status": "started"}
-
-
-@router.post("/bot/stop")
-def stop_bot():
-    global _bot_running
-    _bot_running = False
-    _write_bot_state(False)
-    return {"status": "stopped"}
-
-
-@router.get("/bot/status")
-def bot_status():
-    global _bot_running
-    _bot_running = _read_bot_state()
-    return {"running": _bot_running}
-
-# ─────────────────────────────────────────────────────────────
-# JOURNAL
-# ─────────────────────────────────────────────────────────────
-
-@router.get("/journal")
-async def get_journal(
-    account_id: str | None = Query(None),
-    email: str | None = Query(None),
-    limit: int = Query(50, le=500),
-    symbol: str | None = None,
-    strategy: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    from sqlalchemy import text
-
-    account_ids = set()
-
-    if account_id:
-        account_ids.add(account_id)
-
-    if email:
-        from app.services.account_resolver import AccountResolver
-        rows = await AccountResolver.resolve_by_email(db, email)
-        for r in rows:
-            account_ids.add(r.account_id)
-
-    if not account_ids:
-        return []
-
-    params = {"limit": limit}
-    placeholders = []
-
-    for i, acc in enumerate(account_ids):
-        key = f"acc_{i}"
-        params[key] = acc
-        placeholders.append(f":{key}")
-
-    where = f"account_id IN ({','.join(placeholders)})"
-
-    if symbol:
-        where += " AND symbol = :symbol"
-        params["symbol"] = symbol
-
-    if strategy:
-        where += " AND strategy = :strategy"
-        params["strategy"] = strategy
-
-    rows = await db.execute(text(f"""
-        SELECT *
-        FROM signal_logs
-        WHERE {where}
-        ORDER BY captured_at DESC
-        LIMIT :limit
-    """), params)
-
-    return [dict(r._mapping) for r in rows.fetchall()]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -929,19 +807,57 @@ async def get_journal(
 # ─────────────────────────────────────────────────────────────
 
 class ConnectRequest(BaseModel):
-    broker: str
-    login: str
-    password: str
-    server: Optional[str] = None
+    broker:          str
+    login:           str
+    password:        str
+    server:          Optional[str] = None
     meta_account_id: Optional[str] = None
 
 
 @router.post("/connect")
 async def connect(payload: ConnectRequest):
+
+    # ── DERIV ────────────────────────────────────────────────
     if payload.broker == "deriv":
         try:
+
+            # New platform token (ory_at_...)
+            if payload.password.startswith("ory_at_"):
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        "https://api.derivws.com/trading/v1/options/accounts",
+                        headers={
+                            "Authorization": f"Bearer {payload.password}",
+                            "Deriv-App-ID": os.getenv("DERIV_APP_ID", "1089"),
+                        },
+                    )
+
+                if resp.status_code >= 400:
+                    raise HTTPException(status_code=401, detail="Invalid Deriv token")
+
+                data     = resp.json()
+                accounts = data.get("data", [])
+
+                if not accounts:
+                    raise HTTPException(status_code=404, detail="No accounts returned")
+
+                acct = accounts[0]
+                return {
+                    "status": "connected",
+                    "account": {
+                        "account_id": acct.get("account_id"),
+                        "broker":     "deriv",
+                        "currency":   acct.get("currency", "USD"),
+                        "balance":    float(acct.get("balance", 0)),
+                        "name":       acct.get("name", ""),
+                        "email":      acct.get("email", ""),
+                        "is_virtual": acct.get("account_type") == "demo",
+                    },
+                }
+
+            # Legacy platform token
             async with websockets.connect(
-                "wss://ws.binaryws.com/websockets/v3?app_id=1089"
+                f"wss://ws.binaryws.com/websockets/v3?app_id={os.getenv('DERIV_APP_ID', '1089')}"
             ) as deriv_ws:
                 await deriv_ws.send(json.dumps({"authorize": payload.password}))
                 response = json.loads(await asyncio.wait_for(deriv_ws.recv(), timeout=10))
@@ -965,6 +881,7 @@ async def connect(payload: ConnectRequest):
                     "is_virtual": auth.get("is_virtual", 0) == 1,
                 },
             }
+
         except HTTPException:
             raise
         except asyncio.TimeoutError:
@@ -972,6 +889,7 @@ async def connect(payload: ConnectRequest):
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Deriv connection failed: {str(e)}")
 
+    # ── WELTRADE ─────────────────────────────────────────────
     elif payload.broker == "welltrade":
         raise HTTPException(status_code=501, detail="WelTrade not yet implemented")
 
