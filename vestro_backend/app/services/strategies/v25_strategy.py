@@ -41,7 +41,10 @@ import httpx
 import json
 import os
 import statistics
-import websockets
+from app.services.safe_deriv_ws import (
+    fetch_candles,
+    fetch_balance,
+)
 
 from .base_strategy import BaseStrategy
 from app.services.regime_cache import get_current_regime          # ← regime gate
@@ -414,41 +417,35 @@ class V25Strategy(BaseStrategy):
         self.is_prop = is_prop
 
     async def fetch_market_data(self) -> dict:
-        url = f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
-        async with websockets.connect(url) as ws:
-            await ws.send(json.dumps({"authorize": self.api_token}))
-            auth = json.loads(await ws.recv())
-            try:
-                self.balance = float(auth["authorize"]["balance"])
-            except (KeyError, TypeError):
-                pass
 
-            await ws.send(json.dumps({
-                "ticks_history": self.SYMBOL,
-                "style":         "candles",
-                "granularity":   60,
-                "count":         300,
-                "end":           "latest",
-            }))
-            data = json.loads(await ws.recv())
+        try:
 
-        raw_candles = data.get("candles", [])
-        candles = [
-            {
-                "open":   float(c["open"]),
-                "high":   float(c["high"]),
-                "low":    float(c["low"]),
-                "close":  float(c["close"]),
-                "volume": 60,
-                "epoch":  c.get("epoch", 0),
-            }
-            for c in raw_candles
-        ]
-        self.logger.info(
-            f"[{self.NAME}] fetched {len(candles)} candles | "
-            f"balance={self.balance} | last_close={candles[-1]['close'] if candles else 'N/A'}"
+            self.balance = await fetch_balance(
+                self.api_token
+            )
+
+        except Exception as e:
+
+            self.logger.warning(
+                f"[{self.NAME}] balance fetch failed: {e}"
+            )
+
+        candles = await fetch_candles(
+            api_token=self.api_token,
+            symbol=self.SYMBOL,
+            count=300,
+            granularity=60,
         )
-        return {"candles": candles}
+
+        self.logger.info(
+            f"[{self.NAME}] fetched "
+            f"{len(candles)} candles | "
+            f"balance={self.balance}"
+        )
+
+        return {
+            "candles": candles
+        }
 
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
