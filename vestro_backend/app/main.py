@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
-
+import os
 from .database import init_db, get_db
 from .config import get_settings
 from .routes.api import router as api_router, _refresh_firms
