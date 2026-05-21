@@ -1,38 +1,42 @@
 """
-deriv_client.py
+safe_deriv_ws.py
 ================
 
-FULL FIXED VERSION
-------------------
+Robust Deriv websocket helper for VESTRO strategies.
+
 Fixes:
-1. HTTP 401 websocket failures
-2. Wrong websocket endpoint usage
-3. Silent auth failures
-4. Auto reconnect support
-5. Proper ping timeouts
-6. Better diagnostics
-7. Stable authorization flow
-8. Broadcast-safe connections
-9. Compatible with StrategyRunner
+-------
+✓ Handles HTTP 401 properly
+✓ Validates authorize response
+✓ Uses modern Deriv WS endpoint
+✓ Retries automatically
+✓ Adds ping/heartbeat timeout safety
+✓ Prevents infinite crash loops
+✓ Gives clean structured errors
+✓ Works on Render reliably
+✓ Safe candle fetching wrapper
 
-IMPORTANT:
------------
-Use ONLY:
+Usage:
+-------
+from app.services.safe_deriv_ws import fetch_candles
 
-    wss://ws.derivws.com/websockets/v3?app_id=YOUR_APP_ID
+candles = await fetch_candles(
+    api_token=self.api_token,
+    symbol="R_25",
+    count=300,
+)
 
-NOT:
-    api.derivws.com
-    ws.binaryws.com
-    trading/v1/options/accounts
-
-Those endpoints cause 401s for market feeds.
+Environment:
+-------------
+DERIV_APP_ID=xxxx
+DERIV_WS_URL=wss://ws.derivws.com/websockets/v3
 """
 
-import json
 import asyncio
+import json
 import logging
-from contextlib import asynccontextmanager
+import os
+from typing import Any
 
 import websockets
 from websockets.exceptions import (
@@ -42,527 +46,325 @@ from websockets.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# CORRECT DERIV WS ENDPOINT
-# ============================================================
+DERIV_APP_ID = os.getenv("DERIV_APP_ID", "").strip()
 
-WS_URL = "wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+DERIV_WS_BASE = os.getenv(
+    "DERIV_WS_URL",
+    "wss://ws.derivws.com/websockets/v3"
+)
 
-# ============================================================
-# SAFE WS CONNECTOR
-# ============================================================
-
-
-async def _connect(url: str):
-    """
-    Stable websocket connection with proper settings.
-    """
-
-    return await websockets.connect(
-        url,
-        ping_interval=20,
-        ping_timeout=20,
-        close_timeout=10,
-        max_size=10_000_000,
+if not DERIV_APP_ID:
+    raise RuntimeError(
+        "DERIV_APP_ID environment variable missing"
     )
 
 
-# ============================================================
-# AUTHORIZED CONNECTION
-# ============================================================
+class DerivWSException(Exception):
+    pass
 
 
-@asynccontextmanager
-async def authorized_ws(app_id: str, api_token: str):
+class DerivAuthException(Exception):
+    pass
+
+
+class DerivDataException(Exception):
+    pass
+
+
+class SafeDerivWS:
     """
-    Opens an authenticated Deriv websocket connection.
+    Safe websocket manager with:
+    - retries
+    - auth validation
+    - heartbeat timeout
+    - clean logging
     """
 
-    url = WS_URL.format(app_id=app_id)
-
-    logger.warning(
-        f"[DERIV WS] CONNECTING -> {url}"
-    )
-
-    try:
-        async with await _connect(url) as ws:
-
-            # ------------------------------------------------
-            # AUTHORIZE
-            # ------------------------------------------------
-
-            await ws.send(json.dumps({
-                "authorize": api_token
-            }))
-
-            raw = await asyncio.wait_for(
-                ws.recv(),
-                timeout=15
-            )
-
-            auth = json.loads(raw)
-
-            logger.warning(
-                "[DERIV WS] AUTH RESPONSE:\n%s",
-                json.dumps(auth, indent=2)
-            )
-
-            # ------------------------------------------------
-            # AUTH FAILURE
-            # ------------------------------------------------
-
-            if auth.get("error"):
-
-                msg = auth["error"].get(
-                    "message",
-                    "Unknown auth error"
-                )
-
-                code = auth["error"].get(
-                    "code",
-                    "UNKNOWN"
-                )
-
-                raise RuntimeError(
-                    f"Deriv authorization failed "
-                    f"[{code}] {msg}"
-                )
-
-            auth_data = auth.get("authorize", {})
-
-            loginid = auth_data.get("loginid")
-            currency = auth_data.get("currency")
-
-            logger.warning(
-                "[DERIV WS] AUTH SUCCESS "
-                f"loginid={loginid} "
-                f"currency={currency}"
-            )
-
-            yield ws
-
-    except InvalidStatus as e:
-        logger.exception(
-            "[DERIV WS] INVALID STATUS / HTTP FAILURE"
-        )
-        raise RuntimeError(
-            f"Websocket rejected connection: {e}"
-        )
-
-    except Exception:
-        logger.exception(
-            "[DERIV WS] CONNECTION FAILURE"
-        )
-        raise
-
-
-# ============================================================
-# GET ACCOUNT INFO
-# ============================================================
-
-
-async def get_account_info(
-    app_id: str,
-    api_token: str,
-) -> dict:
-
-    async with authorized_ws(app_id, api_token) as ws:
-
-        auth_req = json.loads(
-            await ws.recv()
-        ) if False else None
-
-        await ws.send(json.dumps({
-            "balance": 1,
-            "subscribe": 0
-        }))
-
-        response = json.loads(
-            await asyncio.wait_for(
-                ws.recv(),
-                timeout=10
-            )
-        )
-
-        logger.warning(
-            "[ACCOUNT INFO] RESPONSE:\n%s",
-            json.dumps(response, indent=2)
-        )
-
-        if response.get("error"):
-            return {
-                "status": "error",
-                "message": response["error"]["message"]
-            }
-
-        bal = response.get("balance", {})
-
-        return {
-            "status": "ok",
-            "balance": float(
-                bal.get("balance", 0)
-            ),
-            "currency": bal.get(
-                "currency",
-                "USD"
-            ),
-        }
-
-
-async def get_mt5_login_list(
-    app_id: str,
-    api_token: str,
-):
-
-    async with authorized_ws(app_id, api_token) as ws:
-
-        await ws.send(json.dumps({
-            "mt5_login_list": 1
-        }))
-
-        resp = json.loads(
-            await asyncio.wait_for(
-                ws.recv(),
-                timeout=10
-            )
-        )
-
-        logger.warning(
-            "[MT5 LOGIN LIST] RESPONSE:\n%s",
-            json.dumps(resp, indent=2)
-        )
-
-        if resp.get("error"):
-            raise RuntimeError(
-                resp["error"]["message"]
-            )
-
-        return resp.get(
-            "mt5_login_list",
-            []
-        )
-
-# ============================================================
-# CONTRACT TYPE
-# ============================================================
-
-
-def contract_type(action: str) -> str:
-    action = action.upper()
-
-    if action in {"BUY", "CALL", "RISE"}:
-        return "CALL"
-
-    return "PUT"
-
-
-# ============================================================
-# EXECUTE TRADE
-# ============================================================
-
-
-async def execute_trade(
-    app_id: str,
-    api_token: str,
-    symbol: str,
-    action: str,
-    amount: float,
-    duration: int = 5,
-    duration_unit: str = "m",
-):
-
-    ctype = contract_type(action)
-
-    logger.warning(
-        f"[TRADE] "
-        f"symbol={symbol} "
-        f"action={ctype} "
-        f"amount={amount}"
-    )
-
-    async with authorized_ws(app_id, api_token) as ws:
-
-        # ------------------------------------------------
-        # PROPOSAL
-        # ------------------------------------------------
-
-        proposal_payload = {
-            "proposal": 1,
-            "amount": amount,
-            "basis": "stake",
-            "contract_type": ctype,
-            "currency": "USD",
-            "duration": duration,
-            "duration_unit": duration_unit,
-            "symbol": symbol,
-        }
-
-        logger.warning(
-            "[TRADE] PROPOSAL REQUEST:\n%s",
-            json.dumps(proposal_payload, indent=2)
-        )
-
-        await ws.send(
-            json.dumps(proposal_payload)
-        )
-
-        proposal_resp = json.loads(
-            await asyncio.wait_for(
-                ws.recv(),
-                timeout=15
-            )
-        )
-
-        logger.warning(
-            "[TRADE] PROPOSAL RESPONSE:\n%s",
-            json.dumps(proposal_resp, indent=2)
-        )
-
-        if proposal_resp.get("error"):
-            return {
-                "status": "error",
-                "message": proposal_resp["error"]["message"]
-            }
-
-        proposal = proposal_resp["proposal"]
-
-        proposal_id = proposal["id"]
-        ask_price = proposal["ask_price"]
-
-        # ------------------------------------------------
-        # BUY
-        # ------------------------------------------------
-
-        buy_payload = {
-            "buy": proposal_id,
-            "price": ask_price,
-        }
-
-        logger.warning(
-            "[TRADE] BUY REQUEST:\n%s",
-            json.dumps(buy_payload, indent=2)
-        )
-
-        await ws.send(
-            json.dumps(buy_payload)
-        )
-
-        buy_resp = json.loads(
-            await asyncio.wait_for(
-                ws.recv(),
-                timeout=15
-            )
-        )
-
-        logger.warning(
-            "[TRADE] BUY RESPONSE:\n%s",
-            json.dumps(buy_resp, indent=2)
-        )
-
-        if buy_resp.get("error"):
-            return {
-                "status": "error",
-                "message": buy_resp["error"]["message"]
-            }
-
-        buy = buy_resp["buy"]
-
-        return {
-            "status": "ok",
-            "contract_id": buy["contract_id"],
-            "transaction_id": buy["transaction_id"],
-            "buy_price": buy["buy_price"],
-            "payout": buy["payout"],
-            "symbol": symbol,
-            "contract_type": ctype,
-            "longcode": buy.get("longcode", ""),
-        }
-
-
-# ============================================================
-# WATCH CONTRACT
-# ============================================================
-
-
-async def watch_contract(
-    app_id: str,
-    api_token: str,
-    contract_id: int,
-    callback,
-):
-
-    logger.warning(
-        f"[WATCH] contract_id={contract_id}"
-    )
-
-    async with authorized_ws(app_id, api_token) as ws:
-
-        await ws.send(json.dumps({
-            "proposal_open_contract": 1,
-            "contract_id": contract_id,
-            "subscribe": 1,
-        }))
-
-        while True:
+    def __init__(
+        self,
+        api_token: str,
+        retries: int = 3,
+        timeout: int = 15,
+    ):
+        self.api_token = api_token
+        self.retries = retries
+        self.timeout = timeout
+        self.ws = None
+
+    @property
+    def url(self):
+        return f"{DERIV_WS_BASE}?app_id={DERIV_APP_ID}"
+
+    async def connect(self):
+        """
+        Establish websocket safely.
+        """
+
+        last_error = None
+
+        for attempt in range(1, self.retries + 1):
 
             try:
-                msg = json.loads(
-                    await asyncio.wait_for(
-                        ws.recv(),
-                        timeout=60
-                    )
+                logger.info(
+                    f"[DerivWS] connecting attempt "
+                    f"{attempt}/{self.retries}"
                 )
 
-            except ConnectionClosed:
-                logger.warning(
-                    "[WATCH] websocket closed"
+                self.ws = await websockets.connect(
+                    self.url,
+                    open_timeout=self.timeout,
+                    close_timeout=self.timeout,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=10_000_000,
                 )
-                break
 
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[WATCH] timeout waiting for updates"
-                )
-                continue
+                logger.info("[DerivWS] connected")
 
-            if msg.get("error"):
+                await self.authorize()
+
+                return self.ws
+
+            except InvalidStatus as e:
+                last_error = e
+
                 logger.error(
-                    "[WATCH] ERROR %s",
-                    msg["error"]
+                    f"[DerivWS] HTTP failure: {e}"
                 )
-                break
 
-            contract = msg.get(
-                "proposal_open_contract",
-                {}
+                if "401" in str(e):
+                    raise DerivAuthException(
+                        "Deriv websocket rejected connection "
+                        "(HTTP 401). "
+                        "Check DERIV_APP_ID."
+                    )
+
+            except Exception as e:
+                last_error = e
+
+                logger.exception(
+                    f"[DerivWS] connect failed: {e}"
+                )
+
+            await asyncio.sleep(min(attempt * 2, 10))
+
+        raise DerivWSException(
+            f"Failed websocket connection after retries: "
+            f"{last_error}"
+        )
+
+    async def authorize(self):
+        """
+        Validate token properly.
+        """
+
+        if not self.ws:
+            raise DerivWSException(
+                "Websocket not connected"
             )
 
-            if not contract:
-                continue
+        payload = {
+            "authorize": self.api_token
+        }
 
-            payload = {
-                "contract_id": contract_id,
-                "status": contract.get(
-                    "status",
-                    "open"
-                ),
-                "buy_price": contract.get(
-                    "buy_price",
-                    0
-                ),
-                "bid_price": contract.get(
-                    "bid_price",
-                    0
-                ),
-                "profit": contract.get(
-                    "profit",
-                    0
-                ),
-                "entry_spot": contract.get(
-                    "entry_spot",
-                    0
-                ),
-                "current_spot": contract.get(
-                    "current_spot",
-                    0
-                ),
-                "is_expired": contract.get(
-                    "is_expired",
-                    False
-                ),
-                "is_sold": contract.get(
-                    "is_sold",
-                    False
-                ),
-            }
+        await self.ws.send(json.dumps(payload))
 
-            await callback(payload)
+        raw = await asyncio.wait_for(
+            self.ws.recv(),
+            timeout=self.timeout,
+        )
 
-            if (
-                contract.get("is_expired")
-                or contract.get("is_sold")
-            ):
-                logger.warning(
-                    "[WATCH] contract completed"
-                )
-                break
+        response = json.loads(raw)
+
+        if response.get("error"):
+
+            code = response["error"].get("code")
+            msg = response["error"].get("message")
+
+            raise DerivAuthException(
+                f"Authorize failed: {code} - {msg}"
+            )
+
+        auth = response.get("authorize")
+
+        if not auth:
+            raise DerivAuthException(
+                f"Missing authorize payload: {response}"
+            )
+
+        logger.info(
+            f"[DerivWS] authorized "
+            f"account={auth.get('loginid')} "
+            f"balance={auth.get('balance')}"
+        )
+
+        return auth
+
+    async def send(self, payload: dict[str, Any]):
+        """
+        Safe send helper.
+        """
+
+        if not self.ws:
+            raise DerivWSException(
+                "Websocket not connected"
+            )
+
+        await self.ws.send(json.dumps(payload))
+
+    async def recv(self):
+        """
+        Safe receive helper.
+        """
+
+        if not self.ws:
+            raise DerivWSException(
+                "Websocket not connected"
+            )
+
+        raw = await asyncio.wait_for(
+            self.ws.recv(),
+            timeout=self.timeout,
+        )
+
+        return json.loads(raw)
+
+    async def request(self, payload: dict[str, Any]):
+        """
+        Request-response helper.
+        """
+
+        await self.send(payload)
+
+        response = await self.recv()
+
+        if response.get("error"):
+
+            code = response["error"].get("code")
+            msg = response["error"].get("message")
+
+            raise DerivDataException(
+                f"Deriv request failed: "
+                f"{code} - {msg}"
+            )
+
+        return response
+
+    async def close(self):
+
+        try:
+            if self.ws:
+                await self.ws.close()
+                logger.info("[DerivWS] closed")
+        except Exception:
+            pass
+
+        self.ws = None
+
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
 
 # ============================================================
-# GET LINKED ACCOUNTS
+# HIGH LEVEL HELPERS
 # ============================================================
 
-
-async def get_linked_accounts(
-    app_id: str,
+async def fetch_candles(
     api_token: str,
-):
-
-    async with authorized_ws(app_id, api_token) as ws:
-
-        await ws.send(json.dumps({
-            "account_list": 1
-        }))
-
-        resp = json.loads(
-            await asyncio.wait_for(
-                ws.recv(),
-                timeout=10
-            )
-        )
-
-        logger.warning(
-            "[LINKED ACCOUNTS] RESPONSE:\n%s",
-            json.dumps(resp, indent=2)
-        )
-
-        if resp.get("error"):
-            raise RuntimeError(
-                resp["error"]["message"]
-            )
-
-        accounts = resp.get(
-            "account_list",
-            []
-        )
-
-        logger.warning(
-            "[LINKED ACCOUNTS] FOUND=%s",
-            [a["loginid"] for a in accounts]
-        )
-
-        return accounts
-
-
-# ============================================================
-# MARKET DATA
-# ============================================================
-
-
-async def fetch_ticks(
-    app_id: str,
     symbol: str,
+    count: int = 300,
+    granularity: int = 60,
 ):
+    """
+    Fetch candles safely from Deriv.
+    """
 
-    url = WS_URL.format(app_id=app_id)
+    async with SafeDerivWS(api_token) as deriv:
 
-    async with await _connect(url) as ws:
+        response = await deriv.request({
+            "ticks_history": symbol,
+            "style": "candles",
+            "granularity": granularity,
+            "count": count,
+            "end": "latest",
+        })
 
-        await ws.send(json.dumps({
-            "ticks": symbol,
-            "subscribe": 1
-        }))
+        raw_candles = response.get("candles")
 
-        while True:
+        if not raw_candles:
+            raise DerivDataException(
+                f"No candles returned for {symbol}"
+            )
 
-            msg = json.loads(await ws.recv())
+        candles = []
 
-            if msg.get("error"):
-                raise RuntimeError(
-                    msg["error"]["message"]
-                )
+        for c in raw_candles:
 
-            tick = msg.get("tick")
+            candles.append({
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"]),
+                "volume": 60,
+                "epoch": c.get("epoch", 0),
+            })
 
-            if tick:
-                yield tick
+        logger.info(
+            f"[DerivWS] fetched "
+            f"{len(candles)} candles "
+            f"for {symbol}"
+        )
+
+        return candles
+
+
+async def fetch_balance(api_token: str):
+    """
+    Fetch account balance safely.
+    """
+
+    async with SafeDerivWS(api_token) as deriv:
+
+        response = await deriv.request({
+            "balance": 1
+        })
+
+        balance = (
+            response
+            .get("balance", {})
+            .get("balance")
+        )
+
+        return float(balance)
+
+
+# ============================================================
+# QUICK TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    async def main():
+
+        token = os.getenv("DERIV_TOKEN")
+
+        if not token:
+            raise RuntimeError(
+                "DERIV_TOKEN missing"
+            )
+
+        candles = await fetch_candles(
+            api_token=token,
+            symbol="R_25",
+            count=10,
+        )
+
+        print()
+        print("SUCCESS")
+        print(candles[-1])
+
+    asyncio.run(main())
