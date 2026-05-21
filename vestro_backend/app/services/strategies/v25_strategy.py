@@ -450,7 +450,7 @@ class V25Strategy(BaseStrategy):
     async def compute_signal(self, market_data: dict) -> dict:
         candles = market_data["candles"]
 
-        from ml.calibration_loader import get_thresholds
+        from ml.calibration_loader import get_thresholds, load_calibrated_model
         t = get_thresholds(self.SYMBOL)
 
         # ── [REGIME-GATE] Read current regime ─────────────────────────────
@@ -464,13 +464,13 @@ class V25Strategy(BaseStrategy):
                 "amount": 0.0, "meta": {}, "indicators": {},
             }
 
-        features  = _FeatureEngine(candles).build_all()
-        patterns  = _PatternExtractor(candles, features, t)
+        features = _FeatureEngine(candles).build_all()
+        patterns = _PatternExtractor(candles, features, t)
         predictor = _PredictionEngine(patterns, features, candles, t)
 
         # [REGIME-THRESHOLD] regime-aware checklist minimum
         effective_chk = t.effective_checklist_min()
-        result        = predictor.predict(effective_checklist_min=effective_chk)
+        result = predictor.predict(effective_checklist_min=effective_chk)
 
         # ── [REGIME-GATE] Suppress after prediction based on regime ───────
         if result["signal"] != "HOLD":
@@ -478,31 +478,40 @@ class V25Strategy(BaseStrategy):
 
             if regime == "CRASH" and signal_direction == "BUY":
                 result = {
-                    "signal":    "HOLD",
-                    "reason":    "CRASH regime — BUY suppressed",
-                    "tss":       result.get("tss", 0),
+                    "signal": "HOLD",
+                    "reason": "CRASH regime — BUY suppressed",
+                    "tss": result.get("tss", 0),
                     "checklist": result.get("checklist", 0),
-                    "atr_zone":  result.get("atr_zone", "normal"),
+                    "atr_zone": result.get("atr_zone", "normal"),
                     "confidence": 0.0,
                 }
             elif regime == "HIGH_VOL" and signal_direction == "BUY":
                 result = {
-                    "signal":    "HOLD",
-                    "reason":    "HIGH_VOL regime — BUY suppressed",
-                    "tss":       result.get("tss", 0),
+                    "signal": "HOLD",
+                    "reason": "HIGH_VOL regime — BUY suppressed",
+                    "tss": result.get("tss", 0),
                     "checklist": result.get("checklist", 0),
-                    "atr_zone":  result.get("atr_zone", "normal"),
+                    "atr_zone": result.get("atr_zone", "normal"),
                     "confidence": 0.0,
                 }
-            # RANGE handled via effective_checklist_min; no explicit suppression
 
-        atr_val    = features["atr_14"][-1] if features.get("atr_14") else 1000
-        atr_zone   = result.get("atr_zone", "normal")
-        tss        = result.get("tss", 0)
+        # ── Build core values ─────────────────────────────────────────────
+        atr_val = features["atr_14"][-1] if features.get("atr_14") else 1000
+        atr_zone = result.get("atr_zone", "normal")
+        tss = result.get("tss", 0)
         confidence = result.get("confidence", 0.0)
 
-        # Use regime-specific ML model for confidence if available
-        from ml.calibration_loader import load_calibrated_model
+        # ── Build indicators (MUST be before regime model block) ──────────
+        indicators = {
+            "rsi": round(features["rsi_14"][-1], 2) if features.get("rsi_14") else None,
+            "adx": round(features["adx_14"][-1], 2) if features.get("adx_14") else None,
+            "atr": round(atr_val, 5),
+            "ema_50": round(features["ema_50"][-1], 4) if features.get("ema_50") else None,
+            "ema_200": round(features["ema_200"][-1], 4) if features.get("ema_200") else None,
+            "macd_hist": round(features["macd_histogram"][-1], 5) if features.get("macd_histogram") else None,
+        }
+
+        # ── Regime-specific ML model confidence override ──────────────────
         if result["signal"] != "HOLD":
             try:
                 regime_model = load_calibrated_model(self.SYMBOL, regime)
@@ -525,52 +534,48 @@ class V25Strategy(BaseStrategy):
                         ml_conf = float(proba[win_idx])
                         self.logger.info(
                             f"[{self.NAME}] regime model: "
-                            f"formula={confidence:.3f} → ml={ml_conf:.3f} regime={regime}"
+                            f"formula={confidence:.3f} → ml={ml_conf:.3f} "
+                            f"regime={regime}"
                         )
                         confidence = ml_conf
             except Exception as e:
-                self.logger.warning(f"[{self.NAME}] regime model inference failed: {e}")
+                self.logger.error(
+                    f"[{self.NAME}] regime model inference failed: {e}",
+                    exc_info=True,
+                )
 
-
-        risk    = _RiskManager(self.balance, self.is_prop)
-        sl_mult = getattr(t, "sl_atr_mult", 1.2)   # [V25-DIFF-2]
+        # ── Risk manager ──────────────────────────────────────────────────
+        risk = _RiskManager(self.balance, self.is_prop)
+        sl_mult = getattr(t, "sl_atr_mult", 1.2)
         sl_pips = atr_val * sl_mult
-        lot     = risk.lot_size(sl_pips, atr_zone)
-        levels  = risk.sl_tp(
-            entry     = candles[-1]["close"],
-            direction = "buy" if result["signal"] == "BUY" else "sell",
-            atr_val   = atr_val,
+        lot = risk.lot_size(sl_pips, atr_zone)
+        levels = risk.sl_tp(
+            entry=candles[-1]["close"],
+            direction="buy" if result["signal"] == "BUY" else "sell",
+            atr_val=atr_val,
         )
 
-        indicators = {
-            "rsi":       round(features["rsi_14"][-1], 2)         if features.get("rsi_14")         else None,
-            "adx":       round(features["adx_14"][-1], 2)         if features.get("adx_14")         else None,
-            "atr":       round(atr_val, 5),
-            "ema_50":    round(features["ema_50"][-1], 4)         if features.get("ema_50")         else None,
-            "ema_200":   round(features["ema_200"][-1], 4)        if features.get("ema_200")        else None,
-            "macd_hist": round(features["macd_histogram"][-1], 5) if features.get("macd_histogram") else None,
-        }
-
+        # ── Broadcast ─────────────────────────────────────────────────────
         await self.broadcast_fn({
             "symbol": self.SYMBOL,
             "action": result["signal"],
             "signal": {
-                "direction":  1 if result["signal"] == "BUY" else (-1 if result["signal"] == "SELL" else 0),
-                "rsi":        indicators["rsi"]       or 0,
-                "adx":        indicators["adx"]       or 0,
-                "atr":        indicators["atr"],
-                "ema50":      indicators["ema_50"]    or 0,
-                "ema200":     indicators["ema_200"]   or 0,
-                "macd_hist":  indicators["macd_hist"] or 0,
-                "tss_score":  tss,
-                "atr_zone":   atr_zone,
+                "direction": 1 if result["signal"] == "BUY" else (-1 if result["signal"] == "SELL" else 0),
+                "rsi": indicators["rsi"] or 0,
+                "adx": indicators["adx"] or 0,
+                "atr": indicators["atr"],
+                "ema50": indicators["ema_50"] or 0,
+                "ema200": indicators["ema_200"] or 0,
+                "macd_hist": indicators["macd_hist"] or 0,
+                "tss_score": tss,
+                "atr_zone": atr_zone,
                 "confidence": confidence,
-                "regime":     regime,                 # ← [REGIME-LOG]
-                "reason":     result.get("reason", ""),
+                "regime": regime,
+                "reason": result.get("reason", ""),
             }
         })
 
-        # ── Write SignalLog row ────────────────────────────────────────────
+        # ── Write SignalLog row ───────────────────────────────────────────
         signal_log_id = None
         if result["signal"] != "HOLD":
             from app.database import AsyncSessionLocal
@@ -578,61 +583,66 @@ class V25Strategy(BaseStrategy):
             from datetime import datetime
             try:
                 dirval = 1 if result["signal"] == "BUY" else -1
-                entry  = candles[-1]["close"]
+                entry = candles[-1]["close"]
                 row = SignalLog(
-                    strategy    = self.NAME,
-                    symbol      = self.SYMBOL,
-                    signal      = result["signal"],
-                    direction   = dirval,
-                    entry_price = entry,
-                    tp_price    = levels["tp"],
-                    sl_price    = levels["sl"],
-                    rsi         = indicators.get("rsi"),
-                    adx         = indicators.get("adx"),
-                    atr         = indicators.get("atr"),
-                    ema_50      = indicators.get("ema_50"),
-                    ema_200     = indicators.get("ema_200"),
-                    macd_hist   = indicators.get("macd_hist"),
-                    tss_score   = tss,
-                    checklist   = result.get("checklist"),
-                    atr_zone    = atr_zone,
-                    confidence  = confidence,
+                    strategy=self.NAME,
+                    symbol=self.SYMBOL,
+                    signal=result["signal"],
+                    direction=dirval,
+                    entry_price=entry,
+                    tp_price=levels["tp"],
+                    sl_price=levels["sl"],
+                    rsi=indicators.get("rsi"),
+                    adx=indicators.get("adx"),
+                    atr=indicators.get("atr"),
+                    ema_50=indicators.get("ema_50"),
+                    ema_200=indicators.get("ema_200"),
+                    macd_hist=indicators.get("macd_hist"),
+                    tss_score=tss,
+                    checklist=result.get("checklist"),
+                    atr_zone=atr_zone,
+                    confidence=confidence,
                     regime=regime,
-                    captured_at = datetime.utcnow(),
+                    captured_at=datetime.utcnow(),
                 )
                 async with AsyncSessionLocal() as db:
                     db.add(row)
                     await db.commit()
                     await db.refresh(row)
                     signal_log_id = row.id
-                    self.logger.info(f"[{self.NAME}] SignalLog written: {signal_log_id}")
+                    self.logger.info(
+                        f"[{self.NAME}] SignalLog written: {signal_log_id}"
+                    )
             except Exception as log_err:
-                self.logger.warning(f"[{self.NAME}] SignalLog insert failed: {log_err}")
+                self.logger.warning(
+                    f"[{self.NAME}] SignalLog insert failed: {log_err}"
+                )
 
+        # ── Return ────────────────────────────────────────────────────────
         return {
-            "signal":     result["signal"],
-            "symbol":     self.SYMBOL,
+            "signal": result["signal"],
+            "symbol": self.SYMBOL,
             "confidence": confidence,
-            "reason":     result.get("reason", ""),
-            "amount":     lot if result["signal"] != "HOLD" else 0.0,
+            "reason": result.get("reason", ""),
+            "amount": lot if result["signal"] != "HOLD" else 0.0,
             "indicators": indicators,
             "meta": {
                 "signal_log_id": signal_log_id,
-                "tss":           tss,
-                "checklist":     result.get("checklist"),
-                "atr_zone":      atr_zone,
-                "atr_val":       round(atr_val, 4),
-                "sl":            levels["sl"],
-                "tp":            levels["tp"],
-                "entry":         candles[-1]["close"],
-                "balance":       self.balance,
-                "regime":        regime,              # ← [REGIME-LOG]
+                "tss": tss,
+                "checklist": result.get("checklist"),
+                "atr_zone": atr_zone,
+                "atr_val": round(atr_val, 4),
+                "sl": levels["sl"],
+                "tp": levels["tp"],
+                "entry": candles[-1]["close"],
+                "balance": self.balance,
+                "regime": regime,
                 "thresholds": {
-                    "confidence_min":    t.confidence_min,
-                    "tss_min":           t.tss_min,
-                    "checklist_min":     t.checklist_min,
+                    "confidence_min": t.confidence_min,
+                    "tss_min": t.tss_min,
+                    "checklist_min": t.checklist_min,
                     "effective_chk_min": effective_chk,
-                    "sl_atr_mult":       getattr(t, "sl_atr_mult", 1.2),
+                    "sl_atr_mult": getattr(t, "sl_atr_mult", 1.2),
                 },
             },
         }
