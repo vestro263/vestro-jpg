@@ -619,6 +619,42 @@ async def debug_env():
         "ENCRYPTION_KEY_set": bool(os.environ.get("ENCRYPTION_KEY")),
     }
 
+
+@app.get("/debug/test-token")
+async def test_token(db: AsyncSession = Depends(get_db)):
+    import httpx
+    from app.services.credential_store import decrypt
+    from sqlalchemy import select
+    from app.models import Credentials
+
+    results = []
+    async with AsyncSessionLocal() as session:
+        creds = (await session.execute(select(Credentials))).scalars().all()
+
+    for cred in creds:
+        try:
+            token = decrypt(cred.password)
+            # Test token against Deriv REST endpoint
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"https://api.deriv.com/api/v2/account_status",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=5,
+                )
+            results.append({
+                "account_id": cred.account_id,
+                "token_first_5": token[:5],
+                "token_length": len(token),
+                "status": r.status_code,
+            })
+        except Exception as e:
+            results.append({
+                "account_id": cred.account_id,
+                "error": str(e),
+            })
+
+    return results
+
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
 app.include_router(stream_router)
