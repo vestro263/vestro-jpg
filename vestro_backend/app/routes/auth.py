@@ -181,27 +181,24 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     uid    = user.id             if user else ""
     active = user.active_account if user else ""
 
-    # ── Fetch all linked accounts via WebSocket account_list ──
-    import websockets as _ws
-    import asyncio
-
+    # ── Fetch all linked accounts via REST API ────────────────────
     all_linked = []
     try:
-        async with _ws.connect(
-            f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
-        ) as ws:
-            await ws.send(json.dumps({"authorize": access_token}))
-            auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-            print("[deriv_callback] authorize:", auth_resp.get("authorize", {}).get("loginid"))
-            if "error" in auth_resp:
-                print("[deriv_callback] authorize error:", auth_resp["error"])
-            else:
-                await ws.send(json.dumps({"account_list": 1}))
-                list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
-                all_linked = list_resp.get("account_list", [])
-                print("[deriv_callback] account_list:", [a["loginid"] for a in all_linked])
+        async with httpx.AsyncClient() as client:
+            accounts_resp = await client.get(
+                "https://api.derivws.com/trading/v1/options/accounts",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Deriv-App-ID": DERIV_APP_ID,
+                    "Content-Type": "application/json",
+                },
+            )
+            print("[deriv_callback] accounts REST status:", accounts_resp.status_code)
+            accounts_data = accounts_resp.json()
+            print("[deriv_callback] accounts REST response:", accounts_data)
+            all_linked = accounts_data.get("data", [])
     except Exception as e:
-        print(f"[deriv_callback] account_list failed: {e}")
+        print(f"[deriv_callback] accounts REST failed: {e}")
 
     if not all_linked:
         print("[deriv_callback] no accounts from account_list")
