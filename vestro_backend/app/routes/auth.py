@@ -181,7 +181,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     uid    = user.id             if user else ""
     active = user.active_account if user else ""
 
-    # ── Fetch all linked accounts via REST API ────────────────────
+    # ── Fetch all linked accounts via REST API ────────────────
     all_linked = []
     try:
         async with httpx.AsyncClient() as client:
@@ -189,8 +189,8 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
                 "https://api.derivws.com/trading/v1/options/accounts",
                 headers={
                     "Authorization": f"Bearer {access_token}",
-                    "Deriv-App-ID": DERIV_APP_ID,
-                    "Content-Type": "application/json",
+                    "Deriv-App-ID":  DERIV_APP_ID,
+                    "Content-Type":  "application/json",
                 },
             )
             print("[deriv_callback] accounts REST status:", accounts_resp.status_code)
@@ -201,25 +201,26 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         print(f"[deriv_callback] accounts REST failed: {e}")
 
     if not all_linked:
-        print("[deriv_callback] no accounts from account_list")
+        print("[deriv_callback] no accounts returned")
         accounts_json = urllib.parse.quote(json.dumps([]))
         return RedirectResponse(
             f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
         )
 
-    # ── Filter wallets ────────────────────────────────────────
-    def is_wallet(loginid: str) -> bool:
-        return loginid.startswith(("VRW", "RW", "VDW"))
+    # ── Filter wallets & map new field names ──────────────────
+    # New API fields: account_id, account_type ('demo'/'real'), currency, balance, group, status
+    def is_wallet(account: dict) -> bool:
+        return account.get("group", "") in ("wallet", "virtual_wallet")
 
     accounts_to_save = [
         {
-            "account_id": a["loginid"],
+            "account_id": a["account_id"],
             "token":      access_token,
-            "is_virtual": a.get("is_virtual", 0) == 1,
+            "is_virtual": a.get("account_type", "") == "demo",
             "currency":   a.get("currency", "USD"),
         }
         for a in all_linked
-        if not is_wallet(a["loginid"])
+        if not is_wallet(a)
     ]
 
     print("[deriv_callback] tradeable accounts to save:", [a["account_id"] for a in accounts_to_save])
