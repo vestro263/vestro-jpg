@@ -5,7 +5,7 @@ from ..database import get_db
 from ..models import Credentials
 from ..services.credential_store import decrypt
 from ..services import welltrade
-from ..services.deriv_ws import get_account_info, execute_trade as deriv_trade, watch_contract
+from ..services.safe_deriv_ws import get_account_info, execute_trade as deriv_trade, watch_contract
 from pydantic import BaseModel
 import os
 import asyncio
