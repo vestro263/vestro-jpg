@@ -98,15 +98,17 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
+    # ── UPDATED: use new Deriv OAuth2 endpoint ────────────────
     redirect_uri = urllib.parse.quote(
         f"{BACKEND_URL}/auth/deriv/callback",
         safe=""
     )
-
     deriv_url = (
-        "https://oauth.deriv.com/oauth2/authorize"
-        f"?app_id={DERIV_APP_ID}"
+        "https://auth.deriv.com/oauth2/auth"
+        f"?response_type=code"
+        f"&client_id={DERIV_APP_ID}"
         f"&redirect_uri={redirect_uri}"
+        f"&scope=trade+account_manage"
         f"&state={user.id}"
     )
     return RedirectResponse(deriv_url)
@@ -118,9 +120,35 @@ async def google_callback(
 async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     params  = dict(request.query_params)
     user_id = params.get("state", "")
+    code    = params.get("code", "")
 
     print("==== DERIV CALLBACK ====", params)
 
+    if not code:
+        print("[deriv_callback] no code received")
+        return RedirectResponse(f"{FRONTEND_URL}?error=deriv_no_code")
+
+    # ── Exchange code for access token ────────────────────────
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://auth.deriv.com/oauth2/token",
+            data={
+                "grant_type":   "authorization_code",
+                "code":         code,
+                "redirect_uri": f"{BACKEND_URL}/auth/deriv/callback",
+                "client_id":    DERIV_APP_ID,
+            },
+        )
+        token_data = token_resp.json()
+        print("[deriv_callback] token exchange:", token_data)
+
+    if "access_token" not in token_data:
+        print("[deriv_callback] token exchange failed:", token_data)
+        return RedirectResponse(f"{FRONTEND_URL}?error=deriv_token_failed")
+
+    access_token = token_data["access_token"]
+
+    # ── Look up user ──────────────────────────────────────────
     user = None
     if user_id:
         result = await db.execute(select(User).where(User.id == user_id))
@@ -129,37 +157,18 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     uid    = user.id             if user else ""
     active = user.active_account if user else ""
 
-    # Collect all tokens Deriv sent back
-    raw_tokens = {}
-    i = 1
-    while f"acct{i}" in params:
-        raw_tokens[params[f"acct{i}"]] = {
-            "token": params[f"token{i}"],
-            "cur":   params.get(f"cur{i}", "USD"),
-        }
-        i += 1
-
-    # ── No tokens at all → show selector with zero accounts ──────────────────────
-    if not raw_tokens:
-        print("[deriv_callback] no tokens received from Deriv")
-        accounts_json = urllib.parse.quote(json.dumps([]))
-        return RedirectResponse(
-            f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
-        )
-
-    # Use the first token to fetch ALL linked accounts via account_list
+    # ── Fetch all linked accounts via account_list ────────────
     import websockets as _ws
     import asyncio
 
-    first_token = next(iter(raw_tokens.values()))["token"]
-    all_linked  = []
-
+    all_linked = []
     try:
         async with _ws.connect(
             f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
         ) as ws:
-            await ws.send(json.dumps({"authorize": first_token}))
+            await ws.send(json.dumps({"authorize": access_token}))
             auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+            print("[deriv_callback] authorize:", auth_resp.get("authorize", {}).get("loginid"))
             if "error" not in auth_resp:
                 await ws.send(json.dumps({"account_list": 1}))
                 list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
@@ -168,39 +177,30 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         print(f"[deriv_callback] account_list failed: {e}")
 
-    # Build token map: loginid → token
-    token_map = {acct: data["token"] for acct, data in raw_tokens.items()}
+    if not all_linked:
+        print("[deriv_callback] no accounts from account_list")
+        accounts_json = urllib.parse.quote(json.dumps([]))
+        return RedirectResponse(
+            f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
+        )
 
-    # Filter to tradeable accounts only (no VRW/RW/VDW wallets)
+    # ── Filter wallets ────────────────────────────────────────
     def is_wallet(loginid: str) -> bool:
         return loginid.startswith(("VRW", "RW", "VDW"))
 
-    if all_linked:
-        accounts_to_save = [
-            {
-                "account_id": a["loginid"],
-                "token":      token_map.get(a["loginid"], first_token),
-                "is_virtual": a.get("is_virtual", 0) == 1,
-                "currency":   a.get("currency", "USD"),
-            }
-            for a in all_linked
-            if not is_wallet(a["loginid"])
-        ]
-    else:
-        accounts_to_save = [
-            {
-                "account_id": acct,
-                "token":      data["token"],
-                "is_virtual": acct.startswith("VRT"),
-                "currency":   data["cur"],
-            }
-            for acct, data in raw_tokens.items()
-            if not is_wallet(acct)
-        ]
+    accounts_to_save = [
+        {
+            "account_id": a["loginid"],
+            "token":      access_token,
+            "is_virtual": a.get("is_virtual", 0) == 1,
+            "currency":   a.get("currency", "USD"),
+        }
+        for a in all_linked
+        if not is_wallet(a["loginid"])
+    ]
 
     print("[deriv_callback] tradeable accounts to save:", [a["account_id"] for a in accounts_to_save])
 
-    # ── All accounts were wallets → show selector with zero accounts ──────────────
     if not accounts_to_save:
         print("[deriv_callback] all accounts were wallets, returning empty selector")
         accounts_json = urllib.parse.quote(json.dumps([]))
@@ -208,6 +208,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
         )
 
+    # ── Save credentials & build response ────────────────────
     accounts = []
     for entry in accounts_to_save:
         acct     = entry["account_id"]
@@ -215,7 +216,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
         is_demo  = entry["is_virtual"]
         currency = entry["currency"]
 
-        # Fetch live balance
         try:
             info = await get_account_info(DERIV_APP_ID, token)
             if info.get("status") == "error":
@@ -267,8 +267,6 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    # ── get_account_info failed for every account → empty selector ────────────────
-    # (don't redirect away — show selector so user can reconnect)
     accounts_json = urllib.parse.quote(json.dumps(accounts))
     return RedirectResponse(
         f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
