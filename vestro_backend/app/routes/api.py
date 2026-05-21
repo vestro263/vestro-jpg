@@ -18,7 +18,10 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models import Credentials
 from ..services.credential_store import decrypt
+import logging
 import websockets
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -894,3 +897,92 @@ async def connect(payload: ConnectRequest):
         raise HTTPException(status_code=501, detail="WelTrade not yet implemented")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {payload.broker}")
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT STATUS
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/bot/status")
+async def bot_status():
+    return {
+        "running":    _bot_running,
+        "status":     "running" if _bot_running else "stopped",
+    }
+
+
+@router.post("/bot/start")
+async def bot_start():
+    global _bot_running
+    _bot_running = True
+    return {"running": True, "status": "running"}
+
+
+@router.post("/bot/stop")
+async def bot_stop():
+    global _bot_running
+    _bot_running = False
+    return {"running": False, "status": "stopped"}
+
+
+# ─────────────────────────────────────────────────────────────
+# POSITIONS  (open contracts — Deriv legacy WS)
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/positions")
+async def get_positions(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Credentials).where(Credentials.account_id == account_id)
+    )
+    cred = result.scalar_one_or_none()
+
+    if not cred:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    api_token = decrypt(cred.password)
+    app_id    = os.getenv("DERIV_APP_ID", "1089")
+
+    # New platform — no open-contract WS yet, return empty
+    if is_new_platform(account_id):
+        return []
+
+    try:
+        async with websockets.connect(
+            f"wss://ws.binaryws.com/websockets/v3?app_id={app_id}"
+        ) as ws:
+            await ws.send(json.dumps({"authorize": api_token}))
+            auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+            if "error" in auth_resp:
+                raise HTTPException(
+                    status_code=401,
+                    detail=auth_resp["error"]["message"],
+                )
+
+            await ws.send(json.dumps({"portfolio": 1}))
+            port_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+
+        contracts = port_resp.get("portfolio", {}).get("contracts", [])
+        return [
+            {
+                "contract_id":   c.get("contract_id"),
+                "symbol":        c.get("underlying"),
+                "contract_type": c.get("contract_type"),
+                "buy_price":     c.get("buy_price"),
+                "pnl":           c.get("profit_loss"),
+                "expiry":        c.get("date_expiry"),
+            }
+            for c in contracts
+        ]
+
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Deriv API timed out")
+    except Exception as e:
+        # Bad/expired token — return empty list so UI doesn't crash
+        log.warning("[positions] %s: %s", account_id, e)
+        return []

@@ -30,33 +30,18 @@ class TradeBody(BaseModel):
     sl:            float = 0
     tp:            float = 0
     account_id:    str   = ""
-    signal_id:     str   = ""   # ← NEW: passed by signal_engine so we can close the log
+    signal_id:     str   = ""
 
 
-@router.get("/api/account/{account_id}")
-async def get_account(account_id: str, db: AsyncSession = Depends(get_db)):
+# NOTE: /api/account/{account_id} is handled by api.py with full Deriv data.
+# This route is intentionally removed from trade.py to avoid conflicts.
 
-    result = await db.execute(
-        select(Credentials).where(Credentials.account_id == account_id)
-    )
-
-    cred = result.scalar_one_or_none()
-
-    if not cred:
-        return {"error": "account not found"}
-
-    return {
-        "account_id": cred.account_id,
-        "is_demo": cred.is_demo,
-        "broker": cred.broker,
-    }
 
 @router.post("/api/trade")
 async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     if body.account_id:
         result = await db.execute(
-        select(Credentials).where(Credentials.account_id == body.account_id)
-
+            select(Credentials).where(Credentials.account_id == body.account_id)
         )
     else:
         result = await db.execute(
@@ -70,7 +55,7 @@ async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     if not cred:
         raise HTTPException(status_code=404, detail="Broker not connected")
 
-    # ── Welltrade (unchanged) ─────────────────────────────────────────────────
+    # ── Welltrade ─────────────────────────────────────────────────────────────
     if body.broker == "welltrade":
         return await welltrade.execute_trade(
             cred.meta_account_id,
@@ -86,7 +71,7 @@ async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
     if amount < MIN_STAKE:
         raise HTTPException(status_code=400, detail=f"Minimum stake is {MIN_STAKE}")
 
-    api_token   = decrypt(cred.password)
+    api_token    = decrypt(cred.password)
     trade_result = await deriv_trade(
         DERIV_APP_ID, api_token, body.symbol, body.action, amount
     )
@@ -102,7 +87,7 @@ async def trade(body: TradeBody, db: AsyncSession = Depends(get_db)):
                 api_token    = api_token,
                 symbol       = body.symbol,
                 trade_result = trade_result,
-                signal_id    = body.signal_id or None,   # ← forward signal_id
+                signal_id    = body.signal_id or None,
             )
         )
 
@@ -117,15 +102,9 @@ async def _watch_and_broadcast(
     trade_result: dict,
     signal_id:    str | None = None,
 ):
-    """
-    Watch a Deriv contract until it settles.
-    - Broadcasts every update to /api/contract/update  (frontend WebSocket feed)
-    - On final settlement, posts to /signal/outcome    (closes the signal_log row)
-    """
     async with httpx.AsyncClient() as client:
 
         async def on_update(data: dict):
-            # ── 1. broadcast to frontend ──────────────────────────────────
             try:
                 await client.post(
                     f"{BACKEND_URL}/api/contract/update",
@@ -139,19 +118,12 @@ async def _watch_and_broadcast(
             except Exception as e:
                 log.warning("[trade] contract broadcast error: %s", e)
 
-            # ── 2. on settlement, close the signal_log row ────────────────
             is_settled = data.get("is_expired") or data.get("is_sold")
             if is_settled and signal_id:
                 exit_price = data.get("exit_spot") or data.get("sell_spot") or 0
                 profit     = float(data.get("profit") or 0)
 
-                # Deriv: profit > 0 = WIN, profit < 0 = LOSS, == 0 = NEUTRAL
-                if profit > 0:
-                    outcome = "WIN"
-                elif profit < 0:
-                    outcome = "LOSS"
-                else:
-                    outcome = "NEUTRAL"
+                outcome = "WIN" if profit > 0 else "LOSS" if profit < 0 else "NEUTRAL"
 
                 try:
                     resp = await client.post(
