@@ -4,6 +4,9 @@ routes/auth.py
 Flow: Google OAuth → Deriv OAuth → account selector → dashboard
 """
 
+import hashlib
+import base64
+import secrets
 import json
 import os
 import urllib.parse
@@ -98,7 +101,15 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
 
-    # ── UPDATED: use new Deriv OAuth2 endpoint ────────────────
+    # ── Generate PKCE code_verifier + code_challenge ──────────
+    code_verifier  = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+
+    # Pack user.id and code_verifier into state so callback can retrieve both
+    state_payload = urllib.parse.quote(f"{user.id}:{code_verifier}", safe="")
+
     redirect_uri = urllib.parse.quote(
         f"{BACKEND_URL}/auth/deriv/callback",
         safe=""
@@ -109,7 +120,9 @@ async def google_callback(
         f"&client_id={DERIV_APP_ID}"
         f"&redirect_uri={redirect_uri}"
         f"&scope=trade+account_manage"
-        f"&state={user.id}"
+        f"&state={state_payload}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
     )
     return RedirectResponse(deriv_url)
 
@@ -118,25 +131,36 @@ async def google_callback(
 
 @router.get("/auth/deriv/callback")
 async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    params  = dict(request.query_params)
-    user_id = params.get("state", "")
-    code    = params.get("code", "")
-
+    params = dict(request.query_params)
     print("==== DERIV CALLBACK ====", params)
 
+    # ── Unpack state: "user_id:code_verifier" ─────────────────
+    state_raw = urllib.parse.unquote(params.get("state", ""))
+    if ":" in state_raw:
+        user_id, code_verifier = state_raw.split(":", 1)
+    else:
+        user_id, code_verifier = state_raw, ""
+
+    # ── Check for OAuth error ─────────────────────────────────
+    if "error" in params:
+        print(f"[deriv_callback] OAuth error: {params.get('error')} — {params.get('error_description')}")
+        return RedirectResponse(f"{FRONTEND_URL}?error=deriv_oauth_failed")
+
+    code = params.get("code", "")
     if not code:
         print("[deriv_callback] no code received")
         return RedirectResponse(f"{FRONTEND_URL}?error=deriv_no_code")
 
-    # ── Exchange code for access token ────────────────────────
+    # ── Exchange code for access token (with PKCE verifier) ───
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
             "https://auth.deriv.com/oauth2/token",
             data={
-                "grant_type":   "authorization_code",
-                "code":         code,
-                "redirect_uri": f"{BACKEND_URL}/auth/deriv/callback",
-                "client_id":    DERIV_APP_ID,
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "redirect_uri":  f"{BACKEND_URL}/auth/deriv/callback",
+                "client_id":     DERIV_APP_ID,
+                "code_verifier": code_verifier,
             },
         )
         token_data = token_resp.json()
@@ -157,7 +181,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
     uid    = user.id             if user else ""
     active = user.active_account if user else ""
 
-    # ── Fetch all linked accounts via account_list ────────────
+    # ── Fetch all linked accounts via WebSocket account_list ──
     import websockets as _ws
     import asyncio
 
@@ -169,7 +193,9 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             await ws.send(json.dumps({"authorize": access_token}))
             auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
             print("[deriv_callback] authorize:", auth_resp.get("authorize", {}).get("loginid"))
-            if "error" not in auth_resp:
+            if "error" in auth_resp:
+                print("[deriv_callback] authorize error:", auth_resp["error"])
+            else:
                 await ws.send(json.dumps({"account_list": 1}))
                 list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
                 all_linked = list_resp.get("account_list", [])
@@ -208,7 +234,7 @@ async def deriv_callback(request: Request, db: AsyncSession = Depends(get_db)):
             f"{FRONTEND_URL}?accounts={accounts_json}&user_id={uid}&active_account={active}"
         )
 
-    # ── Save credentials & build response ────────────────────
+    # ── Save credentials & build response list ────────────────
     accounts = []
     for entry in accounts_to_save:
         acct     = entry["account_id"]
