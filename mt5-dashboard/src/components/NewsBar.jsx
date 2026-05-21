@@ -29,11 +29,18 @@ const EMPTY_MESSAGES = [
   'Calm before volatility',
 ]
 
+// ── Time formatter ────────────────────────────────────────────────────────────
 
+function fmt(iso) {
+  try {
+    return new Date(iso).toUTCString().slice(17, 22) + ' UTC'
+  } catch {
+    return iso ?? ''
+  }
+}
 
 // ── Gauge ─────────────────────────────────────────────────────────────────────
 
-// Each gauge gets a unique clip id to avoid collisions when multiple render
 let gaugeCount = 0
 
 function CurrencyGauge({ currency }) {
@@ -47,7 +54,7 @@ function CurrencyGauge({ currency }) {
   }, [currency])
 
   const { score, signal, signalColor, pair, indicators } = tech
-  const filled  = Math.round((score / 100) * 20)
+  const filled    = Math.round((score / 100) * 20)
   const needleDeg = -90 + (score / 100) * 180
 
   return (
@@ -60,7 +67,6 @@ function CurrencyGauge({ currency }) {
         <span style={{ fontSize: 11, color: '#00ff41', letterSpacing: '0.06em' }}>{pair}</span>
       </div>
 
-      {/* Gauge SVG — unique clipPath id per instance */}
       <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 6 }}>
         <svg width="180" height="100" viewBox="0 0 200 110">
           <defs>
@@ -75,8 +81,6 @@ function CurrencyGauge({ currency }) {
             <path d="M 100 20 A 80 80 0 0 1 140 32"  fill="none" stroke="#1e5c1e" strokeWidth="14" strokeLinecap="butt" opacity="0.7"/>
             <path d="M 140 32 A 80 80 0 0 1 180 100" fill="none" stroke="#00ff41" strokeWidth="14" strokeLinecap="butt" opacity="0.7"/>
           </g>
-
-          {/* Needle — CSS transform on SVG elements needs explicit transform-origin */}
           <line
             x1="100" y1="100" x2="100" y2="28"
             stroke="#00ff41" strokeWidth="2" strokeLinecap="round"
@@ -87,7 +91,6 @@ function CurrencyGauge({ currency }) {
             }}
           />
           <circle cx="100" cy="100" r="5" fill="#0a0f0a" stroke="#00ff41" strokeWidth="1.5"/>
-
           <text x="20"  y="108" fontFamily="monospace" fontSize="7" fill="#1e5c1e">SELL</text>
           <text x="88"  y="14"  fontFamily="monospace" fontSize="7" fill="#1e5c1e">NEU</text>
           <text x="180" y="108" fontFamily="monospace" fontSize="7" fill="#1e5c1e" textAnchor="end">BUY</text>
@@ -159,7 +162,6 @@ Currency: ${ev.currency}
 Event: ${ev.title}
 Impact tier: ${ev.tier}`
 
-  // Try the Railway endpoint first; fall back gracefully
   const res = await axios.post(
     `${AI_API}/chat`,
     { message: prompt, session_id: `${ev.currency}_${Date.now()}` },
@@ -168,7 +170,6 @@ Impact tier: ${ev.tier}`
 
   let raw = res.data?.response ?? res.data
   if (typeof raw === 'string') {
-    // Strip any accidental markdown fences
     raw = raw.replace(/```(?:json)?|```/g, '').trim()
     raw = JSON.parse(raw)
   }
@@ -179,8 +180,8 @@ Impact tier: ${ev.tier}`
 // ── ConfBar ───────────────────────────────────────────────────────────────────
 
 function ConfBar({ value }) {
-  const pct    = Math.round(value * 100)
-  const color  = pct >= 70 ? '#00ff41' : pct >= 45 ? '#ffb800' : '#ff3131'
+  const pct     = Math.round(value * 100)
+  const color   = pct >= 70 ? '#00ff41' : pct >= 45 ? '#ffb800' : '#ff3131'
   const tierLbl = pct >= 70 ? 'HIGH' : pct >= 45 ? 'MED' : 'LOW'
   const filled  = Math.ceil((pct / 100) * 10)
   return (
@@ -210,10 +211,10 @@ export default function NewsBar({ symbol = null }) {
   const [analysis,  setAnalysis]  = useState(null)
   const [loadingAI, setLoadingAI] = useState(false)
   const [loadStep,  setLoadStep]  = useState(0)
-  const [aiError,   setAiError]   = useState(null)   // null | string
+  const [aiError,   setAiError]   = useState(null)
   const [clock,     setClock]     = useState('')
   const [emptyIdx,  setEmptyIdx]  = useState(0)
-  const wrapRef    = useRef(null)
+  const wrapRef     = useRef(null)
   const intervalRef = useRef(null)
 
   // Clock
@@ -262,7 +263,6 @@ export default function NewsBar({ symbol = null }) {
   }, [symbol])
 
   const runAnalysis = useCallback(async (ev) => {
-    // Toggle off if same chip clicked again
     if (selected?.title === ev.title) { setSelected(null); return }
 
     setSelected(ev)
@@ -271,7 +271,6 @@ export default function NewsBar({ symbol = null }) {
     setLoadingAI(true)
     setLoadStep(0)
 
-    // Animate loading lines — use ref so stale closure can't reset it
     clearInterval(intervalRef.current)
     let step = 0
     intervalRef.current = setInterval(() => {
@@ -284,7 +283,6 @@ export default function NewsBar({ symbol = null }) {
       const data = await fetchAnalysis(ev)
       setAnalysis(data)
     } catch (err) {
-      // Surface a useful message instead of just flipping a boolean
       const msg = err?.response?.status
         ? `Server error ${err.response.status}`
         : err?.code === 'ECONNABORTED'
@@ -353,10 +351,8 @@ export default function NewsBar({ symbol = null }) {
               <button style={S.closeBtn} onClick={closeModal}>×</button>
             </div>
 
-            {/* Gauge — always shown immediately, no async dependency */}
             <CurrencyGauge currency={selected.currency} />
 
-            {/* AI section */}
             <div style={S.aiLabel}>AI MACRO ANALYSIS</div>
             <div style={S.mBody}>
 
