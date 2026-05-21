@@ -9,7 +9,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, desc
 from app.db import AsyncSessionLocal
 from app.models import Score, Firm
-
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")          # ← prefix added so paths become /api/ws
 

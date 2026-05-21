@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-
+from .routes.stream import broadcast as ws_broadcast
 load_dotenv()
 
 from .database import init_db, get_db
@@ -596,6 +596,22 @@ async def debug_run_labeler(db: AsyncSession = Depends(get_db)):
     from ml.outcome_labeler import run_labeler
     asyncio.create_task(run_labeler(decrypt(cred.password)))
     return {"status": "labeler started"}
+
+
+@app.post("/api/signal/broadcast")
+async def signal_broadcast(payload: dict):
+    """
+    Receives signal payloads from strategies/signal_engine
+    and forwards to connected WebSocket clients.
+    """
+    try:
+        from app.routes.stream import manager  # adjust import to match your stream.py
+        await manager.broadcast(json.dumps(payload))
+        return {"status": "ok"}
+    except Exception as e:
+        log.error(f"[broadcast] failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
+
 
 # ------------------ ROUTES ------------------
 app.include_router(api_router)
